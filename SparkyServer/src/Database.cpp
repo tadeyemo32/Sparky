@@ -1,124 +1,112 @@
-// Database.cpp — SQLite3 implementation
+// Database.cpp — PostgreSQL (libpq) implementation
 #include "../include/Database.h"
-#include "../../deps/sqlite3/sqlite3.h"
-#include <cstring>
+#include <libpq-fe.h>
 #include <ctime>
 #include <iostream>
 
-static sqlite3* DB(void* p) { return reinterpret_cast<sqlite3*>(p); }
+static PGconn* PG(void* p) { return reinterpret_cast<PGconn*>(p); }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Internal helper — execute a parameterized query (text protocol).
+// All integer parameters must be pre-converted to std::string by callers.
+// Returns a valid PGresult* (PGRES_COMMAND_OK or PGRES_TUPLES_OK) that the
+// caller MUST PQclear(), or nullptr on failure (already logged).
 // ---------------------------------------------------------------------------
-bool Database::ExecSQL(const char* sql) const
+static PGresult* PgExec(PGconn* conn, const char* sql,
+                         const std::vector<std::string>& args = {})
 {
-    char* err = nullptr;
-    int rc = sqlite3_exec(DB(m_db), sql, nullptr, nullptr, &err);
-    if (rc != SQLITE_OK)
+    std::vector<const char*> pv;
+    pv.reserve(args.size());
+    for (auto& s : args) pv.push_back(s.c_str());
+
+    PGresult* res = PQexecParams(conn, sql,
+                                  (int)pv.size(), nullptr,
+                                  pv.empty() ? nullptr : pv.data(),
+                                  nullptr, nullptr, 0);
+
+    ExecStatusType st = PQresultStatus(res);
+    if (st != PGRES_COMMAND_OK && st != PGRES_TUPLES_OK)
     {
-        std::cerr << "[DB] SQL error: " << (err ? err : "?") << "\n";
-        sqlite3_free(err);
-        return false;
+        std::cerr << "[DB] " << PQresultErrorMessage(res)
+                  << " — query: " << sql << "\n";
+        PQclear(res);
+        return nullptr;
     }
-    return true;
+    return res;
 }
 
 // ---------------------------------------------------------------------------
 // Open / Close
 // ---------------------------------------------------------------------------
-bool Database::Open(const char* path, const std::string& key)
+bool Database::Open(const std::string& connstr)
 {
-    sqlite3* db = nullptr;
-    if (sqlite3_open(path, &db) != SQLITE_OK)
+    PGconn* conn = PQconnectdb(connstr.c_str());
+    if (PQstatus(conn) != CONNECTION_OK)
     {
-        std::cerr << "[DB] Cannot open: " << path << "\n";
-        sqlite3_close(db);
+        std::cerr << "[DB] Connection failed: " << PQerrorMessage(conn) << "\n";
+        PQfinish(conn);
         return false;
     }
-    m_db = db;
-
-#ifdef SPARKY_SQLCIPHER
-    // SQLCipher: set the AES-256-CBC encryption key BEFORE any other operation.
-    // key format: "x'<64 hex chars>'"
-    if (key.empty())
-    {
-        std::cerr << "[DB] FATAL: SQLCipher build requires a database key.\n";
-        sqlite3_close(db); m_db = nullptr; return false;
-    }
-    {
-        std::string pragma = "PRAGMA key = \"" + key + "\";";
-        char* err = nullptr;
-        int rc = sqlite3_exec(DB(m_db), pragma.c_str(), nullptr, nullptr, &err);
-        if (rc != SQLITE_OK)
-        {
-            std::cerr << "[DB] Key pragma failed: " << (err ? err : "?") << "\n";
-            sqlite3_free(err); sqlite3_close(db); m_db = nullptr; return false;
-        }
-        // Additional hardening: 256-bit key, 64 KB page, 4096 iterations PBKDF2
-        sqlite3_exec(DB(m_db), "PRAGMA cipher_page_size = 65536;",    nullptr, nullptr, nullptr);
-        sqlite3_exec(DB(m_db), "PRAGMA kdf_iter = 256000;",           nullptr, nullptr, nullptr);
-        sqlite3_exec(DB(m_db), "PRAGMA cipher_hmac_algorithm = HMAC_SHA512;", nullptr, nullptr, nullptr);
-        sqlite3_exec(DB(m_db), "PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA512;", nullptr, nullptr, nullptr);
-    }
-#else
-    (void)key; // plaintext mode — acceptable for local dev only
-#endif
-
-    sqlite3_exec(DB(m_db), "PRAGMA journal_mode=WAL;",   nullptr, nullptr, nullptr);
-    sqlite3_exec(DB(m_db), "PRAGMA synchronous=NORMAL;", nullptr, nullptr, nullptr);
-    sqlite3_exec(DB(m_db), "PRAGMA foreign_keys=ON;",    nullptr, nullptr, nullptr);
+    m_db = conn;
     return CreateSchema();
 }
 
 void Database::Close()
 {
-    if (m_db) { sqlite3_close(DB(m_db)); m_db = nullptr; }
+    if (m_db) { PQfinish(PG(m_db)); m_db = nullptr; }
 }
 
 bool Database::CreateSchema()
 {
-    static const char* ddl = R"sql(
+    // PQexec accepts multiple semicolon-separated statements.
+    const char* ddl = R"sql(
         CREATE TABLE IF NOT EXISTS licenses (
             key         TEXT PRIMARY KEY,
             tier        INTEGER NOT NULL DEFAULT 1,
-            issued_at   INTEGER NOT NULL,
-            expires_at  INTEGER NOT NULL DEFAULT 0,
+            issued_at   BIGINT  NOT NULL,
+            expires_at  BIGINT  NOT NULL DEFAULT 0,
             hwid_hash   TEXT    NOT NULL DEFAULT '',
             note        TEXT    NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS users (
             hwid_hash   TEXT PRIMARY KEY,
-            license_key TEXT NOT NULL DEFAULT '',
-            created_at  INTEGER NOT NULL,
-            last_seen   INTEGER NOT NULL,
+            license_key TEXT    NOT NULL DEFAULT '',
+            created_at  BIGINT  NOT NULL,
+            last_seen   BIGINT  NOT NULL,
             is_banned   INTEGER NOT NULL DEFAULT 0,
             ban_reason  TEXT    NOT NULL DEFAULT '',
             loader_hash TEXT    NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS sessions (
             token_hex       TEXT PRIMARY KEY,
-            hwid_hash       TEXT NOT NULL,
-            created_at      INTEGER NOT NULL,
-            last_heartbeat  INTEGER NOT NULL
+            hwid_hash       TEXT   NOT NULL,
+            created_at      BIGINT NOT NULL,
+            last_heartbeat  BIGINT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS purchases (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            id              BIGSERIAL PRIMARY KEY,
             hwid_hash       TEXT    NOT NULL,
             license_key     TEXT    NOT NULL,
             amount_cents    INTEGER NOT NULL DEFAULT 0,
-            purchased_at    INTEGER NOT NULL,
+            purchased_at    BIGINT  NOT NULL,
             note            TEXT    NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS trusted_hashes (
             hash        TEXT PRIMARY KEY,
-            note        TEXT NOT NULL DEFAULT '',
-            added_at    INTEGER NOT NULL DEFAULT 0
+            note        TEXT   NOT NULL DEFAULT '',
+            added_at    BIGINT NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_hwid  ON sessions(hwid_hash);
         CREATE INDEX IF NOT EXISTS idx_purchases_hwid ON purchases(hwid_hash);
         CREATE INDEX IF NOT EXISTS idx_licenses_hwid  ON licenses(hwid_hash);
     )sql";
-    return ExecSQL(ddl);
+
+    PGresult* res = PQexec(PG(m_db), ddl);
+    bool ok = PQresultStatus(res) == PGRES_COMMAND_OK;
+    if (!ok)
+        std::cerr << "[DB] Schema error: " << PQresultErrorMessage(res) << "\n";
+    PQclear(res);
+    return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,93 +114,85 @@ bool Database::CreateSchema()
 // ---------------------------------------------------------------------------
 bool Database::InsertLicense(const LicenseRow& row)
 {
-    const char* sql =
+    auto* res = PgExec(PG(m_db),
         "INSERT INTO licenses(key,tier,issued_at,expires_at,hwid_hash,note)"
-        " VALUES(?,?,?,?,?,?);";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_text (st, 1, row.key.c_str(),      -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int  (st, 2, row.tier);
-    sqlite3_bind_int64(st, 3, row.issued_at);
-    sqlite3_bind_int64(st, 4, row.expires_at);
-    sqlite3_bind_text (st, 5, row.hwid_hash.c_str(),-1, SQLITE_TRANSIENT);
-    sqlite3_bind_text (st, 6, row.note.c_str(),     -1, SQLITE_TRANSIENT);
-    bool ok = sqlite3_step(st) == SQLITE_DONE;
-    sqlite3_finalize(st);
-    return ok;
+        " VALUES($1,$2,$3,$4,$5,$6)",
+        { row.key, std::to_string(row.tier),
+          std::to_string(row.issued_at), std::to_string(row.expires_at),
+          row.hwid_hash, row.note });
+    if (!res) return false;
+    PQclear(res);
+    return true;
 }
 
 std::optional<LicenseRow> Database::GetLicense(const std::string& key) const
 {
-    const char* sql =
+    auto* res = PgExec(PG(m_db),
         "SELECT key,tier,issued_at,expires_at,hwid_hash,note"
-        " FROM licenses WHERE key=?;";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK)
-        return std::nullopt;
-    sqlite3_bind_text(st, 1, key.c_str(), -1, SQLITE_TRANSIENT);
+        " FROM licenses WHERE key=$1",
+        { key });
+    if (!res) return std::nullopt;
+
     std::optional<LicenseRow> result;
-    if (sqlite3_step(st) == SQLITE_ROW)
+    if (PQntuples(res) == 1)
     {
         LicenseRow r;
-        r.key        = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
-        r.tier       = sqlite3_column_int(st, 1);
-        r.issued_at  = sqlite3_column_int64(st, 2);
-        r.expires_at = sqlite3_column_int64(st, 3);
-        r.hwid_hash  = reinterpret_cast<const char*>(sqlite3_column_text(st, 4));
-        r.note       = reinterpret_cast<const char*>(sqlite3_column_text(st, 5));
+        r.key        = PQgetvalue(res, 0, 0);
+        r.tier       = std::stoi(PQgetvalue(res, 0, 1));
+        r.issued_at  = std::stoll(PQgetvalue(res, 0, 2));
+        r.expires_at = std::stoll(PQgetvalue(res, 0, 3));
+        r.hwid_hash  = PQgetvalue(res, 0, 4);
+        r.note       = PQgetvalue(res, 0, 5);
         result = r;
     }
-    sqlite3_finalize(st);
+    PQclear(res);
     return result;
 }
 
 bool Database::BindLicense(const std::string& key, const std::string& hwid_hash)
 {
-    const char* sql =
-        "UPDATE licenses SET hwid_hash=? WHERE key=? AND hwid_hash='';";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_text(st, 1, hwid_hash.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 2, key.c_str(),       -1, SQLITE_TRANSIENT);
-    sqlite3_step(st);
-    bool changed = sqlite3_changes(DB(m_db)) > 0;
-    sqlite3_finalize(st);
+    auto* res = PgExec(PG(m_db),
+        "UPDATE licenses SET hwid_hash=$1 WHERE key=$2 AND hwid_hash=''",
+        { hwid_hash, key });
+    if (!res) return false;
+    bool changed = std::atoi(PQcmdTuples(res)) > 0;
+    PQclear(res);
     return changed;
 }
 
 bool Database::RevokeExpiry(const std::string& key)
 {
-    const char* sql = "UPDATE licenses SET expires_at=1 WHERE key=?;";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_text(st, 1, key.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_step(st);
-    bool changed = sqlite3_changes(DB(m_db)) > 0;
-    sqlite3_finalize(st);
+    auto* res = PgExec(PG(m_db),
+        "UPDATE licenses SET expires_at=1 WHERE key=$1",
+        { key });
+    if (!res) return false;
+    bool changed = std::atoi(PQcmdTuples(res)) > 0;
+    PQclear(res);
     return changed;
 }
 
 std::vector<LicenseRow> Database::ListLicenses() const
 {
-    const char* sql =
+    auto* res = PgExec(PG(m_db),
         "SELECT key,tier,issued_at,expires_at,hwid_hash,note"
-        " FROM licenses ORDER BY issued_at DESC;";
-    sqlite3_stmt* st = nullptr;
+        " FROM licenses ORDER BY issued_at DESC");
     std::vector<LicenseRow> rows;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return rows;
-    while (sqlite3_step(st) == SQLITE_ROW)
+    if (!res) return rows;
+
+    int n = PQntuples(res);
+    rows.reserve(n);
+    for (int i = 0; i < n; ++i)
     {
         LicenseRow r;
-        r.key        = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
-        r.tier       = sqlite3_column_int(st, 1);
-        r.issued_at  = sqlite3_column_int64(st, 2);
-        r.expires_at = sqlite3_column_int64(st, 3);
-        r.hwid_hash  = reinterpret_cast<const char*>(sqlite3_column_text(st, 4));
-        r.note       = reinterpret_cast<const char*>(sqlite3_column_text(st, 5));
+        r.key        = PQgetvalue(res, i, 0);
+        r.tier       = std::stoi(PQgetvalue(res, i, 1));
+        r.issued_at  = std::stoll(PQgetvalue(res, i, 2));
+        r.expires_at = std::stoll(PQgetvalue(res, i, 3));
+        r.hwid_hash  = PQgetvalue(res, i, 4);
+        r.note       = PQgetvalue(res, i, 5);
         rows.push_back(r);
     }
-    sqlite3_finalize(st);
+    PQclear(res);
     return rows;
 }
 
@@ -222,111 +202,107 @@ std::vector<LicenseRow> Database::ListLicenses() const
 bool Database::TouchUser(const std::string& hwid_hash, int64_t now,
                           const std::string& loader_hash)
 {
-    const char* sql = loader_hash.empty()
-        ? "INSERT INTO users(hwid_hash,created_at,last_seen)"
-          " VALUES(?,?,?)"
-          " ON CONFLICT(hwid_hash) DO UPDATE SET last_seen=excluded.last_seen;"
-        : "INSERT INTO users(hwid_hash,created_at,last_seen,loader_hash)"
-          " VALUES(?,?,?,?)"
-          " ON CONFLICT(hwid_hash) DO UPDATE"
-          " SET last_seen=excluded.last_seen, loader_hash=excluded.loader_hash;";
-
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_text (st, 1, hwid_hash.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st, 2, now);
-    sqlite3_bind_int64(st, 3, now);
-    if (!loader_hash.empty())
-        sqlite3_bind_text(st, 4, loader_hash.c_str(), -1, SQLITE_TRANSIENT);
-    bool ok = sqlite3_step(st) == SQLITE_DONE;
-    sqlite3_finalize(st);
-    return ok;
+    PGresult* res;
+    if (loader_hash.empty())
+    {
+        res = PgExec(PG(m_db),
+            "INSERT INTO users(hwid_hash,created_at,last_seen)"
+            " VALUES($1,$2,$3)"
+            " ON CONFLICT(hwid_hash) DO UPDATE SET last_seen=EXCLUDED.last_seen",
+            { hwid_hash, std::to_string(now), std::to_string(now) });
+    }
+    else
+    {
+        res = PgExec(PG(m_db),
+            "INSERT INTO users(hwid_hash,created_at,last_seen,loader_hash)"
+            " VALUES($1,$2,$3,$4)"
+            " ON CONFLICT(hwid_hash) DO UPDATE"
+            " SET last_seen=EXCLUDED.last_seen, loader_hash=EXCLUDED.loader_hash",
+            { hwid_hash, std::to_string(now), std::to_string(now), loader_hash });
+    }
+    if (!res) return false;
+    PQclear(res);
+    return true;
 }
 
 bool Database::SetUserLicense(const std::string& hwid_hash, const std::string& key)
 {
-    const char* sql = "UPDATE users SET license_key=? WHERE hwid_hash=?;";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_text(st, 1, key.c_str(),       -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 2, hwid_hash.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_step(st);
-    sqlite3_finalize(st);
+    auto* res = PgExec(PG(m_db),
+        "UPDATE users SET license_key=$1 WHERE hwid_hash=$2",
+        { key, hwid_hash });
+    if (!res) return false;
+    PQclear(res);
     return true;
 }
 
 std::optional<UserRow> Database::GetUser(const std::string& hwid_hash) const
 {
-    const char* sql =
+    auto* res = PgExec(PG(m_db),
         "SELECT hwid_hash,license_key,created_at,last_seen,is_banned,ban_reason,loader_hash"
-        " FROM users WHERE hwid_hash=?;";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK)
-        return std::nullopt;
-    sqlite3_bind_text(st, 1, hwid_hash.c_str(), -1, SQLITE_TRANSIENT);
+        " FROM users WHERE hwid_hash=$1",
+        { hwid_hash });
+    if (!res) return std::nullopt;
+
     std::optional<UserRow> result;
-    if (sqlite3_step(st) == SQLITE_ROW)
+    if (PQntuples(res) == 1)
     {
         UserRow r;
-        r.hwid_hash   = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
-        r.license_key = reinterpret_cast<const char*>(sqlite3_column_text(st, 1));
-        r.created_at  = sqlite3_column_int64(st, 2);
-        r.last_seen   = sqlite3_column_int64(st, 3);
-        r.is_banned   = sqlite3_column_int(st, 4) != 0;
-        r.ban_reason  = reinterpret_cast<const char*>(sqlite3_column_text(st, 5));
-        r.loader_hash = reinterpret_cast<const char*>(sqlite3_column_text(st, 6));
+        r.hwid_hash   = PQgetvalue(res, 0, 0);
+        r.license_key = PQgetvalue(res, 0, 1);
+        r.created_at  = std::stoll(PQgetvalue(res, 0, 2));
+        r.last_seen   = std::stoll(PQgetvalue(res, 0, 3));
+        r.is_banned   = std::atoi(PQgetvalue(res, 0, 4)) != 0;
+        r.ban_reason  = PQgetvalue(res, 0, 5);
+        r.loader_hash = PQgetvalue(res, 0, 6);
         result = r;
     }
-    sqlite3_finalize(st);
+    PQclear(res);
     return result;
 }
 
 std::vector<UserRow> Database::ListUsers() const
 {
-    const char* sql =
+    auto* res = PgExec(PG(m_db),
         "SELECT hwid_hash,license_key,created_at,last_seen,is_banned,ban_reason,loader_hash"
-        " FROM users ORDER BY last_seen DESC;";
-    sqlite3_stmt* st = nullptr;
+        " FROM users ORDER BY last_seen DESC");
     std::vector<UserRow> rows;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return rows;
-    while (sqlite3_step(st) == SQLITE_ROW)
+    if (!res) return rows;
+
+    int n = PQntuples(res);
+    rows.reserve(n);
+    for (int i = 0; i < n; ++i)
     {
         UserRow r;
-        r.hwid_hash   = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
-        r.license_key = reinterpret_cast<const char*>(sqlite3_column_text(st, 1));
-        r.created_at  = sqlite3_column_int64(st, 2);
-        r.last_seen   = sqlite3_column_int64(st, 3);
-        r.is_banned   = sqlite3_column_int(st, 4) != 0;
-        r.ban_reason  = reinterpret_cast<const char*>(sqlite3_column_text(st, 5));
-        r.loader_hash = reinterpret_cast<const char*>(sqlite3_column_text(st, 6));
+        r.hwid_hash   = PQgetvalue(res, i, 0);
+        r.license_key = PQgetvalue(res, i, 1);
+        r.created_at  = std::stoll(PQgetvalue(res, i, 2));
+        r.last_seen   = std::stoll(PQgetvalue(res, i, 3));
+        r.is_banned   = std::atoi(PQgetvalue(res, i, 4)) != 0;
+        r.ban_reason  = PQgetvalue(res, i, 5);
+        r.loader_hash = PQgetvalue(res, i, 6);
         rows.push_back(r);
     }
-    sqlite3_finalize(st);
+    PQclear(res);
     return rows;
 }
 
 bool Database::BanUser(const std::string& hwid_hash, const std::string& reason)
 {
-    const char* sql =
-        "UPDATE users SET is_banned=1, ban_reason=? WHERE hwid_hash=?;";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_text(st, 1, reason.c_str(),    -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 2, hwid_hash.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_step(st);
-    sqlite3_finalize(st);
+    auto* res = PgExec(PG(m_db),
+        "UPDATE users SET is_banned=1, ban_reason=$1 WHERE hwid_hash=$2",
+        { reason, hwid_hash });
+    if (!res) return false;
+    PQclear(res);
     return true;
 }
 
 bool Database::UnbanUser(const std::string& hwid_hash)
 {
-    const char* sql =
-        "UPDATE users SET is_banned=0, ban_reason='' WHERE hwid_hash=?;";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_text(st, 1, hwid_hash.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_step(st);
-    sqlite3_finalize(st);
+    auto* res = PgExec(PG(m_db),
+        "UPDATE users SET is_banned=0, ban_reason='' WHERE hwid_hash=$1",
+        { hwid_hash });
+    if (!res) return false;
+    PQclear(res);
     return true;
 }
 
@@ -335,76 +311,71 @@ bool Database::UnbanUser(const std::string& hwid_hash)
 // ---------------------------------------------------------------------------
 bool Database::InsertSession(const SessionRow& row)
 {
-    const char* sql =
-        "INSERT OR REPLACE INTO sessions(token_hex,hwid_hash,created_at,last_heartbeat)"
-        " VALUES(?,?,?,?);";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_text (st, 1, row.token_hex.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text (st, 2, row.hwid_hash.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st, 3, row.created_at);
-    sqlite3_bind_int64(st, 4, row.last_heartbeat);
-    bool ok = sqlite3_step(st) == SQLITE_DONE;
-    sqlite3_finalize(st);
-    return ok;
+    auto* res = PgExec(PG(m_db),
+        "INSERT INTO sessions(token_hex,hwid_hash,created_at,last_heartbeat)"
+        " VALUES($1,$2,$3,$4)"
+        " ON CONFLICT(token_hex) DO UPDATE"
+        " SET hwid_hash=EXCLUDED.hwid_hash,"
+        "     created_at=EXCLUDED.created_at,"
+        "     last_heartbeat=EXCLUDED.last_heartbeat",
+        { row.token_hex, row.hwid_hash,
+          std::to_string(row.created_at),
+          std::to_string(row.last_heartbeat) });
+    if (!res) return false;
+    PQclear(res);
+    return true;
 }
 
 bool Database::TouchSession(const std::string& token_hex, int64_t now)
 {
-    const char* sql =
-        "UPDATE sessions SET last_heartbeat=? WHERE token_hex=?;";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_int64(st, 1, now);
-    sqlite3_bind_text (st, 2, token_hex.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_step(st);
-    sqlite3_finalize(st);
+    auto* res = PgExec(PG(m_db),
+        "UPDATE sessions SET last_heartbeat=$1 WHERE token_hex=$2",
+        { std::to_string(now), token_hex });
+    if (!res) return false;
+    PQclear(res);
     return true;
 }
 
 bool Database::DeleteSession(const std::string& token_hex)
 {
-    const char* sql = "DELETE FROM sessions WHERE token_hex=?;";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_text(st, 1, token_hex.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_step(st);
-    sqlite3_finalize(st);
+    auto* res = PgExec(PG(m_db),
+        "DELETE FROM sessions WHERE token_hex=$1",
+        { token_hex });
+    if (!res) return false;
+    PQclear(res);
     return true;
 }
 
 std::optional<SessionRow> Database::GetSession(const std::string& token_hex) const
 {
-    const char* sql =
+    auto* res = PgExec(PG(m_db),
         "SELECT token_hex,hwid_hash,created_at,last_heartbeat"
-        " FROM sessions WHERE token_hex=?;";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK)
-        return std::nullopt;
-    sqlite3_bind_text(st, 1, token_hex.c_str(), -1, SQLITE_TRANSIENT);
+        " FROM sessions WHERE token_hex=$1",
+        { token_hex });
+    if (!res) return std::nullopt;
+
     std::optional<SessionRow> result;
-    if (sqlite3_step(st) == SQLITE_ROW)
+    if (PQntuples(res) == 1)
     {
         SessionRow r;
-        r.token_hex      = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
-        r.hwid_hash      = reinterpret_cast<const char*>(sqlite3_column_text(st, 1));
-        r.created_at     = sqlite3_column_int64(st, 2);
-        r.last_heartbeat = sqlite3_column_int64(st, 3);
+        r.token_hex      = PQgetvalue(res, 0, 0);
+        r.hwid_hash      = PQgetvalue(res, 0, 1);
+        r.created_at     = std::stoll(PQgetvalue(res, 0, 2));
+        r.last_heartbeat = std::stoll(PQgetvalue(res, 0, 3));
         result = r;
     }
-    sqlite3_finalize(st);
+    PQclear(res);
     return result;
 }
 
 int Database::PruneSessions(int64_t now, int64_t max_age_sec)
 {
-    const char* sql = "DELETE FROM sessions WHERE last_heartbeat < ?;";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return 0;
-    sqlite3_bind_int64(st, 1, now - max_age_sec);
-    sqlite3_step(st);
-    int n = sqlite3_changes(DB(m_db));
-    sqlite3_finalize(st);
+    auto* res = PgExec(PG(m_db),
+        "DELETE FROM sessions WHERE last_heartbeat < $1",
+        { std::to_string(now - max_age_sec) });
+    if (!res) return 0;
+    int n = std::atoi(PQcmdTuples(res));
+    PQclear(res);
     return n;
 }
 
@@ -413,42 +384,41 @@ int Database::PruneSessions(int64_t now, int64_t max_age_sec)
 // ---------------------------------------------------------------------------
 bool Database::InsertPurchase(const PurchaseRow& row)
 {
-    const char* sql =
+    auto* res = PgExec(PG(m_db),
         "INSERT INTO purchases(hwid_hash,license_key,amount_cents,purchased_at,note)"
-        " VALUES(?,?,?,?,?);";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_text (st, 1, row.hwid_hash.c_str(),   -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text (st, 2, row.license_key.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int  (st, 3, row.amount_cents);
-    sqlite3_bind_int64(st, 4, row.purchased_at);
-    sqlite3_bind_text (st, 5, row.note.c_str(),        -1, SQLITE_TRANSIENT);
-    bool ok = sqlite3_step(st) == SQLITE_DONE;
-    sqlite3_finalize(st);
-    return ok;
+        " VALUES($1,$2,$3,$4,$5)",
+        { row.hwid_hash, row.license_key,
+          std::to_string(row.amount_cents),
+          std::to_string(row.purchased_at),
+          row.note });
+    if (!res) return false;
+    PQclear(res);
+    return true;
 }
 
 std::vector<PurchaseRow> Database::GetPurchases(const std::string& hwid_hash) const
 {
-    const char* sql =
+    auto* res = PgExec(PG(m_db),
         "SELECT id,hwid_hash,license_key,amount_cents,purchased_at,note"
-        " FROM purchases WHERE hwid_hash=? ORDER BY purchased_at DESC;";
-    sqlite3_stmt* st = nullptr;
+        " FROM purchases WHERE hwid_hash=$1 ORDER BY purchased_at DESC",
+        { hwid_hash });
     std::vector<PurchaseRow> rows;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return rows;
-    sqlite3_bind_text(st, 1, hwid_hash.c_str(), -1, SQLITE_TRANSIENT);
-    while (sqlite3_step(st) == SQLITE_ROW)
+    if (!res) return rows;
+
+    int n = PQntuples(res);
+    rows.reserve(n);
+    for (int i = 0; i < n; ++i)
     {
         PurchaseRow r;
-        r.id           = sqlite3_column_int64(st, 0);
-        r.hwid_hash    = reinterpret_cast<const char*>(sqlite3_column_text(st, 1));
-        r.license_key  = reinterpret_cast<const char*>(sqlite3_column_text(st, 2));
-        r.amount_cents = sqlite3_column_int(st, 3);
-        r.purchased_at = sqlite3_column_int64(st, 4);
-        r.note         = reinterpret_cast<const char*>(sqlite3_column_text(st, 5));
+        r.id           = std::stoll(PQgetvalue(res, i, 0));
+        r.hwid_hash    = PQgetvalue(res, i, 1);
+        r.license_key  = PQgetvalue(res, i, 2);
+        r.amount_cents = std::stoi(PQgetvalue(res, i, 3));
+        r.purchased_at = std::stoll(PQgetvalue(res, i, 4));
+        r.note         = PQgetvalue(res, i, 5);
         rows.push_back(r);
     }
-    sqlite3_finalize(st);
+    PQclear(res);
     return rows;
 }
 
@@ -457,50 +427,43 @@ std::vector<PurchaseRow> Database::GetPurchases(const std::string& hwid_hash) co
 // ---------------------------------------------------------------------------
 bool Database::AddTrustedHash(const std::string& hash, const std::string& note)
 {
-    const char* sql =
-        "INSERT OR IGNORE INTO trusted_hashes(hash,note,added_at) VALUES(?,?,?);";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_text (st, 1, hash.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text (st, 2, note.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st, 3, (int64_t)time(nullptr));
-    bool ok = sqlite3_step(st) == SQLITE_DONE;
-    sqlite3_finalize(st);
-    return ok;
+    auto* res = PgExec(PG(m_db),
+        "INSERT INTO trusted_hashes(hash,note,added_at)"
+        " VALUES($1,$2,$3)"
+        " ON CONFLICT(hash) DO NOTHING",
+        { hash, note, std::to_string((int64_t)time(nullptr)) });
+    if (!res) return false;
+    PQclear(res);
+    return true;
 }
 
 bool Database::RemoveTrustedHash(const std::string& hash)
 {
-    const char* sql = "DELETE FROM trusted_hashes WHERE hash=?;";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_text(st, 1, hash.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_step(st);
-    sqlite3_finalize(st);
+    auto* res = PgExec(PG(m_db),
+        "DELETE FROM trusted_hashes WHERE hash=$1",
+        { hash });
+    if (!res) return false;
+    PQclear(res);
     return true;
 }
 
 bool Database::IsHashTrusted(const std::string& hash) const
 {
-    const char* sql =
-        "SELECT 1 FROM trusted_hashes WHERE hash=? LIMIT 1;";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_text(st, 1, hash.c_str(), -1, SQLITE_TRANSIENT);
-    bool found = sqlite3_step(st) == SQLITE_ROW;
-    sqlite3_finalize(st);
+    auto* res = PgExec(PG(m_db),
+        "SELECT 1 FROM trusted_hashes WHERE hash=$1 LIMIT 1",
+        { hash });
+    if (!res) return false;
+    bool found = PQntuples(res) > 0;
+    PQclear(res);
     return found;
 }
 
 bool Database::TrustedHashesEnabled() const
 {
-    const char* sql = "SELECT COUNT(*) FROM trusted_hashes;";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    bool enabled = false;
-    if (sqlite3_step(st) == SQLITE_ROW)
-        enabled = sqlite3_column_int(st, 0) > 0;
-    sqlite3_finalize(st);
+    auto* res = PgExec(PG(m_db), "SELECT COUNT(*) FROM trusted_hashes");
+    if (!res) return false;
+    bool enabled = std::atoi(PQgetvalue(res, 0, 0)) > 0;
+    PQclear(res);
     return enabled;
 }
 
@@ -512,16 +475,15 @@ bool Database::IsAuthorised(const std::string& hwid_hash,
                              int64_t            now) const
 {
     auto user = GetUser(hwid_hash);
-    if (!user)              return false; // never connected
-    if (user->is_banned)    return false;
+    if (!user)                     return false;
+    if (user->is_banned)           return false;
     if (user->license_key.empty()) return false;
 
     auto lic = GetLicense(user->license_key);
     if (!lic)                           return false;
-    if (lic->hwid_hash != hwid_hash)    return false; // key bound to different PC
-    if (lic->expires_at != 0 && lic->expires_at < now) return false; // expired
+    if (lic->hwid_hash != hwid_hash)    return false;
+    if (lic->expires_at != 0 && lic->expires_at < now) return false;
 
-    // Loader integrity — only enforced when trusted_hashes table is populated
     if (TrustedHashesEnabled() && !loader_hash.empty())
         if (!IsHashTrusted(loader_hash)) return false;
 

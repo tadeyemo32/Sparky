@@ -77,9 +77,10 @@ struct PurchaseRow
 class Database
 {
 public:
-    // key: SQLCipher PRAGMA key string in the form "x'<64 hex chars>'"
-    //      Pass empty string when building without SPARKY_SQLCIPHER.
-    bool Open(const char* path, const std::string& key = "");
+    // connstr: libpq connection string, e.g.
+    //   "host=localhost port=5432 dbname=sparky user=sparky password=s3cr3t sslmode=require"
+    // Load via KeyVault::LoadConnStr() at startup.
+    bool Open(const std::string& connstr);
     void Close();
     bool IsOpen() const { return m_db != nullptr; }
 
@@ -127,8 +128,7 @@ public:
                       int64_t            now) const;
 
 private:
-    void* m_db = nullptr; // sqlite3*
-    bool ExecSQL(const char* sql) const;
+    void* m_db = nullptr; // PGconn*
     bool CreateSchema();
 };
 

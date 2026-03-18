@@ -33,6 +33,10 @@ static constexpr uint16_t LISTEN_PORT   = 7777;
 static constexpr uint32_t CURRENT_BUILD = 0x0001'0000;
 static constexpr uint32_t CHUNK_SIZE    = 4096;
 
+// PostgreSQL connection string loaded from KeyVault::LoadConnStr() at startup.
+// Set SPARKY_PG_CONNSTR or place sparky.connstr next to the binary.
+// Example: host=localhost port=5432 dbname=sparky user=sparky password=s3cr3t sslmode=require
+
 // How many DLL chunks to send between mandatory client heartbeats.
 // At 4 KB/chunk, 8 chunks = 32 KB per heartbeat interval.
 // If the client goes silent for HEARTBEAT_DEADLINE_MS after its batch,
@@ -41,7 +45,6 @@ static constexpr uint32_t CHUNK_SIZE    = 4096;
 static constexpr uint32_t CHUNKS_PER_HEARTBEAT = 8;
 
 static constexpr const char* DLL_FILE    = "SparkyCore.dll";
-static constexpr const char* DB_FILE     = "sparky.db";
 static constexpr const char* CONFIG_FILE = "config.bin";
 static constexpr bool ENABLE_ADMIN_CONSOLE = true;
 
@@ -597,34 +600,29 @@ static void MaintenanceThread()
 // ---------------------------------------------------------------------------
 int main(int argc, char** argv)
 {
-    // --gen-key: print a fresh 32-byte hex key and exit
-    if (argc >= 2 && std::string(argv[1]) == "--gen-key")
+    // --gen-token: print a fresh 32-byte random hex token and exit
+    if (argc >= 2 && std::string(argv[1]) == "--gen-token")
     {
-        KeyVault::GenerateKey();
+        KeyVault::GenerateToken();
         return 0;
     }
 
-    std::cout << "[SparkyServer] v2.2\n";
+    std::cout << "[SparkyServer] v3.0 (PostgreSQL)\n";
 
-    // Load DB encryption key (SQLCipher build requires this)
-    std::string dbKey;
-#ifdef SPARKY_SQLCIPHER
-    try { dbKey = KeyVault::LoadDbKey(); }
+    // Load PostgreSQL connection string
+    std::string connstr;
+    try { connstr = KeyVault::LoadConnStr(); }
     catch (const std::exception& e)
     {
         std::cerr << "[S] FATAL: " << e.what() << "\n";
         return 1;
     }
-    std::cout << "[S] DB encryption: AES-256 (SQLCipher)\n";
-#else
-    std::cout << "[S] DB encryption: NONE (dev build — do not deploy)\n";
-#endif
 
     {
         std::lock_guard lk(g_dbMu);
-        if (!g_db.Open(DB_FILE, dbKey))
-        { std::cerr << "[S] FATAL: cannot open " << DB_FILE << "\n"; return 1; }
-        std::cout << "[S] Database: " << DB_FILE << "\n";
+        if (!g_db.Open(connstr))
+        { std::cerr << "[S] FATAL: cannot connect to PostgreSQL\n"; return 1; }
+        std::cout << "[S] PostgreSQL: connected\n";
         if (g_db.TrustedHashesEnabled())
             std::cout << "[S] Loader integrity check: ENABLED\n";
         else

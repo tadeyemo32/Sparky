@@ -1,31 +1,29 @@
 #pragma once
 // ---------------------------------------------------------------------------
-// KeyVault — secure master-key loading for SQLCipher database.
+// KeyVault — PostgreSQL connection string loader.
 //
 // Resolution order (first that succeeds wins):
-//   1. Environment variable  SPARKY_DB_KEY   (64 hex chars = 32 bytes)
-//   2. File path in env var  SPARKY_DB_KEYFILE  (file contains hex key)
-//   3. File "sparky.key" next to CWD
+//   1. Environment variable  SPARKY_PG_CONNSTR   (full libpq connection string)
+//   2. File path in env var  SPARKY_PG_CONNFILE   (file contains the string)
+//   3. File "sparky.connstr" next to CWD
 //
-// Key format:  64 lowercase hex characters, no spaces/newlines.
-// Example:     SPARKY_DB_KEY=a3f1c8...   (openssl rand -hex 32)
+// Connection string format (libpq keyword=value):
+//   host=localhost port=5432 dbname=sparky user=sparky password=s3cr3t sslmode=require
 //
-// The returned string is formatted as SQLCipher expects:
-//   "x'<64 hex chars>'"
-// which is passed to:  PRAGMA key = "x'...'"
+// Or URI form:
+//   postgresql://sparky:s3cr3t@localhost:5432/sparky?sslmode=require
 //
 // Security notes:
-//   - Never hard-code the key in source.
-//   - The key file must be chmod 400, owned by the server user.
-//   - On AWS: store the key in Systems Manager Parameter Store (SecureString)
-//     and pull it at startup; never write it to disk except in the key file.
-//   - Rotate keys with:  PRAGMA rekey = "x'<new key>'"
+//   - Never hard-code credentials in source.
+//   - The connstr file must be chmod 400, owned by the server user.
+//   - Use sslmode=require (or verify-full) in production.
+//   - On cloud: store in AWS SSM Parameter Store / GCP Secret Manager and
+//     inject at startup via the environment variable.
 // ---------------------------------------------------------------------------
 #include <string>
 #include <cstdlib>
 #include <cstdint>
 #include <fstream>
-#include <cctype>
 #include <stdexcept>
 #include <iostream>
 
@@ -38,60 +36,49 @@
 class KeyVault
 {
 public:
-    // Returns the SQLCipher PRAGMA key string  "x'<hex>'"
-    // Throws std::runtime_error if no key can be found.
-    static std::string LoadDbKey()
+    // Returns the libpq connection string.
+    // Throws std::runtime_error if no connection string can be found.
+    static std::string LoadConnStr()
     {
-        std::string hex;
+        std::string connstr;
 
-        // 1. Env var
-        if (const char* env = std::getenv("SPARKY_DB_KEY"))
+        // 1. Env var — full connection string
+        if (const char* env = std::getenv("SPARKY_PG_CONNSTR"))
         {
-            hex = env;
+            connstr = env;
         }
-        // 2. Path in env var
-        else if (const char* kf = std::getenv("SPARKY_DB_KEYFILE"))
+        // 2. Env var — path to file containing the connection string
+        else if (const char* kf = std::getenv("SPARKY_PG_CONNFILE"))
         {
-            hex = ReadFile(kf);
+            connstr = ReadFile(kf);
         }
-        // 3. Default key file
+        // 3. Default file next to binary
         else
         {
-            try { hex = ReadFile("sparky.key"); }
+            try { connstr = ReadFile("sparky.connstr"); }
             catch (...) {}
         }
 
-        if (hex.empty())
+        if (connstr.empty())
             throw std::runtime_error(
-                "No database key found.\n"
-                "  Set SPARKY_DB_KEY=<64 hex chars>\n"
-                "  or SPARKY_DB_KEYFILE=<path to key file>\n"
-                "  or place sparky.key (chmod 400) next to the binary.\n"
-                "  Generate a key:  openssl rand -hex 32");
+                "No PostgreSQL connection string found.\n"
+                "  Set SPARKY_PG_CONNSTR='host=... port=5432 dbname=sparky user=sparky password=...'\n"
+                "  or SPARKY_PG_CONNFILE=<path to connstr file>\n"
+                "  or place sparky.connstr (chmod 400) next to the binary.\n"
+                "  TIP: use sslmode=require in production.");
 
-        // Strip whitespace
-        std::string clean;
-        clean.reserve(64);
-        for (char c : hex)
-            if (!std::isspace((unsigned char)c)) clean += c;
+        // Strip trailing whitespace / newlines
+        while (!connstr.empty()
+               && (connstr.back() == '\n' || connstr.back() == '\r'
+                   || connstr.back() == ' '))
+            connstr.pop_back();
 
-        if (clean.size() != 64)
-            throw std::runtime_error(
-                "Database key must be exactly 64 hex characters (32 bytes)");
-
-        for (char c : clean)
-            if (!std::isxdigit((unsigned char)c))
-                throw std::runtime_error("Database key contains non-hex characters");
-
-        // Lower-case for consistency
-        for (char& c : clean) c = (char)std::tolower((unsigned char)c);
-
-        return "x'" + clean + "'";
+        return connstr;
     }
 
-    // Generate and print a new random key to stdout.
-    // Usage:  SparkyServer --gen-key
-    static void GenerateKey()
+    // Generate and print a new 32-byte random hex token to stdout.
+    // Useful for generating application secrets (not DB passwords).
+    static void GenerateToken()
     {
         uint8_t raw[32]{};
 
@@ -111,10 +98,10 @@ public:
 #endif
 
         static const char h[] = "0123456789abcdef";
-        std::string key;
-        key.reserve(64);
-        for (uint8_t b : raw) { key += h[b>>4]; key += h[b&0xF]; }
-        std::cout << key << "\n";
+        std::string token;
+        token.reserve(64);
+        for (uint8_t b : raw) { token += h[b >> 4]; token += h[b & 0xF]; }
+        std::cout << token << "\n";
     }
 
 private:
@@ -122,7 +109,7 @@ private:
     {
         std::ifstream f(path);
         if (!f.is_open())
-            throw std::runtime_error(std::string("Cannot read key file: ") + path);
+            throw std::runtime_error(std::string("Cannot read file: ") + path);
         std::string s;
         std::getline(f, s);
         return s;
