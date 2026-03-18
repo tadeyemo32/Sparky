@@ -58,6 +58,14 @@ static RateLimiter g_rl(10, 30, 60);
 
 static std::vector<uint8_t> g_dllBytes;
 static std::atomic<int>     g_activeSessions{0};
+static std::atomic<bool>    g_running{true};
+
+static BOOL WINAPI CtrlHandler(DWORD)
+{
+    std::cout << "[S] Shutdown signal received — stopping accept loop...\n";
+    g_running = false;
+    return TRUE;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -237,8 +245,14 @@ static void HandleClient(SOCKET csock)
     {
         closesocket(csock); return;
     }
+    // HelloPayload is fixed-size: reject anything shorter or suspiciously large
+    // before allocating or reading further bytes from an untrusted source.
+    if (h.Length < sizeof(HelloPayload) || h.Length > sizeof(HelloPayload) + 256)
+    {
+        closesocket(csock); return;
+    }
     std::vector<uint8_t> pay(h.Length);
-    if (h.Length && !RawRecv(s.sock, pay.data(), h.Length)) { closesocket(csock); return; }
+    if (!RawRecv(s.sock, pay.data(), h.Length)) { closesocket(csock); return; }
     uint32_t crc{}; if (!RawRecv(s.sock, &crc, 4)) { closesocket(csock); return; }
 
     // Verify Hello CRC (same formula used by SendMsg/RecvMsg)
@@ -602,6 +616,8 @@ int main(int argc, char** argv)
     else
         std::cout << std::format("[S] DLL loaded ({} bytes)\n", g_dllBytes.size());
 
+    SetConsoleCtrlHandler(CtrlHandler, TRUE);
+
     std::thread(MaintenanceThread).detach();
     if (ENABLE_ADMIN_CONSOLE)
         std::thread(AdminConsole).detach();
@@ -617,8 +633,17 @@ int main(int argc, char** argv)
     { std::cerr << "[S] Failed to bind :" << LISTEN_PORT << "\n"; return 1; }
     std::cout << std::format("[S] Listening on :{}\n", LISTEN_PORT);
 
-    while (true)
+    while (g_running.load())
     {
+        // Poll accept() every 1 second so Ctrl+C / CtrlHandler can break the loop
+        // without leaving the listening socket blocked indefinitely.
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(ls, &readfds);
+        timeval tv{1, 0};
+        if (select(0, &readfds, nullptr, nullptr, &tv) <= 0)
+            continue;
+
         sockaddr_in ca{}; int cl = sizeof(ca);
         SOCKET cs = accept(ls, (sockaddr*)&ca, &cl);
         if (cs == INVALID_SOCKET) continue;
@@ -637,8 +662,13 @@ int main(int argc, char** argv)
         std::thread(HandleClient, cs).detach();
     }
 
-    g_db.Close();
+    std::cout << "[S] Shutting down...\n";
     closesocket(ls);
+    {
+        std::lock_guard lk(g_dbMu);
+        g_db.Close();
+    }
     WSACleanup();
+    std::cout << "[S] Clean shutdown complete.\n";
     return 0;
 }

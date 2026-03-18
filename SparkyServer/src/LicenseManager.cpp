@@ -125,16 +125,17 @@ std::string LicenseManager::ActivateLicense(const std::string& key,
 
 bool LicenseManager::RevokeLicense(const std::string& key)
 {
-    // Setting expires_at = 1 (epoch) effectively expires it
-    const char* sql = "UPDATE licenses SET expires_at=1 WHERE key=?;";
-    // Direct DB call would require expose; simplest: use DB's GetLicense + re-insert
     auto lic = m_db.GetLicense(key);
     if (!lic) return false;
-    lic->expires_at = 1;
-    // Re-use InsertLicense won't work (PK conflict). Need raw update.
-    // Expose via Database::ExecSQL is private, so we use a dedicated helper
-    // that's cleanest: just ban the bound HWID if any.
+
+    // Write expires_at=1 to the DB so the license is permanently expired.
+    // This must happen before banning the user; otherwise an unban would
+    // restore access since the license row was never updated before.
+    if (!m_db.RevokeExpiry(key)) return false;
+
+    // Also ban the bound HWID so active sessions are refused on next heartbeat.
     if (!lic->hwid_hash.empty())
         m_db.BanUser(lic->hwid_hash, "license revoked");
+
     return true;
 }

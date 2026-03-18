@@ -23,10 +23,17 @@
 // ---------------------------------------------------------------------------
 #include <string>
 #include <cstdlib>
+#include <cstdint>
 #include <fstream>
 #include <cctype>
 #include <stdexcept>
 #include <iostream>
+
+#ifdef _WIN32
+#include <Windows.h>
+#include <wincrypt.h>
+#pragma comment(lib, "advapi32.lib")
+#endif
 
 class KeyVault
 {
@@ -86,32 +93,28 @@ public:
     // Usage:  SparkyServer --gen-key
     static void GenerateKey()
     {
-#ifdef _WIN32
-        // Windows: use CryptGenRandom
-        #include <Windows.h>
-        #include <wincrypt.h>
         uint8_t raw[32]{};
+
+#ifdef _WIN32
         HCRYPTPROV hp{};
-        if (CryptAcquireContextW(&hp, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+        if (!CryptAcquireContextW(&hp, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)
+            || !CryptGenRandom(hp, 32, raw))
         {
-            CryptGenRandom(hp, 32, raw);
-            CryptReleaseContext(hp, 0);
+            std::cerr << "CryptGenRandom failed\n"; return;
         }
-        static const char h[] = "0123456789abcdef";
-        std::string key;
-        for (uint8_t b : raw) { key += h[b>>4]; key += h[b&0xF]; }
-        std::cout << key << "\n";
+        CryptReleaseContext(hp, 0);
 #else
-        // Linux: read /dev/urandom
         std::ifstream f("/dev/urandom", std::ios::binary);
         if (!f.is_open()) { std::cerr << "Cannot open /dev/urandom\n"; return; }
-        uint8_t raw[32]{};
         f.read(reinterpret_cast<char*>(raw), 32);
+        if (!f) { std::cerr << "/dev/urandom read failed\n"; return; }
+#endif
+
         static const char h[] = "0123456789abcdef";
         std::string key;
+        key.reserve(64);
         for (uint8_t b : raw) { key += h[b>>4]; key += h[b&0xF]; }
         std::cout << key << "\n";
-#endif
     }
 
 private:

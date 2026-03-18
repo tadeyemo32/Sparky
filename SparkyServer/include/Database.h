@@ -87,6 +87,7 @@ public:
     bool InsertLicense(const LicenseRow& row);
     std::optional<LicenseRow> GetLicense(const std::string& key) const;
     bool BindLicense(const std::string& key, const std::string& hwid_hash);
+    bool RevokeExpiry(const std::string& key); // sets expires_at=1 (epoch) to expire immediately
     std::vector<LicenseRow> ListLicenses() const;
 
     // ---------- User management ----------

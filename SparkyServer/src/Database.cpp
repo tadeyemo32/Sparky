@@ -181,6 +181,18 @@ bool Database::BindLicense(const std::string& key, const std::string& hwid_hash)
     return changed;
 }
 
+bool Database::RevokeExpiry(const std::string& key)
+{
+    const char* sql = "UPDATE licenses SET expires_at=1 WHERE key=?;";
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_text(st, 1, key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_step(st);
+    bool changed = sqlite3_changes(DB(m_db)) > 0;
+    sqlite3_finalize(st);
+    return changed;
+}
+
 std::vector<LicenseRow> Database::ListLicenses() const
 {
     const char* sql =
