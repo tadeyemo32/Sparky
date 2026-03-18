@@ -1,80 +1,116 @@
 #!/usr/bin/env python3
 """
-sparky_admin.py — Python-side admin tool for SparkyServer.
+admin.py — SparkyServer admin tool (PostgreSQL backend).
 
-Uses the same SQLite/SQLCipher database file that the C++ server writes to.
-Can run while the server is live (WAL mode makes concurrent reads safe).
+Connects to the same PostgreSQL database the C++ server uses.
+Connection string is loaded from the same sources as KeyVault.h:
+  1. SPARKY_PG_CONNSTR  env var  (full libpq connection string)
+  2. SPARKY_PG_CONNFILE  env var  (path to a file containing the string)
+  3. sparky.connstr              (file next to CWD)
 
-SQLCipher support:
-  pip install sqlcipher3          # needs libsqlcipher-dev on Linux
-  Set SPARKY_DB_KEY=<64 hex chars> before running (same key as C++ server)
+Install dependency:
+  pip install psycopg2-binary
 
 Usage:
-    python admin.py <db_path> <command> [args...]
+    python admin.py <command> [args...]
 
 Examples:
-    python admin.py sparky.db status
-    python admin.py sparky.db gen-key             # generate a fresh 32-byte key
-    python admin.py sparky.db issue weekly
-    python admin.py sparky.db issue daily --days 1
-    python admin.py sparky.db issue lifetime
-    python admin.py sparky.db ban  <hwid_hex> "caught cheating"
-    python admin.py sparky.db unban <hwid_hex>
-    python admin.py sparky.db activate <KEY> <hwid_hex>
-    python admin.py sparky.db list-licenses
-    python admin.py sparky.db list-users
-    python admin.py sparky.db purchases <hwid_hex>
-    python admin.py sparky.db add-hash <sha256_hex> [note]
-    python admin.py sparky.db rm-hash <sha256_hex>
-    python admin.py sparky.db list-hashes
-    python admin.py sparky.db prune
-    python admin.py sparky.db watch            # live-tail new connections
+    python admin.py status
+    python admin.py gen-token                     # generate a random 32-byte hex token
+    python admin.py issue weekly
+    python admin.py issue daily --days 1
+    python admin.py issue lifetime --note "VIP"
+    python admin.py activate <KEY> <hwid_hex>
+    python admin.py ban  <hwid_hex> "caught cheating"
+    python admin.py unban <hwid_hex>
+    python admin.py list-licenses
+    python admin.py list-users
+    python admin.py purchases <hwid_hex>
+    python admin.py add-hash <sha256_hex> [note]
+    python admin.py rm-hash <sha256_hex>
+    python admin.py list-hashes
+    python admin.py prune
+    python admin.py watch                         # live-tail new connections
 """
 
 import sys
 import os
 import time
 import random
-import sqlite3
 import argparse
 from datetime import datetime, timezone
 
-# ---------------------------------------------------------------------------
-# SQLCipher: try pysqlcipher3 first; fall back to plain sqlite3 with warning.
-# ---------------------------------------------------------------------------
-_SQLCIPHER = False
 try:
-    from sqlcipher3 import dbapi2 as _sql_module
-    _SQLCIPHER = True
+    import psycopg2
+    import psycopg2.extras
+    import psycopg2.errors
 except ImportError:
-    _sql_module = sqlite3
+    print("ERROR: psycopg2 not installed.  Run:  pip install psycopg2-binary",
+          file=sys.stderr)
+    sys.exit(1)
 
-DB_PATH = "sparky.db"
+
+# ---------------------------------------------------------------------------
+# Connection string loading — mirrors KeyVault.h resolution order
+# ---------------------------------------------------------------------------
+def _load_connstr() -> str:
+    connstr = None
+
+    if v := os.environ.get("SPARKY_PG_CONNSTR"):
+        connstr = v.strip()
+    elif kf := os.environ.get("SPARKY_PG_CONNFILE"):
+        with open(kf) as f:
+            connstr = f.readline().strip()
+    elif os.path.exists("sparky.connstr"):
+        with open("sparky.connstr") as f:
+            connstr = f.readline().strip()
+
+    if not connstr:
+        raise RuntimeError(
+            "No PostgreSQL connection string found.\n"
+            "  Set SPARKY_PG_CONNSTR='host=localhost port=5432 dbname=sparky "
+            "user=sparky password=...'\n"
+            "  or SPARKY_PG_CONNFILE=<path>\n"
+            "  or place sparky.connstr next to admin.py"
+        )
+    return connstr
+
+
+def connect() -> psycopg2.extensions.connection:
+    connstr = _load_connstr()
+    con = psycopg2.connect(connstr)
+    return con
+
+
+def cursor(con) -> psycopg2.extras.RealDictCursor:
+    """Return a dict cursor so rows are accessible by column name."""
+    return con.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
 
 # ---------------------------------------------------------------------------
 # Key generation (mirrors C++ LicenseManager)
 # ---------------------------------------------------------------------------
 KEY_CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no O/I/0/1
 
+
 def generate_key() -> str:
     """Generate a XXXX-XXXX-XXXX-XXXX license key (80-bit entropy)."""
-    raw = random.randbytes(10)
-    # Pack 80 bits into a single integer
+    raw   = os.urandom(10)
     value = int.from_bytes(raw, "big")
     chars = []
     for _ in range(16):
         chars.append(KEY_CHARSET[value & 0x1F])
         value >>= 5
     chars.reverse()
-    return "-".join("".join(chars[i:i+4]) for i in range(0, 16, 4))
+    return "-".join("".join(chars[i:i + 4]) for i in range(0, 16, 4))
 
 
 # ---------------------------------------------------------------------------
 # Tier helpers
 # ---------------------------------------------------------------------------
-TIER_NAMES    = {1: "Daily", 2: "Weekly", 3: "Monthly", 4: "Lifetime"}
-TIER_DAYS     = {1: 1,       2: 7,        3: 30,        4: 0}
-TIER_BY_NAME  = {v.lower(): k for k, v in TIER_NAMES.items()}
+TIER_NAMES   = {1: "Daily", 2: "Weekly", 3: "Monthly", 4: "Lifetime"}
+TIER_DAYS    = {1: 1,       2: 7,        3: 30,         4: 0}
+TIER_BY_NAME = {v.lower(): k for k, v in TIER_NAMES.items()}
 
 
 def tier_id(name_or_int: str) -> int:
@@ -83,95 +119,20 @@ def tier_id(name_or_int: str) -> int:
     except ValueError:
         t = TIER_BY_NAME.get(name_or_int.lower())
         if t is None:
-            raise ValueError(f"Unknown tier '{name_or_int}'. Use: daily weekly monthly lifetime")
+            raise ValueError(
+                f"Unknown tier '{name_or_int}'. Use: daily weekly monthly lifetime")
         return t
 
 
 def expires_at(tier: int, days_override: int = 0, now: int = 0) -> int:
-    now = now or int(time.time())
+    now  = now or int(time.time())
     days = days_override or TIER_DAYS[tier]
-    if days == 0:
-        return 0  # perpetual
-    return now + days * 86400
+    return 0 if days == 0 else now + days * 86400
 
 
 # ---------------------------------------------------------------------------
-# Key loading (mirrors KeyVault.h resolution order)
+# Formatting helpers
 # ---------------------------------------------------------------------------
-def _load_key() -> str | None:
-    """Return SQLCipher key string  "x'<64hex>'"  or None if not configured."""
-    hex_key = None
-    if k := os.environ.get("SPARKY_DB_KEY"):
-        hex_key = k.strip()
-    elif kf := os.environ.get("SPARKY_DB_KEYFILE"):
-        with open(kf) as f:
-            hex_key = f.readline().strip()
-    elif os.path.exists("sparky.key"):
-        with open("sparky.key") as f:
-            hex_key = f.readline().strip()
-
-    if hex_key is None:
-        return None
-    if len(hex_key) != 64 or not all(c in "0123456789abcdefABCDEF" for c in hex_key):
-        raise ValueError("SPARKY_DB_KEY must be exactly 64 hex characters")
-    return f"x'{hex_key.lower()}'"
-
-
-# ---------------------------------------------------------------------------
-# DB helpers
-# ---------------------------------------------------------------------------
-def connect(db_path: str) -> _sql_module.Connection:
-    con = _sql_module.connect(db_path, timeout=10.0)
-
-    if _SQLCIPHER:
-        key = _load_key()
-        if key is None:
-            print("WARNING: SQLCipher available but no key set (SPARKY_DB_KEY)."
-                  " Trying to open as plaintext — this will fail if DB is encrypted.",
-                  file=sys.stderr)
-        else:
-            con.execute(f'PRAGMA key = "{key}"')
-            con.execute("PRAGMA cipher_page_size = 65536")
-            con.execute("PRAGMA kdf_iter = 256000")
-            con.execute("PRAGMA cipher_hmac_algorithm = HMAC_SHA512")
-            con.execute("PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA512")
-    else:
-        if os.environ.get("SPARKY_DB_KEY"):
-            print("WARNING: SPARKY_DB_KEY is set but sqlcipher3 is not installed."
-                  " Run:  pip install sqlcipher3", file=sys.stderr)
-
-    con.execute("PRAGMA journal_mode=WAL")
-    con.execute("PRAGMA foreign_keys=ON")
-    con.row_factory = _sql_module.Row
-    return con
-
-
-def ensure_schema(con: sqlite3.Connection):
-    con.executescript("""
-        CREATE TABLE IF NOT EXISTS licenses (
-            key TEXT PRIMARY KEY, tier INTEGER NOT NULL DEFAULT 1,
-            issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL DEFAULT 0,
-            hwid_hash TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '');
-        CREATE TABLE IF NOT EXISTS users (
-            hwid_hash TEXT PRIMARY KEY, license_key TEXT NOT NULL DEFAULT '',
-            created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL,
-            is_banned INTEGER NOT NULL DEFAULT 0,
-            ban_reason TEXT NOT NULL DEFAULT '',
-            loader_hash TEXT NOT NULL DEFAULT '');
-        CREATE TABLE IF NOT EXISTS sessions (
-            token_hex TEXT PRIMARY KEY, hwid_hash TEXT NOT NULL,
-            created_at INTEGER NOT NULL, last_heartbeat INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS purchases (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, hwid_hash TEXT NOT NULL,
-            license_key TEXT NOT NULL, amount_cents INTEGER NOT NULL DEFAULT 0,
-            purchased_at INTEGER NOT NULL, note TEXT NOT NULL DEFAULT '');
-        CREATE TABLE IF NOT EXISTS trusted_hashes (
-            hash TEXT PRIMARY KEY, note TEXT NOT NULL DEFAULT '',
-            added_at INTEGER NOT NULL DEFAULT 0);
-    """)
-    con.commit()
-
-
 def fmt_ts(ts: int) -> str:
     if ts == 0:
         return "never"
@@ -185,29 +146,32 @@ def fmt_hwid(h: str) -> str:
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
-def cmd_gen_key(_con, _args):
-    """Print a cryptographically random 32-byte hex key."""
-    key = os.urandom(32).hex()
-    print(f"\n  {key}\n")
-    print("  Save this as SPARKY_DB_KEY in your environment,")
-    print("  or write it to sparky.key (chmod 400, owned by server user).")
-    print("  Keep it secret — if lost, the database cannot be opened.\n")
+def cmd_gen_token(_con, _args):
+    """Print a cryptographically random 32-byte hex token."""
+    token = os.urandom(32).hex()
+    print(f"\n  {token}\n")
+    print("  Use this as an application secret or API key.")
+    print("  For the DB password, set it in your PostgreSQL connection string.\n")
 
 
 def cmd_status(con, _args):
-    r = con.execute("""
+    cur = cursor(con)
+    cur.execute("""
         SELECT
-            (SELECT COUNT(*) FROM licenses)                        AS total_keys,
-            (SELECT COUNT(*) FROM licenses WHERE hwid_hash != '')  AS bound_keys,
-            (SELECT COUNT(*) FROM users)                           AS total_users,
-            (SELECT COUNT(*) FROM users WHERE is_banned = 1)       AS banned,
-            (SELECT COUNT(*) FROM sessions)                        AS sessions,
-            (SELECT COUNT(*) FROM trusted_hashes)                  AS hashes
-    """).fetchone()
+            (SELECT COUNT(*) FROM licenses)                       AS total_keys,
+            (SELECT COUNT(*) FROM licenses WHERE hwid_hash != '') AS bound_keys,
+            (SELECT COUNT(*) FROM users)                          AS total_users,
+            (SELECT COUNT(*) FROM users WHERE is_banned = 1)      AS banned,
+            (SELECT COUNT(*) FROM sessions)                       AS sessions,
+            (SELECT COUNT(*) FROM trusted_hashes)                 AS hashes
+    """)
+    r = cur.fetchone()
     now = int(time.time())
-    expired = con.execute(
-        "SELECT COUNT(*) FROM licenses WHERE expires_at > 0 AND expires_at < ?", (now,)
-    ).fetchone()[0]
+    cur.execute(
+        "SELECT COUNT(*) AS n FROM licenses WHERE expires_at > 0 AND expires_at < %s",
+        (now,)
+    )
+    expired = cur.fetchone()["n"]
     print(f"""
 Server database status
   Licenses:        {r['total_keys']} total, {r['bound_keys']} bound, {expired} expired
@@ -217,92 +181,97 @@ Server database status
 """)
 
 
-def cmd_issue(con: sqlite3.Connection, args):
-    tier   = tier_id(args.tier)
-    days   = getattr(args, "days", 0) or TIER_DAYS[tier]
-    note   = getattr(args, "note", "") or ""
-    now    = int(time.time())
-    exp    = expires_at(tier, days, now)
+def cmd_issue(con, args):
+    tier  = tier_id(args.tier)
+    days  = getattr(args, "days", 0) or TIER_DAYS[tier]
+    note  = getattr(args, "note", "") or ""
+    now   = int(time.time())
+    exp   = expires_at(tier, days, now)
+    cur   = cursor(con)
 
-    for attempt in range(5):
+    for _ in range(5):
         key = generate_key()
         try:
-            con.execute(
-                "INSERT INTO licenses(key,tier,issued_at,expires_at,note) VALUES(?,?,?,?,?)",
+            cur.execute(
+                "INSERT INTO licenses(key,tier,issued_at,expires_at,note)"
+                " VALUES(%s,%s,%s,%s,%s)",
                 (key, tier, now, exp, note)
             )
             con.commit()
-            exp_str = fmt_ts(exp)
-            print(f"  {TIER_NAMES[tier]} license:  {key}  (expires {exp_str})")
+            print(f"  {TIER_NAMES[tier]} license:  {key}  (expires {fmt_ts(exp)})")
             return
-        except sqlite3.IntegrityError:
-            continue  # key collision — astronomically rare
-    print("ERROR: failed to generate unique key")
+        except psycopg2.errors.UniqueViolation:
+            con.rollback()
+            continue   # key collision — astronomically rare; retry
+
+    print("ERROR: failed to generate unique key after 5 attempts")
     sys.exit(1)
 
 
-def cmd_activate(con: sqlite3.Connection, args):
+def cmd_activate(con, args):
     key  = args.key.upper()
     hwid = args.hwid.lower()
     now  = int(time.time())
+    cur  = cursor(con)
 
-    row = con.execute("SELECT * FROM licenses WHERE key=?", (key,)).fetchone()
+    cur.execute("SELECT * FROM licenses WHERE key=%s", (key,))
+    row = cur.fetchone()
     if row is None:
-        print(f"ERROR: key not found: {key}")
-        sys.exit(1)
+        print(f"ERROR: key not found: {key}"); sys.exit(1)
     if row["hwid_hash"] and row["hwid_hash"] != hwid:
-        print(f"ERROR: key already bound to {fmt_hwid(row['hwid_hash'])}")
-        sys.exit(1)
+        print(f"ERROR: key already bound to {fmt_hwid(row['hwid_hash'])}"); sys.exit(1)
     if row["expires_at"] != 0 and row["expires_at"] < now:
-        print(f"ERROR: key expired {fmt_ts(row['expires_at'])}")
-        sys.exit(1)
+        print(f"ERROR: key expired {fmt_ts(row['expires_at'])}"); sys.exit(1)
 
-    # Bind key to HWID
     if not row["hwid_hash"]:
-        con.execute("UPDATE licenses SET hwid_hash=? WHERE key=?", (hwid, key))
-    # Upsert user
-    con.execute("""
+        cur.execute("UPDATE licenses SET hwid_hash=%s WHERE key=%s", (hwid, key))
+
+    cur.execute("""
         INSERT INTO users(hwid_hash, license_key, created_at, last_seen)
-        VALUES(?,?,?,?)
+        VALUES(%s,%s,%s,%s)
         ON CONFLICT(hwid_hash) DO UPDATE
-        SET license_key=excluded.license_key, last_seen=excluded.last_seen
+        SET license_key=EXCLUDED.license_key, last_seen=EXCLUDED.last_seen
     """, (hwid, key, now, now))
+
     con.commit()
     print(f"  Activated {key} -> {fmt_hwid(hwid)}")
 
 
-def cmd_ban(con: sqlite3.Connection, args):
+def cmd_ban(con, args):
     hwid   = args.hwid.lower()
     reason = " ".join(args.reason) if args.reason else "admin ban"
     now    = int(time.time())
+    cur    = cursor(con)
 
-    # Ensure user row exists (might be a pre-emptive ban before first connection)
-    con.execute("""
-        INSERT OR IGNORE INTO users(hwid_hash, created_at, last_seen)
-        VALUES(?,?,?)
+    # Pre-emptive ban: ensure user row exists before first connection
+    cur.execute("""
+        INSERT INTO users(hwid_hash, created_at, last_seen)
+        VALUES(%s,%s,%s)
+        ON CONFLICT(hwid_hash) DO NOTHING
     """, (hwid, now, now))
-    con.execute(
-        "UPDATE users SET is_banned=1, ban_reason=? WHERE hwid_hash=?",
+    cur.execute(
+        "UPDATE users SET is_banned=1, ban_reason=%s WHERE hwid_hash=%s",
         (reason, hwid)
     )
     con.commit()
     print(f"  Banned {fmt_hwid(hwid)}: {reason}")
 
 
-def cmd_unban(con: sqlite3.Connection, args):
+def cmd_unban(con, args):
     hwid = args.hwid.lower()
-    con.execute(
-        "UPDATE users SET is_banned=0, ban_reason='' WHERE hwid_hash=?", (hwid,)
+    cur  = cursor(con)
+    cur.execute(
+        "UPDATE users SET is_banned=0, ban_reason='' WHERE hwid_hash=%s", (hwid,)
     )
     con.commit()
     print(f"  Unbanned {fmt_hwid(hwid)}")
 
 
-def cmd_list_licenses(con: sqlite3.Connection, _args):
+def cmd_list_licenses(con, _args):
+    cur = cursor(con)
+    cur.execute("SELECT * FROM licenses ORDER BY issued_at DESC")
+    rows = cur.fetchall()
     now  = int(time.time())
-    rows = con.execute(
-        "SELECT * FROM licenses ORDER BY issued_at DESC"
-    ).fetchall()
     print(f"  {'KEY':<22}  {'TIER':<10}  {'EXPIRES':<22}  {'HWID'}")
     print("  " + "-" * 80)
     for r in rows:
@@ -313,81 +282,98 @@ def cmd_list_licenses(con: sqlite3.Connection, _args):
         print(f"  {r['key']:<22}  {tier:<10}  {exp:<22}  {hwid}  {expired}")
 
 
-def cmd_list_users(con: sqlite3.Connection, _args):
-    rows = con.execute(
-        "SELECT * FROM users ORDER BY last_seen DESC"
-    ).fetchall()
+def cmd_list_users(con, _args):
+    cur = cursor(con)
+    cur.execute("SELECT * FROM users ORDER BY last_seen DESC")
+    rows = cur.fetchall()
     print(f"  {'HWID':<20}  {'LICENSE':<12}  {'LAST SEEN':<22}  STATUS")
     print("  " + "-" * 80)
     for r in rows:
         status = f"BANNED({r['ban_reason'][:20]})" if r["is_banned"] else "ok"
         key    = r["license_key"][:8] + "..." if r["license_key"] else "(none)"
-        print(f"  {fmt_hwid(r['hwid_hash']):<20}  {key:<12}  {fmt_ts(r['last_seen']):<22}  {status}")
+        print(f"  {fmt_hwid(r['hwid_hash']):<20}  {key:<12}"
+              f"  {fmt_ts(r['last_seen']):<22}  {status}")
 
 
-def cmd_purchases(con: sqlite3.Connection, args):
+def cmd_purchases(con, args):
     hwid = args.hwid.lower()
-    rows = con.execute(
-        "SELECT * FROM purchases WHERE hwid_hash=? ORDER BY purchased_at DESC", (hwid,)
-    ).fetchall()
+    cur  = cursor(con)
+    cur.execute(
+        "SELECT * FROM purchases WHERE hwid_hash=%s ORDER BY purchased_at DESC",
+        (hwid,)
+    )
+    rows = cur.fetchall()
     if not rows:
-        print(f"  No purchases for {fmt_hwid(hwid)}")
-        return
+        print(f"  No purchases for {fmt_hwid(hwid)}"); return
     for r in rows:
-        print(f"  id={r['id']}  {r['license_key']}  ${r['amount_cents']/100:.2f}"
+        print(f"  id={r['id']}  {r['license_key']}  ${r['amount_cents'] / 100:.2f}"
               f"  {fmt_ts(r['purchased_at'])}  {r['note']}")
 
 
-def cmd_add_hash(con: sqlite3.Connection, args):
+def cmd_add_hash(con, args):
     h    = args.hash.lower()
     note = " ".join(args.note) if args.note else ""
-    con.execute(
-        "INSERT OR IGNORE INTO trusted_hashes(hash,note,added_at) VALUES(?,?,?)",
+    cur  = cursor(con)
+    cur.execute(
+        "INSERT INTO trusted_hashes(hash,note,added_at) VALUES(%s,%s,%s)"
+        " ON CONFLICT(hash) DO NOTHING",
         (h, note, int(time.time()))
     )
     con.commit()
     print(f"  Trusted hash added: {h[:16]}...")
 
 
-def cmd_rm_hash(con: sqlite3.Connection, args):
-    h = args.hash.lower()
-    con.execute("DELETE FROM trusted_hashes WHERE hash=?", (h,))
+def cmd_rm_hash(con, args):
+    h   = args.hash.lower()
+    cur = cursor(con)
+    cur.execute("DELETE FROM trusted_hashes WHERE hash=%s", (h,))
     con.commit()
-    print(f"  Hash removed")
+    print("  Hash removed")
 
 
-def cmd_list_hashes(con: sqlite3.Connection, _args):
-    rows = con.execute("SELECT * FROM trusted_hashes ORDER BY added_at").fetchall()
+def cmd_list_hashes(con, _args):
+    cur = cursor(con)
+    cur.execute("SELECT * FROM trusted_hashes ORDER BY added_at")
+    rows = cur.fetchall()
     if not rows:
-        print("  (no trusted hashes — integrity check disabled)")
-        return
+        print("  (no trusted hashes — integrity check disabled)"); return
     for r in rows:
         print(f"  {r['hash'][:16]}...  added={fmt_ts(r['added_at'])}  note={r['note']}")
 
 
-def cmd_prune(con: sqlite3.Connection, _args):
+def cmd_prune(con, _args):
     cutoff = int(time.time()) - 7200
-    cur    = con.execute("DELETE FROM sessions WHERE last_heartbeat < ?", (cutoff,))
+    cur    = cursor(con)
+    cur.execute("DELETE FROM sessions WHERE last_heartbeat < %s", (cutoff,))
+    n = cur.rowcount
     con.commit()
-    print(f"  Pruned {cur.rowcount} stale session(s)")
+    print(f"  Pruned {n} stale session(s)")
 
 
-def cmd_watch(con: sqlite3.Connection, _args):
-    """Tail the users table for new entries."""
+def cmd_watch(con, _args):
+    """Live-tail new user connections by polling the users table every 2 seconds."""
     print("  Watching for new connections (Ctrl-C to stop)...\n")
-    seen = set(r[0] for r in con.execute("SELECT hwid_hash FROM users").fetchall())
+    cur  = cursor(con)
+    cur.execute("SELECT hwid_hash FROM users")
+    seen = {r["hwid_hash"] for r in cur.fetchall()}
     try:
         while True:
             time.sleep(2)
-            rows = con.execute(
+            # Commit to close the current snapshot so we see rows written
+            # by the C++ server since our last query.
+            con.commit()
+            cur = cursor(con)
+            cur.execute(
                 "SELECT hwid_hash, last_seen, is_banned, license_key"
                 " FROM users ORDER BY last_seen DESC LIMIT 50"
-            ).fetchall()
-            for r in rows:
+            )
+            for r in cur.fetchall():
                 hwid = r["hwid_hash"]
                 if hwid not in seen:
                     seen.add(hwid)
-                    status = "BANNED" if r["is_banned"] else "auth'd" if r["license_key"] else "rejected"
+                    status = ("BANNED"   if r["is_banned"]
+                              else "auth'd" if r["license_key"]
+                              else "rejected")
                     print(f"  [{fmt_ts(r['last_seen'])}] NEW  {fmt_hwid(hwid)}  {status}")
     except KeyboardInterrupt:
         print("\n  Watch stopped.")
@@ -397,25 +383,31 @@ def cmd_watch(con: sqlite3.Connection, _args):
 # Entry point
 # ---------------------------------------------------------------------------
 def main():
-    ap = argparse.ArgumentParser(description="SparkyServer admin tool")
-    ap.add_argument("db",      help="Path to sparky.db")
-    ap.add_argument("command", help="Command")
+    ap = argparse.ArgumentParser(
+        description="SparkyServer admin tool",
+        epilog="Connection string: set SPARKY_PG_CONNSTR or place sparky.connstr here."
+    )
+    ap.add_argument("command", help="Command to run")
     ap.add_argument("args",    nargs=argparse.REMAINDER)
     opts = ap.parse_args()
 
-    con = connect(opts.db)
-    ensure_schema(con)
+    cmd  = opts.command.lower()
+    rest = opts.args
 
-    cmd   = opts.command.lower()
-    rest  = opts.args
+    # gen-token doesn't need a DB connection
+    if cmd in ("gen-token", "gentoken"):
+        cmd_gen_token(None, None)
+        return
 
-    # Sub-parse per command
+    try:
+        con = connect()
+    except Exception as e:
+        print(f"ERROR: cannot connect to PostgreSQL: {e}", file=sys.stderr)
+        sys.exit(1)
+
     sub = argparse.ArgumentParser()
 
-    if cmd in ("gen-key", "genkey"):
-        cmd_gen_key(None, None)
-
-    elif cmd == "status":
+    if cmd == "status":
         cmd_status(con, None)
 
     elif cmd == "issue":
