@@ -5,13 +5,13 @@
 // All integers little-endian.
 
 static constexpr uint32_t PROTO_MAGIC   = 0x53504B59; // "SPKY"
-static constexpr uint8_t  PROTO_VERSION = 1;
+static constexpr uint8_t  PROTO_VERSION = 2;          // bumped: HelloPayload v2
 
 enum class MsgType : uint8_t
 {
     // Loader -> Server
-    Hello        = 0x01,  // HWID + build ID
-    Heartbeat    = 0x02,  // keep-alive
+    Hello        = 0x01,  // HWID + build ID + loader SHA-256
+    Heartbeat    = 0x02,  // keep-alive (must arrive every 30 s during DLL transfer)
 
     // Server -> Loader
     AuthOk       = 0x10,  // session token + expiry
@@ -40,8 +40,9 @@ static_assert(sizeof(MsgHeader) == 12);
 
 struct HelloPayload
 {
-    uint8_t  HwidHash[32]; // SHA-256 of machine GUID
+    uint8_t  HwidHash[32];    // SHA-256 of machine GUID
     uint32_t BuildId;
+    uint8_t  LoaderHash[32];  // SHA-256 of loader binary (for integrity check)
 };
 
 struct AuthOkPayload
@@ -52,10 +53,15 @@ struct AuthOkPayload
 
 struct BinaryReadyPayload
 {
-    uint32_t TotalBytes;   // total size of the encrypted DLL
-    uint32_t ChunkSize;    // bytes per BinaryChunk (usually 4096)
+    uint32_t TotalBytes;        // total size of the encrypted DLL
+    uint32_t ChunkSize;         // bytes per BinaryChunk (usually 4096)
     uint32_t NumChunks;
+    uint32_t ChunksPerHeartbeat;// loader must send Heartbeat after every N chunks
 };
+
+// Loader sends this after receiving ChunksPerHeartbeat BinaryChunk messages.
+// Server must receive it within HEARTBEAT_DEADLINE_MS or it kills the connection.
+static constexpr uint32_t HEARTBEAT_DEADLINE_MS = 30000; // 30 seconds
 #pragma pack(pop)
 
 // ---------------------------------------------------------------------------

@@ -71,11 +71,15 @@ std::string LicenseManager::GenerateKey()
 }
 
 std::string LicenseManager::IssueLicense(int tier, int lifetime_days,
-                                          const std::string& /*note*/)
+                                          const std::string& note)
 {
     const int64_t now = (int64_t)time(nullptr);
 
-    // Retry on key collision (astronomically rare, but correct)
+    // Use TierLifetimeSeconds when caller didn't override
+    int64_t secs = (lifetime_days > 0)
+                   ? (int64_t)lifetime_days * 86400LL
+                   : TierLifetimeSeconds(tier);
+
     for (int attempt = 0; attempt < 5; ++attempt)
     {
         std::string key = GenerateKey();
@@ -83,10 +87,9 @@ std::string LicenseManager::IssueLicense(int tier, int lifetime_days,
         row.key        = key;
         row.tier       = tier;
         row.issued_at  = now;
-        row.expires_at = (lifetime_days > 0)
-                          ? now + (int64_t)lifetime_days * 86400LL
-                          : 0;
+        row.expires_at = (secs > 0) ? now + secs : 0;
         row.hwid_hash  = "";
+        row.note       = note;
         if (m_db.InsertLicense(row))
             return key;
     }

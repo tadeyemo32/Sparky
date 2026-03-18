@@ -1,16 +1,15 @@
-// Database.cpp — SQLite3 implementation of Database
+// Database.cpp — SQLite3 implementation
 #include "../include/Database.h"
 #include "../../deps/sqlite3/sqlite3.h"
 #include <cstring>
 #include <ctime>
-#include <format>
 #include <iostream>
+
+static sqlite3* DB(void* p) { return reinterpret_cast<sqlite3*>(p); }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-static sqlite3* DB(void* p) { return reinterpret_cast<sqlite3*>(p); }
-
 bool Database::ExecSQL(const char* sql) const
 {
     char* err = nullptr;
@@ -37,9 +36,9 @@ bool Database::Open(const char* path)
         return false;
     }
     m_db = db;
-    sqlite3_exec(DB(m_db), "PRAGMA journal_mode=WAL;",  nullptr, nullptr, nullptr);
+    sqlite3_exec(DB(m_db), "PRAGMA journal_mode=WAL;",   nullptr, nullptr, nullptr);
     sqlite3_exec(DB(m_db), "PRAGMA synchronous=NORMAL;", nullptr, nullptr, nullptr);
-    sqlite3_exec(DB(m_db), "PRAGMA foreign_keys=ON;",   nullptr, nullptr, nullptr);
+    sqlite3_exec(DB(m_db), "PRAGMA foreign_keys=ON;",    nullptr, nullptr, nullptr);
     return CreateSchema();
 }
 
@@ -64,7 +63,9 @@ bool Database::CreateSchema()
             license_key TEXT NOT NULL DEFAULT '',
             created_at  INTEGER NOT NULL,
             last_seen   INTEGER NOT NULL,
-            ban_reason  TEXT    NOT NULL DEFAULT ''
+            is_banned   INTEGER NOT NULL DEFAULT 0,
+            ban_reason  TEXT    NOT NULL DEFAULT '',
+            loader_hash TEXT    NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS sessions (
             token_hex       TEXT PRIMARY KEY,
@@ -80,9 +81,14 @@ bool Database::CreateSchema()
             purchased_at    INTEGER NOT NULL,
             note            TEXT    NOT NULL DEFAULT ''
         );
-        CREATE INDEX IF NOT EXISTS idx_sessions_hwid    ON sessions(hwid_hash);
-        CREATE INDEX IF NOT EXISTS idx_purchases_hwid   ON purchases(hwid_hash);
-        CREATE INDEX IF NOT EXISTS idx_licenses_hwid    ON licenses(hwid_hash);
+        CREATE TABLE IF NOT EXISTS trusted_hashes (
+            hash        TEXT PRIMARY KEY,
+            note        TEXT NOT NULL DEFAULT '',
+            added_at    INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_hwid  ON sessions(hwid_hash);
+        CREATE INDEX IF NOT EXISTS idx_purchases_hwid ON purchases(hwid_hash);
+        CREATE INDEX IF NOT EXISTS idx_licenses_hwid  ON licenses(hwid_hash);
     )sql";
     return ExecSQL(ddl);
 }
@@ -97,12 +103,12 @@ bool Database::InsertLicense(const LicenseRow& row)
         " VALUES(?,?,?,?,?,?);";
     sqlite3_stmt* st = nullptr;
     if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_text (st, 1, row.key.c_str(),       -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text (st, 1, row.key.c_str(),      -1, SQLITE_TRANSIENT);
     sqlite3_bind_int  (st, 2, row.tier);
     sqlite3_bind_int64(st, 3, row.issued_at);
     sqlite3_bind_int64(st, 4, row.expires_at);
-    sqlite3_bind_text (st, 5, row.hwid_hash.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text (st, 6, "",                    -1, SQLITE_STATIC);
+    sqlite3_bind_text (st, 5, row.hwid_hash.c_str(),-1, SQLITE_TRANSIENT);
+    sqlite3_bind_text (st, 6, row.note.c_str(),     -1, SQLITE_TRANSIENT);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
@@ -111,7 +117,8 @@ bool Database::InsertLicense(const LicenseRow& row)
 std::optional<LicenseRow> Database::GetLicense(const std::string& key) const
 {
     const char* sql =
-        "SELECT key,tier,issued_at,expires_at,hwid_hash FROM licenses WHERE key=?;";
+        "SELECT key,tier,issued_at,expires_at,hwid_hash,note"
+        " FROM licenses WHERE key=?;";
     sqlite3_stmt* st = nullptr;
     if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK)
         return std::nullopt;
@@ -120,11 +127,12 @@ std::optional<LicenseRow> Database::GetLicense(const std::string& key) const
     if (sqlite3_step(st) == SQLITE_ROW)
     {
         LicenseRow r;
-        r.key       = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
-        r.tier      = sqlite3_column_int(st, 1);
-        r.issued_at = sqlite3_column_int64(st, 2);
-        r.expires_at= sqlite3_column_int64(st, 3);
-        r.hwid_hash = reinterpret_cast<const char*>(sqlite3_column_text(st, 4));
+        r.key        = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
+        r.tier       = sqlite3_column_int(st, 1);
+        r.issued_at  = sqlite3_column_int64(st, 2);
+        r.expires_at = sqlite3_column_int64(st, 3);
+        r.hwid_hash  = reinterpret_cast<const char*>(sqlite3_column_text(st, 4));
+        r.note       = reinterpret_cast<const char*>(sqlite3_column_text(st, 5));
         result = r;
     }
     sqlite3_finalize(st);
@@ -133,7 +141,6 @@ std::optional<LicenseRow> Database::GetLicense(const std::string& key) const
 
 bool Database::BindLicense(const std::string& key, const std::string& hwid_hash)
 {
-    // Only bind if currently unbound
     const char* sql =
         "UPDATE licenses SET hwid_hash=? WHERE key=? AND hwid_hash='';";
     sqlite3_stmt* st = nullptr;
@@ -149,18 +156,20 @@ bool Database::BindLicense(const std::string& key, const std::string& hwid_hash)
 std::vector<LicenseRow> Database::ListLicenses() const
 {
     const char* sql =
-        "SELECT key,tier,issued_at,expires_at,hwid_hash FROM licenses ORDER BY issued_at DESC;";
+        "SELECT key,tier,issued_at,expires_at,hwid_hash,note"
+        " FROM licenses ORDER BY issued_at DESC;";
     sqlite3_stmt* st = nullptr;
     std::vector<LicenseRow> rows;
     if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return rows;
     while (sqlite3_step(st) == SQLITE_ROW)
     {
         LicenseRow r;
-        r.key       = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
-        r.tier      = sqlite3_column_int(st, 1);
-        r.issued_at = sqlite3_column_int64(st, 2);
-        r.expires_at= sqlite3_column_int64(st, 3);
-        r.hwid_hash = reinterpret_cast<const char*>(sqlite3_column_text(st, 4));
+        r.key        = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
+        r.tier       = sqlite3_column_int(st, 1);
+        r.issued_at  = sqlite3_column_int64(st, 2);
+        r.expires_at = sqlite3_column_int64(st, 3);
+        r.hwid_hash  = reinterpret_cast<const char*>(sqlite3_column_text(st, 4));
+        r.note       = reinterpret_cast<const char*>(sqlite3_column_text(st, 5));
         rows.push_back(r);
     }
     sqlite3_finalize(st);
@@ -170,17 +179,25 @@ std::vector<LicenseRow> Database::ListLicenses() const
 // ---------------------------------------------------------------------------
 // User management
 // ---------------------------------------------------------------------------
-bool Database::TouchUser(const std::string& hwid_hash, int64_t now)
+bool Database::TouchUser(const std::string& hwid_hash, int64_t now,
+                          const std::string& loader_hash)
 {
-    const char* sql =
-        "INSERT INTO users(hwid_hash,created_at,last_seen)"
-        " VALUES(?,?,?)"
-        " ON CONFLICT(hwid_hash) DO UPDATE SET last_seen=excluded.last_seen;";
+    const char* sql = loader_hash.empty()
+        ? "INSERT INTO users(hwid_hash,created_at,last_seen)"
+          " VALUES(?,?,?)"
+          " ON CONFLICT(hwid_hash) DO UPDATE SET last_seen=excluded.last_seen;"
+        : "INSERT INTO users(hwid_hash,created_at,last_seen,loader_hash)"
+          " VALUES(?,?,?,?)"
+          " ON CONFLICT(hwid_hash) DO UPDATE"
+          " SET last_seen=excluded.last_seen, loader_hash=excluded.loader_hash;";
+
     sqlite3_stmt* st = nullptr;
     if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
     sqlite3_bind_text (st, 1, hwid_hash.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(st, 2, now);
     sqlite3_bind_int64(st, 3, now);
+    if (!loader_hash.empty())
+        sqlite3_bind_text(st, 4, loader_hash.c_str(), -1, SQLITE_TRANSIENT);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
@@ -188,8 +205,7 @@ bool Database::TouchUser(const std::string& hwid_hash, int64_t now)
 
 bool Database::SetUserLicense(const std::string& hwid_hash, const std::string& key)
 {
-    const char* sql =
-        "UPDATE users SET license_key=? WHERE hwid_hash=?;";
+    const char* sql = "UPDATE users SET license_key=? WHERE hwid_hash=?;";
     sqlite3_stmt* st = nullptr;
     if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
     sqlite3_bind_text(st, 1, key.c_str(),       -1, SQLITE_TRANSIENT);
@@ -202,7 +218,7 @@ bool Database::SetUserLicense(const std::string& hwid_hash, const std::string& k
 std::optional<UserRow> Database::GetUser(const std::string& hwid_hash) const
 {
     const char* sql =
-        "SELECT hwid_hash,license_key,created_at,last_seen,ban_reason"
+        "SELECT hwid_hash,license_key,created_at,last_seen,is_banned,ban_reason,loader_hash"
         " FROM users WHERE hwid_hash=?;";
     sqlite3_stmt* st = nullptr;
     if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK)
@@ -216,7 +232,9 @@ std::optional<UserRow> Database::GetUser(const std::string& hwid_hash) const
         r.license_key = reinterpret_cast<const char*>(sqlite3_column_text(st, 1));
         r.created_at  = sqlite3_column_int64(st, 2);
         r.last_seen   = sqlite3_column_int64(st, 3);
-        r.ban_reason  = reinterpret_cast<const char*>(sqlite3_column_text(st, 4));
+        r.is_banned   = sqlite3_column_int(st, 4) != 0;
+        r.ban_reason  = reinterpret_cast<const char*>(sqlite3_column_text(st, 5));
+        r.loader_hash = reinterpret_cast<const char*>(sqlite3_column_text(st, 6));
         result = r;
     }
     sqlite3_finalize(st);
@@ -225,7 +243,8 @@ std::optional<UserRow> Database::GetUser(const std::string& hwid_hash) const
 
 bool Database::BanUser(const std::string& hwid_hash, const std::string& reason)
 {
-    const char* sql = "UPDATE users SET ban_reason=? WHERE hwid_hash=?;";
+    const char* sql =
+        "UPDATE users SET is_banned=1, ban_reason=? WHERE hwid_hash=?;";
     sqlite3_stmt* st = nullptr;
     if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
     sqlite3_bind_text(st, 1, reason.c_str(),    -1, SQLITE_TRANSIENT);
@@ -237,7 +256,14 @@ bool Database::BanUser(const std::string& hwid_hash, const std::string& reason)
 
 bool Database::UnbanUser(const std::string& hwid_hash)
 {
-    return BanUser(hwid_hash, "");
+    const char* sql =
+        "UPDATE users SET is_banned=0, ban_reason='' WHERE hwid_hash=?;";
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_text(st, 1, hwid_hash.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_step(st);
+    sqlite3_finalize(st);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -363,20 +389,77 @@ std::vector<PurchaseRow> Database::GetPurchases(const std::string& hwid_hash) co
 }
 
 // ---------------------------------------------------------------------------
+// Trusted loader hashes
+// ---------------------------------------------------------------------------
+bool Database::AddTrustedHash(const std::string& hash, const std::string& note)
+{
+    const char* sql =
+        "INSERT OR IGNORE INTO trusted_hashes(hash,note,added_at) VALUES(?,?,?);";
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_text (st, 1, hash.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text (st, 2, note.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, (int64_t)time(nullptr));
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+bool Database::RemoveTrustedHash(const std::string& hash)
+{
+    const char* sql = "DELETE FROM trusted_hashes WHERE hash=?;";
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_text(st, 1, hash.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_step(st);
+    sqlite3_finalize(st);
+    return true;
+}
+
+bool Database::IsHashTrusted(const std::string& hash) const
+{
+    const char* sql =
+        "SELECT 1 FROM trusted_hashes WHERE hash=? LIMIT 1;";
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_text(st, 1, hash.c_str(), -1, SQLITE_TRANSIENT);
+    bool found = sqlite3_step(st) == SQLITE_ROW;
+    sqlite3_finalize(st);
+    return found;
+}
+
+bool Database::TrustedHashesEnabled() const
+{
+    const char* sql = "SELECT COUNT(*) FROM trusted_hashes;";
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return false;
+    bool enabled = false;
+    if (sqlite3_step(st) == SQLITE_ROW)
+        enabled = sqlite3_column_int(st, 0) > 0;
+    sqlite3_finalize(st);
+    return enabled;
+}
+
+// ---------------------------------------------------------------------------
 // Auth helper
 // ---------------------------------------------------------------------------
-bool Database::IsAuthorised(const std::string& hwid_hash, int64_t now) const
+bool Database::IsAuthorised(const std::string& hwid_hash,
+                             const std::string& loader_hash,
+                             int64_t            now) const
 {
     auto user = GetUser(hwid_hash);
-    if (!user) return false;
-    if (!user->ban_reason.empty()) return false;
+    if (!user)              return false; // never connected
+    if (user->is_banned)    return false;
     if (user->license_key.empty()) return false;
 
     auto lic = GetLicense(user->license_key);
-    if (!lic) return false;
-    // HWID must match the bound license
-    if (lic->hwid_hash != hwid_hash) return false;
-    // Check expiry (0 = perpetual)
-    if (lic->expires_at != 0 && lic->expires_at < now) return false;
+    if (!lic)                           return false;
+    if (lic->hwid_hash != hwid_hash)    return false; // key bound to different PC
+    if (lic->expires_at != 0 && lic->expires_at < now) return false; // expired
+
+    // Loader integrity — only enforced when trusted_hashes table is populated
+    if (TrustedHashesEnabled() && !loader_hash.empty())
+        if (!IsHashTrusted(loader_hash)) return false;
+
     return true;
 }

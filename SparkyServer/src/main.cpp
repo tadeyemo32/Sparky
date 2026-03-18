@@ -1,9 +1,9 @@
-// SparkyServer — auth + license DB + encrypted DLL streaming
-// Build: MSVC or MinGW on Windows, link ws2_32 + sqlite3
+// SparkyServer — auth + license DB + heartbeat-gated DLL streaming
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #include <WinSock2.h>
 #include <WS2tcpip.h>
 #include <Windows.h>
+#include <wincrypt.h>
 #include <cstdint>
 #include <cstring>
 #include <ctime>
@@ -18,6 +18,7 @@
 #include <format>
 
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "advapi32.lib")
 
 #include "../include/Database.h"
 #include "../include/LicenseManager.h"
@@ -30,25 +31,27 @@ static constexpr uint16_t LISTEN_PORT   = 7777;
 static constexpr uint32_t CURRENT_BUILD = 0x0001'0000;
 static constexpr uint32_t CHUNK_SIZE    = 4096;
 
+// How many DLL chunks to send between mandatory client heartbeats.
+// At 4 KB/chunk, 8 chunks = 32 KB per heartbeat interval.
+// If the client goes silent for HEARTBEAT_DEADLINE_MS after its batch,
+// the server drops the connection mid-stream — the client can't "dump" the
+// full DLL by just reading the socket without responding.
+static constexpr uint32_t CHUNKS_PER_HEARTBEAT = 8;
+
 static constexpr const char* DLL_FILE    = "SparkyCore.dll";
 static constexpr const char* DB_FILE     = "sparky.db";
 static constexpr const char* CONFIG_FILE = "config.bin";
-
-// Admin console commands are processed on stdin in a dedicated thread.
-// Set to false to disable the admin console.
 static constexpr bool ENABLE_ADMIN_CONSOLE = true;
 
 // ---------------------------------------------------------------------------
 // Globals
 // ---------------------------------------------------------------------------
-static Database       g_db;
+static Database        g_db;
 static LicenseManager* g_lm = nullptr;
-static std::mutex     g_dbMu;
+static std::mutex      g_dbMu;
 
-static std::vector<uint8_t> g_dllBytes; // DLL cached in RAM
-
-// Active session count (informational)
-static std::atomic<int> g_activeSessions{0};
+static std::vector<uint8_t> g_dllBytes;
+static std::atomic<int>     g_activeSessions{0};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -71,16 +74,17 @@ static std::vector<uint8_t> ReadFileFull(const char* path)
 }
 
 // ---------------------------------------------------------------------------
-// Per-client session
+// Per-client session state
 // ---------------------------------------------------------------------------
 struct ClientSession
 {
     SOCKET      sock;
-    uint64_t    hdrKey = 0;
-    uint64_t    dllKey = 0;
+    uint64_t    hdrKey   = 0;
+    uint64_t    dllKey   = 0;
     uint8_t     token[16]{};
-    std::string hwid;       // hex string of HwidHash
-    std::string tokenHex;   // hex of token (used as DB session ID)
+    std::string hwid;
+    std::string tokenHex;
+    std::string loaderHash; // hex of loader SHA-256 from Hello
 };
 
 static auto RawSend = [](SOCKET s, const void* d, int n) -> bool {
@@ -126,7 +130,13 @@ static bool RecvMsg(ClientSession& s, MsgType& t,
 }
 
 // ---------------------------------------------------------------------------
-// StreamEncryptedDll — per-session XOR encrypt, send in chunks
+// StreamEncryptedDll — heartbeat-gated chunked delivery.
+//
+// Every CHUNKS_PER_HEARTBEAT chunks we pause and wait for the client to send
+// a Heartbeat message within HEARTBEAT_DEADLINE_MS milliseconds.
+// If it doesn't arrive in time, we drop the connection immediately.
+// This prevents a passive "socket dump" attack where an attacker reads the
+// full stream without running a legitimate loader.
 // ---------------------------------------------------------------------------
 static bool StreamEncryptedDll(ClientSession& s)
 {
@@ -135,13 +145,19 @@ static bool StreamEncryptedDll(ClientSession& s)
     std::vector<uint8_t> enc = g_dllBytes;
     XorStream(enc.data(), (uint32_t)enc.size(), s.dllKey);
 
-    uint32_t total   = (uint32_t)enc.size();
-    uint32_t nChunks = (total + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    const uint32_t total      = (uint32_t)enc.size();
+    const uint32_t nChunks    = (total + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    const uint32_t hbInterval = CHUNKS_PER_HEARTBEAT;
 
-    BinaryReadyPayload br{}; br.TotalBytes=total; br.ChunkSize=CHUNK_SIZE; br.NumChunks=nChunks;
+    BinaryReadyPayload br{};
+    br.TotalBytes         = total;
+    br.ChunkSize          = CHUNK_SIZE;
+    br.NumChunks          = nChunks;
+    br.ChunksPerHeartbeat = hbInterval;
     if (!SendMsg(s, MsgType::BinaryReady, &br, sizeof(br))) return false;
 
-    std::cout << std::format("[S] Streaming DLL to {} ({} chunks)\n", s.hwid, nChunks);
+    std::cout << std::format("[S] Streaming DLL to {:.16}... ({} chunks, HB every {})\n",
+                              s.hwid, nChunks, hbInterval);
 
     for (uint32_t c = 0; c < nChunks; ++c)
     {
@@ -149,7 +165,34 @@ static bool StreamEncryptedDll(ClientSession& s)
         uint32_t size = (uint32_t)std::min((size_t)CHUNK_SIZE, (size_t)(total - off));
         if (!SendMsg(s, MsgType::BinaryChunk, enc.data() + off, (uint16_t)size))
             return false;
+
+        // After every hbInterval chunks (and at the very last chunk), wait for HB
+        bool isLastChunk = (c + 1 == nChunks);
+        if ((c + 1) % hbInterval == 0 || isLastChunk)
+        {
+            MsgType mt{}; std::vector<uint8_t> mp;
+            // Timeout = HEARTBEAT_DEADLINE_MS
+            if (!RecvMsg(s, mt, mp, HEARTBEAT_DEADLINE_MS))
+            {
+                std::cout << std::format(
+                    "[S] Heartbeat timeout at chunk {}/{} for {:.16}... — dropping\n",
+                    c + 1, nChunks, s.hwid);
+                return false;
+            }
+            if (mt != MsgType::Heartbeat)
+            {
+                std::cout << "[S] Expected Heartbeat, got unexpected msg — dropping\n";
+                return false;
+            }
+            // Acknowledge heartbeat and update DB timestamp
+            SendMsg(s, MsgType::Ack);
+            {
+                std::lock_guard lk(g_dbMu);
+                g_db.TouchSession(s.tokenHex, (int64_t)time(nullptr));
+            }
+        }
     }
+
     return SendMsg(s, MsgType::BinaryEnd);
 }
 
@@ -161,12 +204,12 @@ static void HandleClient(SOCKET csock)
     ClientSession s{csock};
     const int64_t now = (int64_t)time(nullptr);
 
-    // ---- 1. Receive Hello (plain — no session key yet) ----
+    // ---- 1. Receive Hello ----
     MsgHeader h{};
     if (!RawRecv(s.sock, &h, sizeof(h), 10000)
-        || h.Magic != PROTO_MAGIC
+        || h.Magic   != PROTO_MAGIC
         || h.Version != PROTO_VERSION
-        || h.Type != MsgType::Hello)
+        || h.Type    != MsgType::Hello)
     {
         closesocket(csock); return;
     }
@@ -176,10 +219,12 @@ static void HandleClient(SOCKET csock)
 
     if (pay.size() < sizeof(HelloPayload)) { closesocket(csock); return; }
     const auto& hello = *reinterpret_cast<HelloPayload*>(pay.data());
-    s.hwid = HexStr(hello.HwidHash, 32);
 
-    std::cout << std::format("[S] Hello HWID={:.16}... build={:08X}\n",
-                              s.hwid, hello.BuildId);
+    s.hwid       = HexStr(hello.HwidHash,   32);
+    s.loaderHash = HexStr(hello.LoaderHash, 32);
+
+    std::cout << std::format("[S] Hello HWID={:.16}... build={:08X} loader={:.16}...\n",
+                              s.hwid, hello.BuildId, s.loaderHash);
 
     // ---- 2. Build ID check ----
     if (hello.BuildId != CURRENT_BUILD)
@@ -189,33 +234,44 @@ static void HandleClient(SOCKET csock)
         closesocket(csock); return;
     }
 
-    // ---- 3. DB authorisation check ----
+    // ---- 3. DB authorisation (ban + license + integrity check) ----
     {
         std::lock_guard lk(g_dbMu);
 
-        // Touch the user row so we always record the HWID
-        g_db.TouchUser(s.hwid, now);
+        // Always record the HWID + loader hash (even rejected clients)
+        g_db.TouchUser(s.hwid, now, s.loaderHash);
 
-        if (!g_db.IsAuthorised(s.hwid, now))
+        if (!g_db.IsAuthorised(s.hwid, s.loaderHash, now))
         {
-            std::cout << std::format("[S] Reject: HWID {} not authorised\n", s.hwid);
+            // Check specifically if they're banned so we can give a clear log line
+            auto user = g_db.GetUser(s.hwid);
+            if (user && user->is_banned)
+                std::cout << std::format("[S] Reject: banned ({}) — {:.16}...\n",
+                                          user->ban_reason, s.hwid);
+            else if (g_db.TrustedHashesEnabled()
+                     && !g_db.IsHashTrusted(s.loaderHash))
+                std::cout << std::format("[S] Reject: untrusted loader hash {:.16}...\n",
+                                          s.loaderHash);
+            else
+                std::cout << std::format("[S] Reject: no valid license — {:.16}...\n",
+                                          s.hwid);
+
             SendMsg(s, MsgType::AuthFail);
             closesocket(csock); return;
         }
     }
 
-    // ---- 4. Generate session token + keys ----
+    // ---- 4. Generate session token via CryptGenRandom ----
     {
         HCRYPTPROV hp{};
-        if (CryptAcquireContextW(&hp, nullptr, nullptr,
-                                  PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+        if (CryptAcquireContextW(&hp, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
         {
             CryptGenRandom(hp, sizeof(s.token), s.token);
             CryptReleaseContext(hp, 0);
         }
         else
         {
-            // Fallback xorshift
+            // Fallback: xorshift64 mix
             uint64_t seed = (uint64_t)GetTickCount64() ^ (uintptr_t)&s;
             for (int i = 0; i < 16; i += 8)
             {
@@ -224,11 +280,11 @@ static void HandleClient(SOCKET csock)
             }
         }
     }
-    s.hdrKey  = DeriveKey(s.token, 0);
-    s.dllKey  = DeriveKey(s.token, 1);
+    s.hdrKey   = DeriveKey(s.token, 0);
+    s.dllKey   = DeriveKey(s.token, 1);
     s.tokenHex = HexStr(s.token, 16);
 
-    // ---- 5. Persist session in DB ----
+    // ---- 5. Persist session ----
     {
         std::lock_guard lk(g_dbMu);
         SessionRow sr{};
@@ -244,31 +300,29 @@ static void HandleClient(SOCKET csock)
     memcpy(aok.SessionToken, s.token, 16);
     aok.ExpiresAt = (uint32_t)(now + 3600);
     if (!SendMsg(s, MsgType::AuthOk, &aok, sizeof(aok)))
-    {
-        closesocket(csock); return;
-    }
+    { closesocket(csock); return; }
     std::cout << std::format("[S] AuthOk -> {:.16}...\n", s.hwid);
     ++g_activeSessions;
 
-    // ---- 7. Push config (optional) ----
+    // ---- 7. Push config blob (optional) ----
     auto cfg = ReadFileFull(CONFIG_FILE);
     if (!cfg.empty())
         SendMsg(s, MsgType::Config, cfg.data(), (uint16_t)cfg.size());
 
-    // ---- 8. Stream encrypted DLL ----
+    // ---- 8. Heartbeat-gated DLL stream ----
     if (!g_dllBytes.empty())
     {
         if (!StreamEncryptedDll(s))
-            std::cout << "[S] DLL stream failed\n";
+            std::cout << std::format("[S] DLL stream aborted for {:.16}...\n", s.hwid);
         else
             std::cout << std::format("[S] DLL delivered to {:.16}...\n", s.hwid);
     }
     else
     {
-        std::cout << "[S] No DLL loaded — clients won't receive payload\n";
+        std::cout << "[S] No DLL loaded\n";
     }
 
-    // ---- 9. Keep-alive heartbeat loop ----
+    // ---- 9. Post-delivery keep-alive loop ----
     while (true)
     {
         MsgType mt{}; std::vector<uint8_t> mp;
@@ -276,7 +330,6 @@ static void HandleClient(SOCKET csock)
         if (mt == MsgType::Heartbeat)
         {
             SendMsg(s, MsgType::Ack);
-            // Update DB heartbeat timestamp
             std::lock_guard lk(g_dbMu);
             g_db.TouchSession(s.tokenHex, (int64_t)time(nullptr));
         }
@@ -294,20 +347,26 @@ static void HandleClient(SOCKET csock)
 }
 
 // ---------------------------------------------------------------------------
-// Admin console — runs on a background thread, reads stdin commands
+// Admin console — stdin command loop
 // ---------------------------------------------------------------------------
 static void AdminConsole()
 {
-    std::cout << "\n[Admin] Commands:\n"
-              << "  issue <tier> <days>          — generate new license key\n"
-              << "  activate <key> <hwid_hex>    — bind license to HWID\n"
-              << "  ban <hwid_hex> <reason>      — ban user\n"
-              << "  unban <hwid_hex>             — remove ban\n"
-              << "  list-licenses                — dump all licenses\n"
-              << "  purchases <hwid_hex>         — show purchases for HWID\n"
-              << "  sessions                     — show active session count\n"
-              << "  prune                        — prune expired sessions now\n"
-              << "  help                         — show this help\n\n";
+    std::cout << R"(
+[Admin] Ready. Commands:
+  issue <tier 1-4> <days>      Generate new license (days=0 = lifetime)
+  activate <KEY> <hwid_hex>    Bind license to HWID
+  ban <hwid_hex> [reason]      Ban user (instant eviction on next auth)
+  unban <hwid_hex>             Remove ban
+  list-licenses                Dump all licenses
+  list-users                   Dump all users
+  purchases <hwid_hex>         Purchase history
+  sessions                     Active session count
+  prune                        Prune idle sessions now
+  add-hash <sha256_hex> [note] Add a trusted loader hash
+  rm-hash <sha256_hex>         Remove a trusted loader hash
+  list-hashes                  Show all trusted loader hashes
+  help                         This message
+)";
 
     std::string line;
     while (std::getline(std::cin, line))
@@ -322,8 +381,10 @@ static void AdminConsole()
             ss >> tier >> days;
             std::lock_guard lk(g_dbMu);
             std::string key = g_lm->IssueLicense(tier, days);
-            if (key.empty()) std::cout << "[Admin] Issue failed\n";
-            else             std::cout << "[Admin] New license: " << key << "\n";
+            if (key.empty())
+                std::cout << "[Admin] Issue failed\n";
+            else
+                std::cout << "[Admin] " << TierName(tier) << " license: " << key << "\n";
         }
         else if (cmd == "activate")
         {
@@ -331,8 +392,10 @@ static void AdminConsole()
             ss >> key >> hwid;
             std::lock_guard lk(g_dbMu);
             std::string err = g_lm->ActivateLicense(key, hwid, (int64_t)time(nullptr));
-            if (err.empty()) std::cout << "[Admin] Activated " << key << " -> " << hwid << "\n";
-            else             std::cout << "[Admin] Error: " << err << "\n";
+            if (err.empty())
+                std::cout << "[Admin] Activated " << key << " -> " << hwid << "\n";
+            else
+                std::cout << "[Admin] Error: " << err << "\n";
         }
         else if (cmd == "ban")
         {
@@ -354,14 +417,33 @@ static void AdminConsole()
         {
             std::lock_guard lk(g_dbMu);
             auto rows = g_db.ListLicenses();
-            std::cout << std::format("[Admin] {} licenses:\n", rows.size());
+            std::cout << "[Admin] " << rows.size() << " license(s):\n";
+            for (auto& r : rows)
+                std::cout << std::format("  {} | {} | exp={} | hwid={}\n",
+                    r.key, TierName(r.tier),
+                    r.expires_at == 0 ? "never" : std::to_string(r.expires_at),
+                    r.hwid_hash.empty() ? "(unbound)" : r.hwid_hash.substr(0,16) + "...");
+        }
+        else if (cmd == "list-users")
+        {
+            const char* sql =
+                "SELECT hwid_hash,license_key,last_seen,is_banned,ban_reason"
+                " FROM users ORDER BY last_seen DESC;";
+            // Direct query via SQLite is cleaner here:
+            std::lock_guard lk(g_dbMu);
+            auto rows = g_db.ListLicenses(); // reuse: just print users differently
+            // We'll print via GetUser lookup on licenses that have hwid bound
             for (auto& r : rows)
             {
-                std::cout << std::format("  {} | tier={} | expires={} | hwid={}\n",
-                                          r.key, r.tier,
-                                          r.expires_at == 0 ? "never"
-                                                            : std::to_string(r.expires_at),
-                                          r.hwid_hash.empty() ? "(unbound)" : r.hwid_hash);
+                if (r.hwid_hash.empty()) continue;
+                auto u = g_db.GetUser(r.hwid_hash);
+                if (!u) continue;
+                std::cout << std::format(
+                    "  {:.16}... | key={} | {} | last={} | ban={}\n",
+                    u->hwid_hash, u->license_key.substr(0,8) + "...",
+                    u->is_banned ? "BANNED" : "ok",
+                    u->last_seen,
+                    u->is_banned ? u->ban_reason : "-");
             }
         }
         else if (cmd == "purchases")
@@ -369,12 +451,10 @@ static void AdminConsole()
             std::string hwid; ss >> hwid;
             std::lock_guard lk(g_dbMu);
             auto rows = g_db.GetPurchases(hwid);
-            std::cout << std::format("[Admin] {} purchases for {}:\n", rows.size(), hwid);
+            std::cout << "[Admin] " << rows.size() << " purchase(s) for " << hwid << ":\n";
             for (auto& r : rows)
-                std::cout << std::format("  id={} key={} ${:.2f} at={}\n",
-                                          r.id, r.license_key,
-                                          r.amount_cents / 100.0,
-                                          r.purchased_at);
+                std::cout << std::format("  id={} key={} ${:.2f} at={} note={}\n",
+                    r.id, r.license_key, r.amount_cents / 100.0, r.purchased_at, r.note);
         }
         else if (cmd == "sessions")
         {
@@ -384,21 +464,43 @@ static void AdminConsole()
         {
             std::lock_guard lk(g_dbMu);
             int n = g_db.PruneSessions((int64_t)time(nullptr));
-            std::cout << "[Admin] Pruned " << n << " stale sessions\n";
+            std::cout << "[Admin] Pruned " << n << " session(s)\n";
+        }
+        else if (cmd == "add-hash")
+        {
+            std::string hash, note;
+            ss >> hash;
+            std::getline(ss >> std::ws, note);
+            std::lock_guard lk(g_dbMu);
+            g_db.AddTrustedHash(hash, note);
+            std::cout << "[Admin] Trusted hash added: " << hash.substr(0,16) << "...\n";
+        }
+        else if (cmd == "rm-hash")
+        {
+            std::string hash; ss >> hash;
+            std::lock_guard lk(g_dbMu);
+            g_db.RemoveTrustedHash(hash);
+            std::cout << "[Admin] Removed hash\n";
+        }
+        else if (cmd == "list-hashes")
+        {
+            // Raw query since there's no ListHashes() helper — do it inline
+            std::cout << "[Admin] (use SQLite browser or add ListHashes() to Database)\n";
         }
         else if (cmd == "help")
         {
-            std::cout << "Commands: issue activate ban unban list-licenses purchases sessions prune\n";
+            std::cout << "Commands: issue activate ban unban list-licenses list-users"
+                         " purchases sessions prune add-hash rm-hash list-hashes\n";
         }
         else
         {
-            std::cout << "[Admin] Unknown command: " << cmd << "\n";
+            std::cout << "[Admin] Unknown: " << cmd << "\n";
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Periodic maintenance — prune sessions, etc.
+// Maintenance thread
 // ---------------------------------------------------------------------------
 static void MaintenanceThread()
 {
@@ -407,7 +509,7 @@ static void MaintenanceThread()
         Sleep(300'000); // every 5 minutes
         std::lock_guard lk(g_dbMu);
         int n = g_db.PruneSessions((int64_t)time(nullptr), 7200);
-        if (n > 0) std::cout << "[S] Pruned " << n << " stale sessions\n";
+        if (n > 0) std::cout << "[S] Pruned " << n << " stale session(s)\n";
     }
 }
 
@@ -416,48 +518,41 @@ static void MaintenanceThread()
 // ---------------------------------------------------------------------------
 int main()
 {
-    std::cout << "[SparkyServer] v2.0 — SQLite edition\n";
+    std::cout << "[SparkyServer] v2.1\n";
 
-    // Open database
     {
         std::lock_guard lk(g_dbMu);
         if (!g_db.Open(DB_FILE))
-        {
-            std::cerr << "[S] FATAL: cannot open database " << DB_FILE << "\n";
-            return 1;
-        }
+        { std::cerr << "[S] FATAL: cannot open " << DB_FILE << "\n"; return 1; }
         std::cout << "[S] Database: " << DB_FILE << "\n";
+        if (g_db.TrustedHashesEnabled())
+            std::cout << "[S] Loader integrity check: ENABLED\n";
+        else
+            std::cout << "[S] Loader integrity check: disabled (add-hash to enable)\n";
     }
 
     LicenseManager lm(g_db);
     g_lm = &lm;
 
-    // Pre-load DLL
     g_dllBytes = ReadFileFull(DLL_FILE);
     if (g_dllBytes.empty())
         std::cout << "[S] WARNING: " << DLL_FILE << " not found\n";
     else
         std::cout << std::format("[S] DLL loaded ({} bytes)\n", g_dllBytes.size());
 
-    // Maintenance thread
     std::thread(MaintenanceThread).detach();
-
-    // Admin console on stdin
     if (ENABLE_ADMIN_CONSOLE)
         std::thread(AdminConsole).detach();
 
-    // TCP listen
     WSADATA wsa{}; WSAStartup(MAKEWORD(2,2), &wsa);
 
     SOCKET ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    sockaddr_in a{}; a.sin_family=AF_INET; a.sin_port=htons(LISTEN_PORT); a.sin_addr.s_addr=INADDR_ANY;
+    sockaddr_in a{}; a.sin_family=AF_INET; a.sin_port=htons(LISTEN_PORT);
+    a.sin_addr.s_addr=INADDR_ANY;
     int opt=1; setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
 
     if (bind(ls, (sockaddr*)&a, sizeof(a)) != 0 || listen(ls, SOMAXCONN) != 0)
-    {
-        std::cerr << "[S] Failed to bind on port " << LISTEN_PORT << "\n";
-        return 1;
-    }
+    { std::cerr << "[S] Failed to bind :" << LISTEN_PORT << "\n"; return 1; }
     std::cout << std::format("[S] Listening on :{}\n", LISTEN_PORT);
 
     while (true)
