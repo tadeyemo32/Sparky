@@ -1,0 +1,45 @@
+# ─── Build artifacts (ignore everything inside, but keep bin/) ─────────────
+SparkyLoader/build/**
+!SparkyLoader/build/bin/
+!SparkyLoader/build/bin/**
+
+SparkyLoader/build-win/**
+!SparkyLoader/build-win/bin/
+!SparkyLoader/build-win/bin/**
+
+# Catch any other build-* variants
+SparkyLoader/build-*/
+
+# ─── CMake generated files ─────────────────────────────────────────────────
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+_deps/
+*.cmake
+!SparkyLoader/toolchain-windows-mingw.cmake
+!SparkyLoader/CMakeLists.txt
+
+# ─── Compiler / linker intermediates ───────────────────────────────────────
+*.o
+*.obj
+*.a
+*.lib
+*.pdb
+*.ilk
+*.exp
+*.map
+*.d
+
+# ─── OS / editor noise ─────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.suo
+*.user
+.vs/
+.vscode/settings.json
+.idea/
+
+# ─── Logs produced at runtime ──────────────────────────────────────────────
+*.log

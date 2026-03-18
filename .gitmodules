@@ -1,0 +1,6 @@
+[submodule "SparkyLoader/deps/glfw"]
+	path = SparkyLoader/deps/glfw
+	url = https://github.com/glfw/glfw.git
+[submodule "SparkyLoader/deps/imgui"]
+	path = SparkyLoader/deps/imgui
+	url = https://github.com/ocornut/imgui.git
