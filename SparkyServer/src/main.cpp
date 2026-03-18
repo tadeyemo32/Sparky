@@ -383,10 +383,28 @@ static void HandleClient(SOCKET csock)
     }
 
     // ---- 9. Post-delivery keep-alive loop ----
-    while (true)
+    // Client must send a Heartbeat every 25 s (loader interval).
+    // We allow up to 2 consecutive misses (covers one transient network blip)
+    // before treating the session as dead and evicting it.
+    static constexpr int MAX_HB_MISSES = 2;
+    int hbMisses = 0;
+    while (g_running.load())
     {
         MsgType mt{}; std::vector<uint8_t> mp;
-        if (!RecvMsg(s, mt, mp, 35000)) break;
+        if (!RecvMsg(s, mt, mp, 35000))
+        {
+            ++hbMisses;
+            std::cout << std::format("[S] HB miss {}/{} for {:.16}...\n",
+                                      hbMisses, MAX_HB_MISSES, s.hwid);
+            if (hbMisses >= MAX_HB_MISSES)
+            {
+                std::cout << std::format("[S] Evicting {:.16}... (missed {} heartbeats)\n",
+                                          s.hwid, hbMisses);
+                break;
+            }
+            continue;
+        }
+        hbMisses = 0; // reset on any valid message
         if (mt == MsgType::Heartbeat)
         {
             SendMsg(s, MsgType::Ack);
@@ -552,13 +570,19 @@ static void AdminConsole()
 }
 
 // ---------------------------------------------------------------------------
-// Maintenance thread
+// Maintenance thread — respects g_running for graceful shutdown.
+// Sleeps in 1-second ticks instead of one 5-minute Sleep so shutdown is
+// immediate rather than blocking up to 5 minutes.
 // ---------------------------------------------------------------------------
 static void MaintenanceThread()
 {
-    while (true)
+    int ticks = 0;
+    while (g_running.load())
     {
-        Sleep(300'000); // every 5 minutes
+        Sleep(1000);
+        if (++ticks < 300) continue; // 300 × 1 s = 5 minutes
+        ticks = 0;
+
         {
             std::lock_guard lk(g_dbMu);
             int n = g_db.PruneSessions((int64_t)time(nullptr), 7200);
