@@ -239,7 +239,14 @@ static void HandleClient(SOCKET csock)
     }
     std::vector<uint8_t> pay(h.Length);
     if (h.Length && !RawRecv(s.sock, pay.data(), h.Length)) { closesocket(csock); return; }
-    uint32_t crc{}; RawRecv(s.sock, &crc, 4);
+    uint32_t crc{}; if (!RawRecv(s.sock, &crc, 4)) { closesocket(csock); return; }
+
+    // Verify Hello CRC (same formula used by SendMsg/RecvMsg)
+    {
+        uint32_t computed = Crc32((uint8_t*)&h, sizeof(h));
+        if (!pay.empty()) computed ^= Crc32(pay.data(), (uint32_t)pay.size());
+        if (computed != crc) { closesocket(csock); return; }
+    }
 
     if (pay.size() < sizeof(HelloPayload)) { closesocket(csock); return; }
     const auto& hello = *reinterpret_cast<HelloPayload*>(pay.data());
@@ -288,19 +295,17 @@ static void HandleClient(SOCKET csock)
     // ---- 4. Generate session token via CryptGenRandom ----
     {
         HCRYPTPROV hp{};
+        bool tokenOk = false;
         if (CryptAcquireContextW(&hp, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
         {
-            CryptGenRandom(hp, sizeof(s.token), s.token);
+            tokenOk = CryptGenRandom(hp, sizeof(s.token), s.token) == TRUE;
             CryptReleaseContext(hp, 0);
         }
-        else
+        if (!tokenOk)
         {
-            uint64_t seed = (uint64_t)GetTickCount64() ^ (uintptr_t)&s;
-            for (int i = 0; i < 16; i += 8)
-            {
-                seed ^= seed >> 12; seed ^= seed << 25; seed ^= seed >> 27;
-                memcpy(s.token + i, &seed, 8);
-            }
+            std::cout << "[S] FATAL: CryptGenRandom failed — refusing connection\n";
+            SendMsg(s, MsgType::AuthFail);
+            closesocket(csock); return;
         }
     }
 
@@ -339,9 +344,18 @@ static void HandleClient(SOCKET csock)
     // ---- 8. Push config blob (optional) ----
     auto cfg = ReadFileFull(CONFIG_FILE);
     if (!cfg.empty())
-        SendMsg(s, MsgType::Config, cfg.data(), (uint16_t)cfg.size());
+    {
+        if (cfg.size() > 0xFFFF)
+        {
+            std::cout << "[S] WARNING: config.bin exceeds 65535 bytes — skipping\n";
+        }
+        else
+        {
+            SendMsg(s, MsgType::Config, cfg.data(), (uint16_t)cfg.size());
+        }
+    }
 
-    // ---- 8. Heartbeat-gated DLL stream ----
+    // ---- 9. Heartbeat-gated DLL stream ----
     if (!g_dllBytes.empty())
     {
         if (!StreamEncryptedDll(s))
@@ -458,25 +472,17 @@ static void AdminConsole()
         }
         else if (cmd == "list-users")
         {
-            const char* sql =
-                "SELECT hwid_hash,license_key,last_seen,is_banned,ban_reason"
-                " FROM users ORDER BY last_seen DESC;";
-            // Direct query via SQLite is cleaner here:
             std::lock_guard lk(g_dbMu);
-            auto rows = g_db.ListLicenses(); // reuse: just print users differently
-            // We'll print via GetUser lookup on licenses that have hwid bound
-            for (auto& r : rows)
-            {
-                if (r.hwid_hash.empty()) continue;
-                auto u = g_db.GetUser(r.hwid_hash);
-                if (!u) continue;
+            auto users = g_db.ListUsers();
+            std::cout << "[Admin] " << users.size() << " user(s):\n";
+            for (auto& u : users)
                 std::cout << std::format(
                     "  {:.16}... | key={} | {} | last={} | ban={}\n",
-                    u->hwid_hash, u->license_key.substr(0,8) + "...",
-                    u->is_banned ? "BANNED" : "ok",
-                    u->last_seen,
-                    u->is_banned ? u->ban_reason : "-");
-            }
+                    u.hwid_hash,
+                    u.license_key.size() >= 8 ? u.license_key.substr(0,8) + "..." : u.license_key,
+                    u.is_banned ? "BANNED" : "ok",
+                    u.last_seen,
+                    u.is_banned ? u.ban_reason : "-");
         }
         else if (cmd == "purchases")
         {

@@ -95,6 +95,7 @@ public:
                    const std::string& loader_hash = "");
     bool SetUserLicense(const std::string& hwid_hash, const std::string& key);
     std::optional<UserRow> GetUser(const std::string& hwid_hash) const;
+    std::vector<UserRow> ListUsers() const;
     bool BanUser(const std::string& hwid_hash, const std::string& reason);
     bool UnbanUser(const std::string& hwid_hash);
 

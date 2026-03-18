@@ -269,6 +269,30 @@ std::optional<UserRow> Database::GetUser(const std::string& hwid_hash) const
     return result;
 }
 
+std::vector<UserRow> Database::ListUsers() const
+{
+    const char* sql =
+        "SELECT hwid_hash,license_key,created_at,last_seen,is_banned,ban_reason,loader_hash"
+        " FROM users ORDER BY last_seen DESC;";
+    sqlite3_stmt* st = nullptr;
+    std::vector<UserRow> rows;
+    if (sqlite3_prepare_v2(DB(m_db), sql, -1, &st, nullptr) != SQLITE_OK) return rows;
+    while (sqlite3_step(st) == SQLITE_ROW)
+    {
+        UserRow r;
+        r.hwid_hash   = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
+        r.license_key = reinterpret_cast<const char*>(sqlite3_column_text(st, 1));
+        r.created_at  = sqlite3_column_int64(st, 2);
+        r.last_seen   = sqlite3_column_int64(st, 3);
+        r.is_banned   = sqlite3_column_int(st, 4) != 0;
+        r.ban_reason  = reinterpret_cast<const char*>(sqlite3_column_text(st, 5));
+        r.loader_hash = reinterpret_cast<const char*>(sqlite3_column_text(st, 6));
+        rows.push_back(r);
+    }
+    sqlite3_finalize(st);
+    return rows;
+}
+
 bool Database::BanUser(const std::string& hwid_hash, const std::string& reason)
 {
     const char* sql =
