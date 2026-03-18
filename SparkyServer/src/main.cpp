@@ -136,22 +136,27 @@ static bool RecvMsg(ClientSession& s, MsgType& t,
 }
 
 // ---------------------------------------------------------------------------
-// StreamEncryptedDll — heartbeat-gated chunked delivery.
+// StreamEncryptedDll — heartbeat-gated, rolling-key chunked DLL delivery.
 //
-// Every CHUNKS_PER_HEARTBEAT chunks we pause and wait for the client to send
-// a Heartbeat message within HEARTBEAT_DEADLINE_MS milliseconds.
-// If it doesn't arrive in time, we drop the connection immediately.
-// This prevents a passive "socket dump" attack where an attacker reads the
-// full stream without running a legitimate loader.
+// Protocol (mirrors loader's receive loop exactly):
+//   Server sends BinaryReady { total, chunkSize, numChunks, chunksPerHB }
+//   For each batch of chunksPerHB chunks (and the final partial batch):
+//     Server sends N × BinaryChunk, each encrypted with current rollingKey
+//     Server waits up to HEARTBEAT_DEADLINE_MS for a HeartbeatPayload (nonce)
+//     Both sides call RollKey(rollingKey, nonce) to advance to the next key
+//     Server sends Ack
+//   Server sends BinaryEnd
+//
+// Security properties:
+//   • Each 32 KB batch uses a different key — static packet capture is useless
+//   • Missing/wrong heartbeat → key divergence → DLL decrypts as garbage
+//   • No pre-buffering needed — chunks are encrypted on-the-fly from g_dllBytes
 // ---------------------------------------------------------------------------
 static bool StreamEncryptedDll(ClientSession& s)
 {
     if (g_dllBytes.empty()) return false;
 
-    std::vector<uint8_t> enc = g_dllBytes;
-    XorStream(enc.data(), (uint32_t)enc.size(), s.dllKey);
-
-    const uint32_t total      = (uint32_t)enc.size();
+    const uint32_t total      = (uint32_t)g_dllBytes.size();
     const uint32_t nChunks    = (total + CHUNK_SIZE - 1) / CHUNK_SIZE;
     const uint32_t hbInterval = CHUNKS_PER_HEARTBEAT;
 
@@ -162,54 +167,48 @@ static bool StreamEncryptedDll(ClientSession& s)
     br.ChunksPerHeartbeat = hbInterval;
     if (!SendMsg(s, MsgType::BinaryReady, &br, sizeof(br))) return false;
 
-    std::cout << std::format("[S] Streaming DLL to {:.16}... ({} chunks, HB every {})\n",
+    std::cout << std::format("[S] Streaming {:.16}... ({} chunks, key rolls every {})\n",
                               s.hwid, nChunks, hbInterval);
 
-    // Current DLL XOR key — starts as session-derived dllKey, rolls after each HB
-    uint64_t rollingKey = s.dllKey;
+    uint64_t rollingKey = s.dllKey; // initial key; rolled after each HB batch
 
     for (uint32_t c = 0; c < nChunks; ++c)
     {
-        uint32_t off  = c * CHUNK_SIZE;
-        uint32_t size = (uint32_t)std::min((size_t)CHUNK_SIZE, (size_t)(total - off));
+        const uint32_t off  = c * CHUNK_SIZE;
+        const uint32_t size = (uint32_t)std::min((size_t)CHUNK_SIZE,
+                                                   (size_t)(total - off));
 
-        // Encrypt this chunk with the current rolling key
-        std::vector<uint8_t> chunk(enc.begin() + off,
-                                    enc.begin() + off + size);
-        // enc is already XOR'd with dllKey — undo that first, re-apply rollingKey
-        XorStream(chunk.data(), (uint32_t)chunk.size(), s.dllKey);    // undo base
-        XorStream(chunk.data(), (uint32_t)chunk.size(), rollingKey);  // apply rolling
+        // Copy raw plaintext chunk, encrypt with current rolling key
+        std::vector<uint8_t> chunk(g_dllBytes.begin() + off,
+                                    g_dllBytes.begin() + off + size);
+        XorStream(chunk.data(), size, rollingKey);
 
-        if (!SendMsg(s, MsgType::BinaryChunk, chunk.data(), (uint16_t)chunk.size()))
+        if (!SendMsg(s, MsgType::BinaryChunk, chunk.data(), (uint16_t)size))
             return false;
 
-        // After every hbInterval chunks (and at the very last chunk), wait for HB
-        bool isLastChunk = (c + 1 == nChunks);
-        if ((c + 1) % hbInterval == 0 || isLastChunk)
+        // Heartbeat point: after every hbInterval chunks, AND after the last chunk
+        if ((c + 1) % hbInterval == 0 || c + 1 == nChunks)
         {
             MsgType mt{}; std::vector<uint8_t> mp;
             if (!RecvMsg(s, mt, mp, HEARTBEAT_DEADLINE_MS))
             {
                 std::cout << std::format(
-                    "[S] Heartbeat timeout at chunk {}/{} for {:.16}... — dropping\n",
+                    "[S] HB timeout chunk {}/{} for {:.16}... — drop\n",
                     c + 1, nChunks, s.hwid);
                 return false;
             }
             if (mt != MsgType::Heartbeat)
             {
-                std::cout << "[S] Expected Heartbeat, got unexpected msg — dropping\n";
+                std::cout << "[S] Expected Heartbeat — got wrong msg type, dropping\n";
                 return false;
             }
 
-            // Extract nonce from heartbeat payload — used to roll key on both sides
+            // Extract nonce; malformed HB (no payload) → nonce = zeros → key diverges
             uint8_t nonce[16]{};
             if (mp.size() >= sizeof(HeartbeatPayload))
                 memcpy(nonce, mp.data(), 16);
-            // else: malformed HB — nonce stays zero; keys diverge (client gets garbage)
 
-            // Roll key: both server and loader now derive the same new key
             rollingKey = RollKey(rollingKey, nonce);
-
             SendMsg(s, MsgType::Ack);
             {
                 std::lock_guard lk(g_dbMu);
@@ -296,7 +295,6 @@ static void HandleClient(SOCKET csock)
         }
         else
         {
-            // Fallback: xorshift64 mix
             uint64_t seed = (uint64_t)GetTickCount64() ^ (uintptr_t)&s;
             for (int i = 0; i < 16; i += 8)
             {
@@ -305,11 +303,29 @@ static void HandleClient(SOCKET csock)
             }
         }
     }
+
+    // ---- 5. Send AuthOk PLAIN (hdrKey still 0 here) ----
+    // CRITICAL: AuthOk MUST be sent before hdrKey is set.
+    // The loader reads this raw to extract the token, then derives its own keys.
+    // If we encrypt AuthOk with hdrKey, the loader can't decrypt it (chicken-egg).
+    {
+        AuthOkPayload aok{};
+        memcpy(aok.SessionToken, s.token, 16);
+        aok.ExpiresAt = (uint32_t)(now + 3600);
+        // hdrKey == 0 here → SendMsg sends payload unencrypted
+        if (!SendMsg(s, MsgType::AuthOk, &aok, sizeof(aok)))
+        { closesocket(csock); return; }
+    }
+
+    // ---- 6. NOW derive session keys (all subsequent messages are encrypted) ----
     s.hdrKey   = DeriveKey(s.token, 0);
     s.dllKey   = DeriveKey(s.token, 1);
     s.tokenHex = HexStr(s.token, 16);
 
-    // ---- 5. Persist session ----
+    std::cout << std::format("[S] AuthOk -> {:.16}...\n", s.hwid);
+    ++g_activeSessions;
+
+    // ---- 7. Persist session ----
     {
         std::lock_guard lk(g_dbMu);
         SessionRow sr{};
@@ -320,16 +336,7 @@ static void HandleClient(SOCKET csock)
         g_db.InsertSession(sr);
     }
 
-    // ---- 6. Send AuthOk ----
-    AuthOkPayload aok{};
-    memcpy(aok.SessionToken, s.token, 16);
-    aok.ExpiresAt = (uint32_t)(now + 3600);
-    if (!SendMsg(s, MsgType::AuthOk, &aok, sizeof(aok)))
-    { closesocket(csock); return; }
-    std::cout << std::format("[S] AuthOk -> {:.16}...\n", s.hwid);
-    ++g_activeSessions;
-
-    // ---- 7. Push config blob (optional) ----
+    // ---- 8. Push config blob (optional) ----
     auto cfg = ReadFileFull(CONFIG_FILE);
     if (!cfg.empty())
         SendMsg(s, MsgType::Config, cfg.data(), (uint16_t)cfg.size());
