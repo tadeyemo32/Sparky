@@ -2,9 +2,72 @@
 #include "Logger.h"
 
 #include <TlHelp32.h>
+#include <psapi.h>
 #include <fstream>
 #include <cstring>
 #include <cstdlib>   // rand, srand
+
+// ---------------------------------------------------------------------------
+// Minimal NT structures for NtQuerySystemInformation(SystemProcessInformation).
+// We define our own so we don't need the DDK or winternl extras.
+// Layouts are stable across Win10/11 x64.
+// ---------------------------------------------------------------------------
+#pragma pack(push, 8)
+struct SysThreadInfo
+{
+    LARGE_INTEGER KernelTime;
+    LARGE_INTEGER UserTime;
+    LARGE_INTEGER CreateTime;
+    ULONG         WaitTime;
+    ULONG         _pad0;
+    PVOID         StartAddress;
+    struct { HANDLE ProcessId; HANDLE ThreadId; } ClientId;
+    LONG          Priority;
+    LONG          BasePriority;
+    ULONG         ContextSwitches;
+    ULONG         ThreadState;   // 5 = Waiting
+    ULONG         WaitReason;    // see below
+    ULONG         _pad1;
+    // WaitReason constants relevant to alertable waits:
+    //   5 = Suspended
+    //   6 = WrUserRequest   <-- thread in alertable wait (SleepEx/WaitFor*Ex)
+    //   8 = WrQueue         <-- thread pool queue (also alertable)
+};
+static_assert(sizeof(SysThreadInfo) == 0x50);
+
+struct SysProcessInfo
+{
+    ULONG         NextEntryOffset;    // +0x00  byte offset to next entry (0 = last)
+    ULONG         NumberOfThreads;    // +0x04
+    uint8_t       _reserved[0x48];   // +0x08  skip fields we don't need
+    HANDLE        UniqueProcessId;    // +0x50
+    uint8_t       _reserved2[0xB0];  // +0x58  remainder of the fixed header
+    // SysThreadInfo Threads[] immediately follows at +0x100
+};
+static_assert(sizeof(SysProcessInfo) == 0x100);
+#pragma pack(pop)
+
+// NtQuerySystemInformation — resolve from ntdll (already loaded, no LoadLibrary)
+static NTSTATUS QuerySystemInformation(ULONG cls, PVOID buf, ULONG len, PULONG ret)
+{
+    static auto fn = reinterpret_cast<NTSTATUS(NTAPI*)(ULONG,PVOID,ULONG,PULONG)>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemInformation"));
+    return fn ? fn(cls, buf, len, ret) : STATUS_NOT_IMPLEMENTED;
+}
+
+// ---------------------------------------------------------------------------
+// GetModuleRange — returns {base, size} of a loaded module in this process.
+// Uses GetModuleHandleW (PEB walk) + GetModuleInformation (psapi, link-time).
+// No LoadLibrary call.
+// ---------------------------------------------------------------------------
+static std::pair<uintptr_t, SIZE_T> GetModuleRange(const wchar_t* name)
+{
+    HMODULE h = GetModuleHandleW(name);
+    if (!h) return {0, 0};
+    MODULEINFO mi{};
+    GetModuleInformation(GetCurrentProcess(), h, &mi, sizeof(mi));
+    return { reinterpret_cast<uintptr_t>(mi.lpBaseOfDll), mi.SizeOfImage };
+}
 
 // ---------------------------------------------------------------------------
 // Nt:: wrappers — resolve ntdll functions directly.
@@ -201,19 +264,115 @@ static bool ResolveNtdllThunks(MappingData& d)
         && d.RtlInitUnicodeString && d.RtlInitAnsiString;
 }
 
+// ---------------------------------------------------------------------------
+// FindAlertableThread
+//
+// Strategy (in priority order):
+//   1. Thread whose StartAddress is inside win32u.dll — the game's window/message
+//      thread almost always idles in win32u!NtUserMsgWaitForMultipleObjectsEx,
+//      which is an alertable kernel wait. Perfect APC target.
+//   2. Any thread in a Waiting state with WaitReason == WrUserRequest (6)
+//      or WrQueue (8) — both are alertable waits.
+//   3. Any thread belonging to the process (last resort).
+//
+// Uses NtQuerySystemInformation(SystemProcessInformation=5) to read thread
+// state without CreateToolhelp32Snapshot, which is itself a known injection
+// indicator that some ACs watch for on sensitive threads.
+// ---------------------------------------------------------------------------
 static DWORD FindAlertableThread(HANDLE hProcess)
 {
-    DWORD  pid  = GetProcessId(hProcess);
-    HANDLE hSn  = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (hSn == INVALID_HANDLE_VALUE) return 0;
+    constexpr ULONG SystemProcessInformation = 5;
+    const DWORD pid = GetProcessId(hProcess);
 
-    THREADENTRY32 te{ sizeof(te) };
-    DWORD tid = 0;
-    if (Thread32First(hSn, &te))
-        do { if (te.th32OwnerProcessID == pid) { tid = te.th32ThreadID; break; } }
-        while (Thread32Next(hSn, &te));
-    CloseHandle(hSn);
-    return tid;
+    // Get address ranges of preferred system DLLs (same in every process).
+    // win32u.dll is the user-mode → win32k bridge; its threads are the
+    // most reliably alertable in any GUI application.
+    const auto [w32uBase, w32uSize] = GetModuleRange(L"win32u.dll");
+    const auto [ntBase,   ntSize]   = GetModuleRange(L"ntdll.dll");
+
+    // Query system process/thread information.
+    // Retry with a growing buffer if the initial size is too small.
+    ULONG bufSize = 1024 * 512; // 512 KB — usually enough
+    std::vector<uint8_t> buf;
+    NTSTATUS st;
+    do {
+        buf.resize(bufSize);
+        ULONG returned = 0;
+        st = QuerySystemInformation(SystemProcessInformation,
+                                     buf.data(), bufSize, &returned);
+        if (st == STATUS_INFO_LENGTH_MISMATCH)
+            bufSize *= 2;
+    } while (st == STATUS_INFO_LENGTH_MISMATCH && bufSize < 64 * 1024 * 1024);
+
+    if (st < 0) // NTSTATUS < 0 means failure
+    {
+        // Fallback: CreateToolhelp32Snapshot (less ideal but functional)
+        Logger::Log(LogLevel::Warning, "FindAlertableThread: NtQSI failed, using snapshot fallback");
+        HANDLE hSn = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (hSn == INVALID_HANDLE_VALUE) return 0;
+        THREADENTRY32 te{ sizeof(te) };
+        DWORD tid = 0;
+        if (Thread32First(hSn, &te))
+            do { if (te.th32OwnerProcessID == pid) { tid = te.th32ThreadID; break; } }
+            while (Thread32Next(hSn, &te));
+        CloseHandle(hSn);
+        return tid;
+    }
+
+    // Walk SysProcessInfo chain to find our target process
+    DWORD bestTid      = 0;   // win32u.dll thread (priority 1)
+    DWORD alertTid     = 0;   // any alertable thread (priority 2)
+    DWORD fallbackTid  = 0;   // any thread at all (priority 3)
+
+    const uint8_t* ptr = buf.data();
+    while (true)
+    {
+        auto* proc = reinterpret_cast<const SysProcessInfo*>(ptr);
+
+        if (reinterpret_cast<DWORD>(proc->UniqueProcessId) == pid)
+        {
+            // Thread array sits immediately after the fixed 0x100-byte header
+            auto* threads = reinterpret_cast<const SysThreadInfo*>(ptr + 0x100);
+
+            for (ULONG t = 0; t < proc->NumberOfThreads; ++t)
+            {
+                const SysThreadInfo& ti = threads[t];
+                DWORD tid = static_cast<DWORD>(
+                    reinterpret_cast<uintptr_t>(ti.ClientId.ThreadId));
+
+                const uintptr_t sa = reinterpret_cast<uintptr_t>(ti.StartAddress);
+
+                // Priority 1: thread that lives in win32u.dll or ntdll.dll
+                // These are idle system threads almost always in alertable waits.
+                if (bestTid == 0 && w32uSize && sa >= w32uBase && sa < w32uBase + w32uSize)
+                    bestTid = tid;
+                if (bestTid == 0 && ntSize  && sa >= ntBase   && sa < ntBase   + ntSize)
+                    bestTid = tid;
+
+                // Priority 2: any waiting thread with an alertable wait reason
+                //   ThreadState == 5 (Waiting)
+                //   WaitReason  == 6 (WrUserRequest) or 8 (WrQueue)
+                if (alertTid == 0
+                    && ti.ThreadState == 5
+                    && (ti.WaitReason == 6 || ti.WaitReason == 8))
+                    alertTid = tid;
+
+                // Priority 3: any thread in process
+                if (fallbackTid == 0)
+                    fallbackTid = tid;
+            }
+            break; // found our process — no need to continue walking
+        }
+
+        if (!proc->NextEntryOffset) break;
+        ptr += proc->NextEntryOffset;
+    }
+
+    DWORD chosen = bestTid ? bestTid : (alertTid ? alertTid : fallbackTid);
+    Logger::Log(LogLevel::Debug,
+                "FindAlertableThread: chose TID %lu (win32u=%lu alertable=%lu fallback=%lu)",
+                chosen, bestTid, alertTid, fallbackTid);
+    return chosen;
 }
 
 static void ApplySectionProtections(HANDLE hProcess, uintptr_t imageBase,
@@ -326,12 +485,21 @@ static bool ExecuteShellcode(HANDLE hProcess, uintptr_t imageBase,
     SIZE_T scSize    = reinterpret_cast<SIZE_T>(MappingShellcodeEnd)
                      - reinterpret_cast<SIZE_T>(MappingShellcode);
 
-    // Generate random XOR key for shellcode obfuscation
-    srand(GetTickCount() ^ (DWORD)imageBase);
-    uint64_t xorKey = ((uint64_t)(rand() & 0xFFFF) << 48)
-                    | ((uint64_t)(rand() & 0xFFFF) << 32)
-                    | ((uint64_t)(rand() & 0xFFFF) << 16)
-                    |  (uint64_t)(rand() & 0xFFFF);
+    // Generate a 64-bit XOR key using RtlGenRandom (advapi32, always loaded).
+    // Avoids rand() whose output is predictable from GetTickCount seeds.
+    uint64_t xorKey = 0;
+    {
+        static auto rtlGenRandom =
+            reinterpret_cast<BOOLEAN(NTAPI*)(PVOID, ULONG)>(
+                GetProcAddress(GetModuleHandleW(L"advapi32.dll"), "SystemFunction036"));
+        if (!rtlGenRandom || !rtlGenRandom(&xorKey, sizeof(xorKey)))
+        {
+            // advapi32 not yet loaded (rare) — fall back to RDTSC mix
+            LARGE_INTEGER pc{}; QueryPerformanceCounter(&pc);
+            xorKey = ((uint64_t)pc.QuadPart ^ ((uint64_t)imageBase << 17))
+                   ^ ((uint64_t)GetCurrentThreadId() * 0x9E3779B97F4A7C15ULL);
+        }
+    }
 
     // Layout in target: [XorDecryptStub (≤80B)][encrypted shellcode][MappingData]
     SIZE_T allocSize = 80 + scSize + sizeof(MappingData) + 0x100;
