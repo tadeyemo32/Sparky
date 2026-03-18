@@ -1,4 +1,5 @@
-// SparkyServer — auth + paid check + encrypted DLL streaming
+// SparkyServer — auth + license DB + encrypted DLL streaming
+// Build: MSVC or MinGW on Windows, link ws2_32 + sqlite3
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #include <WinSock2.h>
 #include <WS2tcpip.h>
@@ -10,14 +11,16 @@
 #include <vector>
 #include <thread>
 #include <mutex>
-#include <unordered_set>
+#include <atomic>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <format>
-#include <iterator>
 
 #pragma comment(lib, "ws2_32.lib")
 
+#include "../include/Database.h"
+#include "../include/LicenseManager.h"
 #include "../../SparkyLoader/include/Protocol.h"
 
 // ---------------------------------------------------------------------------
@@ -27,20 +30,25 @@ static constexpr uint16_t LISTEN_PORT   = 7777;
 static constexpr uint32_t CURRENT_BUILD = 0x0001'0000;
 static constexpr uint32_t CHUNK_SIZE    = 4096;
 
-// Files on server filesystem (relative to CWD when server is launched)
-static constexpr const char* DLL_FILE      = "SparkyCore.dll";     // plain DLL (encrypted below)
-static constexpr const char* CONFIG_FILE   = "config.bin";
-static constexpr const char* PAID_FILE     = "paid_hwids.txt";     // one HWID hash (hex) per line
-static constexpr const char* WHITELIST_FILE= "hwid_whitelist.txt"; // optional extra whitelist
+static constexpr const char* DLL_FILE    = "SparkyCore.dll";
+static constexpr const char* DB_FILE     = "sparky.db";
+static constexpr const char* CONFIG_FILE = "config.bin";
+
+// Admin console commands are processed on stdin in a dedicated thread.
+// Set to false to disable the admin console.
+static constexpr bool ENABLE_ADMIN_CONSOLE = true;
 
 // ---------------------------------------------------------------------------
 // Globals
 // ---------------------------------------------------------------------------
-static std::unordered_set<std::string> g_paid;
-static std::unordered_set<std::string> g_whitelist;
-static std::mutex g_setMutex;
+static Database       g_db;
+static LicenseManager* g_lm = nullptr;
+static std::mutex     g_dbMu;
 
-static std::vector<uint8_t> g_dllBytes; // cached DLL bytes (plain, loaded once)
+static std::vector<uint8_t> g_dllBytes; // DLL cached in RAM
+
+// Active session count (informational)
+static std::atomic<int> g_activeSessions{0};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -57,136 +65,123 @@ static std::vector<uint8_t> ReadFileFull(const char* path)
 {
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (!f.is_open()) return {};
-    std::vector<uint8_t> buf(f.tellg()); f.seekg(0);
-    f.read((char*)buf.data(), buf.size());
+    std::vector<uint8_t> buf((size_t)f.tellg()); f.seekg(0);
+    f.read(reinterpret_cast<char*>(buf.data()), (std::streamsize)buf.size());
     return buf;
-}
-
-static void LoadSet(const char* path, std::unordered_set<std::string>& set)
-{
-    std::ifstream f(path);
-    if (!f.is_open()) return;
-    std::string ln;
-    std::lock_guard lk(g_setMutex);
-    while (std::getline(f, ln))
-        if (!ln.empty()) set.insert(ln);
 }
 
 // ---------------------------------------------------------------------------
 // Per-client session
 // ---------------------------------------------------------------------------
-struct Session
+struct ClientSession
 {
-    SOCKET   sock;
-    uint64_t hdrKey = 0;
-    uint64_t dllKey = 0;
-    uint8_t  token[16]{};
-    std::string hwid;
+    SOCKET      sock;
+    uint64_t    hdrKey = 0;
+    uint64_t    dllKey = 0;
+    uint8_t     token[16]{};
+    std::string hwid;       // hex string of HwidHash
+    std::string tokenHex;   // hex of token (used as DB session ID)
 };
 
 static auto RawSend = [](SOCKET s, const void* d, int n) -> bool {
-    const char* p=(const char*)d; int sent=0;
-    while(sent<n){int r=send(s,p+sent,n-sent,0);if(r<=0)return false;sent+=r;}return true;
+    const char* p = (const char*)d; int sent = 0;
+    while (sent < n) { int r = send(s, p+sent, n-sent, 0); if (r<=0) return false; sent+=r; }
+    return true;
 };
-static auto RawRecv = [](SOCKET s, void* d, int n, DWORD ms=10000) -> bool {
-    setsockopt(s,SOL_SOCKET,SO_RCVTIMEO,(char*)&ms,sizeof(ms));
-    char* p=(char*)d;int got=0;
-    while(got<n){int r=recv(s,p+got,n-got,0);if(r<=0)return false;got+=r;}return true;
+static auto RawRecv = [](SOCKET s, void* d, int n, DWORD ms = 10000) -> bool {
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char*)&ms, sizeof(ms));
+    char* p = (char*)d; int got = 0;
+    while (got < n) { int r = recv(s, p+got, n-got, 0); if (r<=0) return false; got+=r; }
+    return true;
 };
 
-static bool SendMsg(Session& s, MsgType t, const void* pay=nullptr, uint16_t len=0)
+static bool SendMsg(ClientSession& s, MsgType t,
+                    const void* pay = nullptr, uint16_t len = 0)
 {
     MsgHeader h{}; h.Magic=PROTO_MAGIC; h.Version=PROTO_VERSION; h.Type=t; h.Length=len;
     std::vector<uint8_t> buf(len);
-    if (pay&&len) memcpy(buf.data(),pay,len);
-    if (s.hdrKey&&!buf.empty()) XorStream(buf.data(),(uint32_t)buf.size(),s.hdrKey);
-    uint32_t crc=Crc32((uint8_t*)&h,sizeof(h));
-    if (!buf.empty()) crc^=Crc32(buf.data(),(uint32_t)buf.size());
-    return RawSend(s.sock,&h,sizeof(h))&&(buf.empty()||RawSend(s.sock,buf.data(),(int)buf.size()))
-        &&RawSend(s.sock,&crc,4);
+    if (pay && len) memcpy(buf.data(), pay, len);
+    if (s.hdrKey && !buf.empty()) XorStream(buf.data(), (uint32_t)buf.size(), s.hdrKey);
+    uint32_t crc = Crc32((uint8_t*)&h, sizeof(h));
+    if (!buf.empty()) crc ^= Crc32(buf.data(), (uint32_t)buf.size());
+    return RawSend(s.sock, &h, sizeof(h))
+        && (buf.empty() || RawSend(s.sock, buf.data(), (int)buf.size()))
+        && RawSend(s.sock, &crc, 4);
 }
 
-static bool RecvMsg(Session& s, MsgType& t, std::vector<uint8_t>& pay, DWORD ms=10000)
+static bool RecvMsg(ClientSession& s, MsgType& t,
+                    std::vector<uint8_t>& pay, DWORD ms = 10000)
 {
     MsgHeader h{};
-    if (!RawRecv(s.sock,&h,sizeof(h),ms)) return false;
-    if (h.Magic!=PROTO_MAGIC||h.Version!=PROTO_VERSION) return false;
+    if (!RawRecv(s.sock, &h, sizeof(h), ms)) return false;
+    if (h.Magic != PROTO_MAGIC || h.Version != PROTO_VERSION) return false;
     pay.resize(h.Length);
-    if (h.Length&&!RawRecv(s.sock,pay.data(),h.Length,ms)) return false;
-    uint32_t rc{}; if (!RawRecv(s.sock,&rc,4,ms)) return false;
-    uint32_t lc=Crc32((uint8_t*)&h,sizeof(h));
-    if (!pay.empty()) lc^=Crc32(pay.data(),(uint32_t)pay.size());
-    if (lc!=rc) return false;
-    if (s.hdrKey&&!pay.empty()) XorStream(pay.data(),(uint32_t)pay.size(),s.hdrKey);
-    t=h.Type; return true;
+    if (h.Length && !RawRecv(s.sock, pay.data(), h.Length, ms)) return false;
+    uint32_t rc{}; if (!RawRecv(s.sock, &rc, 4, ms)) return false;
+    uint32_t lc = Crc32((uint8_t*)&h, sizeof(h));
+    if (!pay.empty()) lc ^= Crc32(pay.data(), (uint32_t)pay.size());
+    if (lc != rc) return false;
+    if (s.hdrKey && !pay.empty()) XorStream(pay.data(), (uint32_t)pay.size(), s.hdrKey);
+    t = h.Type; return true;
 }
 
 // ---------------------------------------------------------------------------
-// StreamEncryptedDll — XOR-encrypt DLL with session-unique key, send chunks.
-// Each session gets a different ciphertext even for the same DLL.
+// StreamEncryptedDll — per-session XOR encrypt, send in chunks
 // ---------------------------------------------------------------------------
-static bool StreamEncryptedDll(Session& s)
+static bool StreamEncryptedDll(ClientSession& s)
 {
     if (g_dllBytes.empty()) return false;
 
-    // Deep copy — we encrypt per-session so we need a fresh copy each time
     std::vector<uint8_t> enc = g_dllBytes;
     XorStream(enc.data(), (uint32_t)enc.size(), s.dllKey);
 
-    uint32_t total  = (uint32_t)enc.size();
+    uint32_t total   = (uint32_t)enc.size();
     uint32_t nChunks = (total + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
-    BinaryReadyPayload br{};
-    br.TotalBytes = total;
-    br.ChunkSize  = CHUNK_SIZE;
-    br.NumChunks  = nChunks;
-    if (!SendMsg(s, MsgType::BinaryReady, &br, sizeof(br)))
-        return false;
+    BinaryReadyPayload br{}; br.TotalBytes=total; br.ChunkSize=CHUNK_SIZE; br.NumChunks=nChunks;
+    if (!SendMsg(s, MsgType::BinaryReady, &br, sizeof(br))) return false;
 
-    std::cout << std::format("[S] Streaming DLL to {} ({} chunks)\n",
-                              s.hwid, nChunks);
+    std::cout << std::format("[S] Streaming DLL to {} ({} chunks)\n", s.hwid, nChunks);
 
     for (uint32_t c = 0; c < nChunks; ++c)
     {
         uint32_t off  = c * CHUNK_SIZE;
-        uint32_t size = (uint32_t)std::min((size_t)CHUNK_SIZE,
-                                            (size_t)(total - off));
+        uint32_t size = (uint32_t)std::min((size_t)CHUNK_SIZE, (size_t)(total - off));
         if (!SendMsg(s, MsgType::BinaryChunk, enc.data() + off, (uint16_t)size))
             return false;
     }
-
     return SendMsg(s, MsgType::BinaryEnd);
 }
 
 // ---------------------------------------------------------------------------
-// Handle one client connection
+// HandleClient
 // ---------------------------------------------------------------------------
 static void HandleClient(SOCKET csock)
 {
-    Session s{csock};
-    MsgType t{}; std::vector<uint8_t> pay;
+    ClientSession s{csock};
+    const int64_t now = (int64_t)time(nullptr);
 
-    // 1. Receive Hello
-    if (!RawRecv(s.sock, &(t=(MsgType)0, t), 0, 10000)) {} // drain / ignore
+    // ---- 1. Receive Hello (plain — no session key yet) ----
     MsgHeader h{};
     if (!RawRecv(s.sock, &h, sizeof(h), 10000)
-        || h.Magic != PROTO_MAGIC || h.Version != PROTO_VERSION
+        || h.Magic != PROTO_MAGIC
+        || h.Version != PROTO_VERSION
         || h.Type != MsgType::Hello)
     {
         closesocket(csock); return;
     }
-
-    pay.resize(h.Length);
-    if (h.Length) RawRecv(s.sock, pay.data(), h.Length);
+    std::vector<uint8_t> pay(h.Length);
+    if (h.Length && !RawRecv(s.sock, pay.data(), h.Length)) { closesocket(csock); return; }
     uint32_t crc{}; RawRecv(s.sock, &crc, 4);
 
     if (pay.size() < sizeof(HelloPayload)) { closesocket(csock); return; }
-    auto& hello = *(HelloPayload*)pay.data();
+    const auto& hello = *reinterpret_cast<HelloPayload*>(pay.data());
     s.hwid = HexStr(hello.HwidHash, 32);
-    std::cout << std::format("[S] Hello HWID={} build={:08X}\n",
+
+    std::cout << std::format("[S] Hello HWID={:.16}... build={:08X}\n",
                               s.hwid, hello.BuildId);
 
-    // 2. Build ID check
+    // ---- 2. Build ID check ----
     if (hello.BuildId != CURRENT_BUILD)
     {
         std::cout << "[S] Reject: stale build\n";
@@ -194,12 +189,14 @@ static void HandleClient(SOCKET csock)
         closesocket(csock); return;
     }
 
-    // 3. Paid status check
+    // ---- 3. DB authorisation check ----
     {
-        std::lock_guard lk(g_setMutex);
-        bool inPaid      = g_paid.empty()      || g_paid.contains(s.hwid);
-        bool inWhitelist = g_whitelist.empty() || g_whitelist.contains(s.hwid);
-        if (!inPaid || !inWhitelist)
+        std::lock_guard lk(g_dbMu);
+
+        // Touch the user row so we always record the HWID
+        g_db.TouchUser(s.hwid, now);
+
+        if (!g_db.IsAuthorised(s.hwid, now))
         {
             std::cout << std::format("[S] Reject: HWID {} not authorised\n", s.hwid);
             SendMsg(s, MsgType::AuthFail);
@@ -207,48 +204,211 @@ static void HandleClient(SOCKET csock)
         }
     }
 
-    // 4. Generate session token + derive keys
-    srand((unsigned)(GetTickCount64() ^ (uintptr_t)&s));
-    for (auto& b : s.token) b = (uint8_t)(rand() & 0xFF);
-    s.hdrKey = DeriveKey(s.token, 0);
-    s.dllKey = DeriveKey(s.token, 1);
+    // ---- 4. Generate session token + keys ----
+    {
+        HCRYPTPROV hp{};
+        if (CryptAcquireContextW(&hp, nullptr, nullptr,
+                                  PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+        {
+            CryptGenRandom(hp, sizeof(s.token), s.token);
+            CryptReleaseContext(hp, 0);
+        }
+        else
+        {
+            // Fallback xorshift
+            uint64_t seed = (uint64_t)GetTickCount64() ^ (uintptr_t)&s;
+            for (int i = 0; i < 16; i += 8)
+            {
+                seed ^= seed >> 12; seed ^= seed << 25; seed ^= seed >> 27;
+                memcpy(s.token + i, &seed, 8);
+            }
+        }
+    }
+    s.hdrKey  = DeriveKey(s.token, 0);
+    s.dllKey  = DeriveKey(s.token, 1);
+    s.tokenHex = HexStr(s.token, 16);
 
-    // 5. Send AuthOk
+    // ---- 5. Persist session in DB ----
+    {
+        std::lock_guard lk(g_dbMu);
+        SessionRow sr{};
+        sr.token_hex      = s.tokenHex;
+        sr.hwid_hash      = s.hwid;
+        sr.created_at     = now;
+        sr.last_heartbeat = now;
+        g_db.InsertSession(sr);
+    }
+
+    // ---- 6. Send AuthOk ----
     AuthOkPayload aok{};
     memcpy(aok.SessionToken, s.token, 16);
-    aok.ExpiresAt = (uint32_t)time(nullptr) + 3600;
+    aok.ExpiresAt = (uint32_t)(now + 3600);
     if (!SendMsg(s, MsgType::AuthOk, &aok, sizeof(aok)))
-    { closesocket(csock); return; }
-    std::cout << std::format("[S] AuthOk -> {}\n", s.hwid);
+    {
+        closesocket(csock); return;
+    }
+    std::cout << std::format("[S] AuthOk -> {:.16}...\n", s.hwid);
+    ++g_activeSessions;
 
-    // 6. Push config (optional)
+    // ---- 7. Push config (optional) ----
     auto cfg = ReadFileFull(CONFIG_FILE);
     if (!cfg.empty())
         SendMsg(s, MsgType::Config, cfg.data(), (uint16_t)cfg.size());
 
-    // 7. Stream encrypted DLL
+    // ---- 8. Stream encrypted DLL ----
     if (!g_dllBytes.empty())
     {
         if (!StreamEncryptedDll(s))
             std::cout << "[S] DLL stream failed\n";
         else
-            std::cout << std::format("[S] DLL delivered to {}\n", s.hwid);
+            std::cout << std::format("[S] DLL delivered to {:.16}...\n", s.hwid);
     }
     else
     {
-        std::cout << "[S] No DLL loaded (place SparkyCore.dll next to server)\n";
+        std::cout << "[S] No DLL loaded — clients won't receive payload\n";
     }
 
-    // 8. Keep-alive loop
+    // ---- 9. Keep-alive heartbeat loop ----
     while (true)
     {
         MsgType mt{}; std::vector<uint8_t> mp;
         if (!RecvMsg(s, mt, mp, 35000)) break;
-        if (mt == MsgType::Heartbeat) SendMsg(s, MsgType::Ack);
+        if (mt == MsgType::Heartbeat)
+        {
+            SendMsg(s, MsgType::Ack);
+            // Update DB heartbeat timestamp
+            std::lock_guard lk(g_dbMu);
+            g_db.TouchSession(s.tokenHex, (int64_t)time(nullptr));
+        }
     }
 
-    std::cout << std::format("[S] {} disconnected\n", s.hwid);
+    // ---- 10. Cleanup ----
+    {
+        std::lock_guard lk(g_dbMu);
+        g_db.DeleteSession(s.tokenHex);
+    }
+    --g_activeSessions;
+    std::cout << std::format("[S] {:.16}... disconnected (active={})\n",
+                              s.hwid, g_activeSessions.load());
     closesocket(csock);
+}
+
+// ---------------------------------------------------------------------------
+// Admin console — runs on a background thread, reads stdin commands
+// ---------------------------------------------------------------------------
+static void AdminConsole()
+{
+    std::cout << "\n[Admin] Commands:\n"
+              << "  issue <tier> <days>          — generate new license key\n"
+              << "  activate <key> <hwid_hex>    — bind license to HWID\n"
+              << "  ban <hwid_hex> <reason>      — ban user\n"
+              << "  unban <hwid_hex>             — remove ban\n"
+              << "  list-licenses                — dump all licenses\n"
+              << "  purchases <hwid_hex>         — show purchases for HWID\n"
+              << "  sessions                     — show active session count\n"
+              << "  prune                        — prune expired sessions now\n"
+              << "  help                         — show this help\n\n";
+
+    std::string line;
+    while (std::getline(std::cin, line))
+    {
+        if (line.empty()) continue;
+        std::istringstream ss(line);
+        std::string cmd; ss >> cmd;
+
+        if (cmd == "issue")
+        {
+            int tier = 1, days = 0;
+            ss >> tier >> days;
+            std::lock_guard lk(g_dbMu);
+            std::string key = g_lm->IssueLicense(tier, days);
+            if (key.empty()) std::cout << "[Admin] Issue failed\n";
+            else             std::cout << "[Admin] New license: " << key << "\n";
+        }
+        else if (cmd == "activate")
+        {
+            std::string key, hwid;
+            ss >> key >> hwid;
+            std::lock_guard lk(g_dbMu);
+            std::string err = g_lm->ActivateLicense(key, hwid, (int64_t)time(nullptr));
+            if (err.empty()) std::cout << "[Admin] Activated " << key << " -> " << hwid << "\n";
+            else             std::cout << "[Admin] Error: " << err << "\n";
+        }
+        else if (cmd == "ban")
+        {
+            std::string hwid, reason;
+            ss >> hwid;
+            std::getline(ss >> std::ws, reason);
+            std::lock_guard lk(g_dbMu);
+            g_db.BanUser(hwid, reason.empty() ? "admin ban" : reason);
+            std::cout << "[Admin] Banned " << hwid << "\n";
+        }
+        else if (cmd == "unban")
+        {
+            std::string hwid; ss >> hwid;
+            std::lock_guard lk(g_dbMu);
+            g_db.UnbanUser(hwid);
+            std::cout << "[Admin] Unbanned " << hwid << "\n";
+        }
+        else if (cmd == "list-licenses")
+        {
+            std::lock_guard lk(g_dbMu);
+            auto rows = g_db.ListLicenses();
+            std::cout << std::format("[Admin] {} licenses:\n", rows.size());
+            for (auto& r : rows)
+            {
+                std::cout << std::format("  {} | tier={} | expires={} | hwid={}\n",
+                                          r.key, r.tier,
+                                          r.expires_at == 0 ? "never"
+                                                            : std::to_string(r.expires_at),
+                                          r.hwid_hash.empty() ? "(unbound)" : r.hwid_hash);
+            }
+        }
+        else if (cmd == "purchases")
+        {
+            std::string hwid; ss >> hwid;
+            std::lock_guard lk(g_dbMu);
+            auto rows = g_db.GetPurchases(hwid);
+            std::cout << std::format("[Admin] {} purchases for {}:\n", rows.size(), hwid);
+            for (auto& r : rows)
+                std::cout << std::format("  id={} key={} ${:.2f} at={}\n",
+                                          r.id, r.license_key,
+                                          r.amount_cents / 100.0,
+                                          r.purchased_at);
+        }
+        else if (cmd == "sessions")
+        {
+            std::cout << "[Admin] Active sessions: " << g_activeSessions.load() << "\n";
+        }
+        else if (cmd == "prune")
+        {
+            std::lock_guard lk(g_dbMu);
+            int n = g_db.PruneSessions((int64_t)time(nullptr));
+            std::cout << "[Admin] Pruned " << n << " stale sessions\n";
+        }
+        else if (cmd == "help")
+        {
+            std::cout << "Commands: issue activate ban unban list-licenses purchases sessions prune\n";
+        }
+        else
+        {
+            std::cout << "[Admin] Unknown command: " << cmd << "\n";
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Periodic maintenance — prune sessions, etc.
+// ---------------------------------------------------------------------------
+static void MaintenanceThread()
+{
+    while (true)
+    {
+        Sleep(300'000); // every 5 minutes
+        std::lock_guard lk(g_dbMu);
+        int n = g_db.PruneSessions((int64_t)time(nullptr), 7200);
+        if (n > 0) std::cout << "[S] Pruned " << n << " stale sessions\n";
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -256,41 +416,62 @@ static void HandleClient(SOCKET csock)
 // ---------------------------------------------------------------------------
 int main()
 {
-    std::cout << "[SparkyServer] v1.0\n";
+    std::cout << "[SparkyServer] v2.0 — SQLite edition\n";
 
-    // Load paid HWIDs and whitelist
-    LoadSet(PAID_FILE,      g_paid);
-    LoadSet(WHITELIST_FILE, g_whitelist);
-    std::cout << std::format("[S] {} paid, {} whitelisted\n",
-                              g_paid.size(), g_whitelist.size());
+    // Open database
+    {
+        std::lock_guard lk(g_dbMu);
+        if (!g_db.Open(DB_FILE))
+        {
+            std::cerr << "[S] FATAL: cannot open database " << DB_FILE << "\n";
+            return 1;
+        }
+        std::cout << "[S] Database: " << DB_FILE << "\n";
+    }
 
-    // Pre-load DLL into memory
+    LicenseManager lm(g_db);
+    g_lm = &lm;
+
+    // Pre-load DLL
     g_dllBytes = ReadFileFull(DLL_FILE);
     if (g_dllBytes.empty())
-        std::cout << "[S] WARNING: " << DLL_FILE << " not found — clients won't receive DLL\n";
+        std::cout << "[S] WARNING: " << DLL_FILE << " not found\n";
     else
         std::cout << std::format("[S] DLL loaded ({} bytes)\n", g_dllBytes.size());
 
+    // Maintenance thread
+    std::thread(MaintenanceThread).detach();
+
+    // Admin console on stdin
+    if (ENABLE_ADMIN_CONSOLE)
+        std::thread(AdminConsole).detach();
+
+    // TCP listen
     WSADATA wsa{}; WSAStartup(MAKEWORD(2,2), &wsa);
 
     SOCKET ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in a{}; a.sin_family=AF_INET; a.sin_port=htons(LISTEN_PORT); a.sin_addr.s_addr=INADDR_ANY;
-    int opt=1; setsockopt(ls,SOL_SOCKET,SO_REUSEADDR,(char*)&opt,sizeof(opt));
+    int opt=1; setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
 
-    if (bind(ls,(sockaddr*)&a,sizeof(a))!=0 || listen(ls,SOMAXCONN)!=0)
-    { std::cerr << "[S] Failed to bind on port " << LISTEN_PORT << "\n"; return 1; }
-
+    if (bind(ls, (sockaddr*)&a, sizeof(a)) != 0 || listen(ls, SOMAXCONN) != 0)
+    {
+        std::cerr << "[S] Failed to bind on port " << LISTEN_PORT << "\n";
+        return 1;
+    }
     std::cout << std::format("[S] Listening on :{}\n", LISTEN_PORT);
 
     while (true)
     {
-        sockaddr_in ca{}; int cl=sizeof(ca);
-        SOCKET cs = accept(ls,(sockaddr*)&ca,&cl);
+        sockaddr_in ca{}; int cl = sizeof(ca);
+        SOCKET cs = accept(ls, (sockaddr*)&ca, &cl);
         if (cs == INVALID_SOCKET) continue;
-        char ip[INET_ADDRSTRLEN]{}; inet_ntop(AF_INET,&ca.sin_addr,ip,sizeof(ip));
+        char ip[INET_ADDRSTRLEN]{}; inet_ntop(AF_INET, &ca.sin_addr, ip, sizeof(ip));
         std::cout << std::format("[S] Connection from {}\n", ip);
         std::thread(HandleClient, cs).detach();
     }
 
-    closesocket(ls); WSACleanup(); return 0;
+    g_db.Close();
+    closesocket(ls);
+    WSACleanup();
+    return 0;
 }
