@@ -1,14 +1,10 @@
-# ─── Build artifacts (ignore everything inside, but keep bin/) ─────────────
-SparkyLoader/build/**
-!SparkyLoader/build/bin/
-!SparkyLoader/build/bin/**
-
-SparkyLoader/build-win/**
-!SparkyLoader/build-win/bin/
-!SparkyLoader/build-win/bin/**
-
-# Catch any other build-* variants
+# ─── Build directories (CMake working dirs, fully ignored) ─────────────────
+SparkyLoader/build/
+SparkyLoader/build-win/
 SparkyLoader/build-*/
+
+# ─── Binary output (top-level bin/ is tracked) ─────────────────────────────
+# SparkyLoader/bin/ is intentionally NOT ignored so compiled binaries are kept
 
 # ─── CMake generated files ─────────────────────────────────────────────────
 CMakeFiles/
