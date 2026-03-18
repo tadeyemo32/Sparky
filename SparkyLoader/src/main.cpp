@@ -1,99 +1,234 @@
-// main.cpp
+// main.cpp — Sparky Loader
 #include <Windows.h>
-#include <string>
-#include <vector>
+#include <TlHelp32.h>
+#include <wincrypt.h>
 #include <fstream>
+#include <string>
+#include <thread>
+#include <atomic>
+#include <filesystem>
 
 #include "Logger.h"
 #include "ManualMap.h"
+#include "UI.h"
+#include "Protocol.h"
 
-// Helper: wide string → UTF-8 narrow string (needed for MinGW file paths)
-std::string WideToUTF8(const std::wstring& wstr) {
-    if (wstr.empty()) return {};
-    int size = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    std::string result(size - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &result[0], size, nullptr, nullptr);
-    return result;
+// Communication inline (no separate .cpp needed — small enough)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "psapi.lib")
+
+namespace fs = std::filesystem;
+
+// ---------------------------------------------------------------------------
+// HWID: SHA-256 of machine GUID
+// ---------------------------------------------------------------------------
+static bool GetHwidHash(uint8_t out[32])
+{
+    HKEY hKey{};
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                      L"SOFTWARE\\Microsoft\\Cryptography",
+                      0, KEY_READ, &hKey) != ERROR_SUCCESS)
+        return false;
+
+    wchar_t guid[64]{};
+    DWORD cb   = sizeof(guid);
+    DWORD type = REG_SZ;
+    bool ok = RegQueryValueExW(hKey, L"MachineGuid", nullptr, &type,
+                               reinterpret_cast<LPBYTE>(guid), &cb) == ERROR_SUCCESS;
+    RegCloseKey(hKey);
+    if (!ok) return false;
+
+    HCRYPTPROV hProv{};
+    if (!CryptAcquireContextW(&hProv, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+        return false;
+
+    HCRYPTHASH hHash{};
+    ok = false;
+    if (CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash))
+    {
+        if (CryptHashData(hHash, reinterpret_cast<BYTE*>(guid), cb - sizeof(wchar_t), 0))
+        {
+            DWORD hLen = 32;
+            ok = CryptGetHashParam(hHash, HP_HASHVAL, out, &hLen, 0) == TRUE;
+        }
+        CryptDestroyHash(hHash);
+    }
+    CryptReleaseContext(hProv, 0);
+    return ok;
 }
 
-std::vector<uint8_t> ReadFileToVector(const std::wstring& wpath) {
-    std::string path = WideToUTF8(wpath);
+// ---------------------------------------------------------------------------
+// Find a process by name
+// ---------------------------------------------------------------------------
+static DWORD FindProcess(const char* name)
+{
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) return 0;
 
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file.is_open()) {
-        Logger::Log(LogLevel::Error, "Cannot open DLL file: %s", path.c_str());
-        return {};
-    }
-
-    auto size = file.tellg();
-    if (size <= 0) {
-        Logger::Log(LogLevel::Error, "DLL file is empty: %s", path.c_str());
-        return {};
-    }
-
-    std::vector<uint8_t> buffer(static_cast<size_t>(size));
-    file.seekg(0);
-    file.read(reinterpret_cast<char*>(buffer.data()), size);
-
-    if (!file) {
-        Logger::Log(LogLevel::Error, "Failed to read DLL: %s", path.c_str());
-        return {};
-    }
-
-    return buffer;
-}
-
-int wmain(int argc, wchar_t* argv[]) {
-    Logger::Init();  // creates SparkyLoader.log in current directory
-
-    if (argc < 3) {
-        Logger::Log(LogLevel::Error, "Usage: SparkyLoader.exe <PID> <path_to_dll>");
-        Logger::Log(LogLevel::Info, "Example: SparkyLoader.exe 4568 C:\\cheats\\mycheat.dll");
-        return 1;
-    }
-
+    PROCESSENTRY32A pe{ sizeof(pe) };
     DWORD pid = 0;
-    try {
-        pid = std::stoul(argv[1]);
-    } catch (...) {
-        Logger::Log(LogLevel::Error, "Invalid PID format");
-        return 1;
+    if (Process32FirstA(hSnap, &pe))
+    {
+        do {
+            if (_stricmp(pe.szExeFile, name) == 0)
+            { pid = pe.th32ProcessID; break; }
+        } while (Process32NextA(hSnap, &pe));
+    }
+    CloseHandle(hSnap);
+    return pid;
+}
+
+// ---------------------------------------------------------------------------
+// Simple blocking server authenticate + config fetch
+// ---------------------------------------------------------------------------
+static bool ServerConnect(const char* host, int port,
+                           uint8_t hwidHash[32], UIState& state)
+{
+    WSADATA wsa{};
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock == INVALID_SOCKET) return false;
+
+    DWORD to = 5000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&to, sizeof(to));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons((uint16_t)port);
+    inet_pton(AF_INET, host, &addr.sin_addr);
+
+    if (connect(sock, (sockaddr*)&addr, sizeof(addr)) != 0)
+    {
+        closesocket(sock);
+        return false;
     }
 
-    std::wstring dllPath = argv[2];
+    // Send Hello
+    MsgHeader hdr{};
+    hdr.Magic   = PROTO_MAGIC;
+    hdr.Version = PROTO_VERSION;
+    hdr.Type    = MsgType::Hello;
+    hdr.Length  = sizeof(HelloPayload);
 
-    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-    if (!hProcess) {
-        Logger::Log(LogLevel::Error, "OpenProcess failed (PID %lu): error %lu", pid, GetLastError());
-        return 1;
+    HelloPayload hello{};
+    memcpy(hello.HwidHash, hwidHash, 32);
+    hello.BuildId = 0x0001'0000;
+
+    uint32_t crc = Crc32((uint8_t*)&hdr, sizeof(hdr)) ^ Crc32((uint8_t*)&hello, sizeof(hello));
+    send(sock, (char*)&hdr,   sizeof(hdr),   0);
+    send(sock, (char*)&hello, sizeof(hello), 0);
+    send(sock, (char*)&crc,   sizeof(crc),   0);
+
+    // Recv AuthOk
+    MsgHeader rHdr{};
+    int got = recv(sock, (char*)&rHdr, sizeof(rHdr), MSG_WAITALL);
+    if (got != sizeof(rHdr) || rHdr.Magic != PROTO_MAGIC || rHdr.Type != MsgType::AuthOk)
+    {
+        closesocket(sock);
+        return false;
     }
 
-    auto dllBytes = ReadFileToVector(dllPath);
-    if (dllBytes.empty()) {
-        CloseHandle(hProcess);
-        return 1;
+    state.AddLog("[INF] Server: authenticated");
+
+    // Optionally recv config
+    if (rHdr.Length >= sizeof(AuthOkPayload))
+    {
+        std::vector<uint8_t> pay(rHdr.Length);
+        recv(sock, (char*)pay.data(), rHdr.Length, MSG_WAITALL);
+        uint32_t dummy{};
+        recv(sock, (char*)&dummy, 4, MSG_WAITALL);
     }
 
-    Logger::Log(LogLevel::Info, "Attempting to inject into PID %lu", pid);
-    Logger::LogW(LogLevel::Info, L"DLL path: %s", dllPath.c_str());
+    closesocket(sock);
+    WSACleanup();
+    return true;
+}
 
-    bool success = ManualMapDll(
-        hProcess,
-        dllBytes,
-        dllPath,
-        true,   // erase PE header
-        true    // call DllMain
-    );
-
-    CloseHandle(hProcess);
-
-    if (success) {
-        Logger::Log(LogLevel::Info, "Injection completed successfully");
-    } else {
-        Logger::Log(LogLevel::Error, "Injection failed");
+// ---------------------------------------------------------------------------
+// Background process watcher
+// ---------------------------------------------------------------------------
+static void ProcessWatcher(UIState& state, std::atomic<bool>& running)
+{
+    while (running.load())
+    {
+        DWORD pid = FindProcess(state.processName);
+        state.processFound = pid != 0;
+        state.targetPid    = pid;
+        Sleep(1000);
     }
+}
 
-    Logger::Shutdown();  // optional but good practice
+// ---------------------------------------------------------------------------
+// wmain
+// ---------------------------------------------------------------------------
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
+{
+    Logger::Init("SparkyLoader.log");
 
-    return success ? 0 : 1;
+    UIState state{};
+    state.AddLog("[INF] Sparky started");
+
+    // Check if module file exists
+    state.dllReady = fs::exists(state.dllPath);
+    if (!state.dllReady)
+        state.AddLog(std::format("[WRN] Module not found: {}", state.dllPath));
+
+    uint8_t hwidHash[32]{};
+    GetHwidHash(hwidHash);
+
+    // Background process watcher
+    std::atomic<bool> watcherRunning = true;
+    std::thread watcher(ProcessWatcher, std::ref(state), std::ref(watcherRunning));
+
+    // Callbacks
+    auto onConnect = [&]() {
+        state.AddLog(std::format("[INF] Connecting to {}:{}...",
+                                  state.serverHost, state.serverPort));
+        std::thread([&]() {
+            bool ok = ServerConnect(state.serverHost, state.serverPort,
+                                    hwidHash, state);
+            state.serverConnected = ok;
+            state.AddLog(ok ? "[INF] Connected" : "[ERR] Connection failed");
+        }).detach();
+    };
+
+    auto onInject = [&]() {
+        if (!state.processFound)
+        { state.AddLog("[ERR] Process not found"); return; }
+
+        // Re-check file
+        state.dllReady = fs::exists(state.dllPath);
+        if (!state.dllReady)
+        { state.AddLog(std::format("[ERR] Module not found: {}", state.dllPath)); return; }
+
+        state.AddLog(std::format("[INF] Injecting into PID {}...", state.targetPid));
+
+        std::thread([&]() {
+            HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, state.targetPid);
+            if (!hProc)
+            {
+                state.AddLog("[ERR] OpenProcess failed");
+                return;
+            }
+
+            std::wstring wPath(state.dllPath, state.dllPath + strlen(state.dllPath));
+            bool ok = ManualMapDllFile(hProc, wPath);
+            CloseHandle(hProc);
+
+            state.injected = ok;
+            state.AddLog(ok ? "[INF] Injection successful" : "[ERR] Injection failed");
+        }).detach();
+    };
+
+    RunUI(state, onConnect, onInject);
+
+    watcherRunning = false;
+    if (watcher.joinable()) watcher.join();
+
+    Logger::Shutdown();
+    return 0;
 }

