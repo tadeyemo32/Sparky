@@ -17,14 +17,23 @@
 #include <sstream>
 #include <format>
 
+// OpenSSL TLS — optional at runtime.
+// Place sparky.crt + sparky.key next to the binary to enable TLS.
+// If absent the server runs in plaintext mode (dev mode).
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "crypt32.lib")
+// OpenSSL import libs are linked via CMake (OpenSSL::SSL, OpenSSL::Crypto)
 
 #include "../include/Database.h"
 #include "../include/LicenseManager.h"
 #include "../include/RateLimiter.h"
 #include "../include/KeyVault.h"
 #include "../../SparkyLoader/include/Protocol.h"
+#include "../../SparkyLoader/include/TlsLayer.h"
 
 // ---------------------------------------------------------------------------
 // Config
@@ -33,19 +42,16 @@ static constexpr uint16_t LISTEN_PORT   = 7777;
 static constexpr uint32_t CURRENT_BUILD = 0x0001'0000;
 static constexpr uint32_t CHUNK_SIZE    = 4096;
 
-// PostgreSQL connection string loaded from KeyVault::LoadConnStr() at startup.
-// Set SPARKY_PG_CONNSTR or place sparky.connstr next to the binary.
-// Example: host=localhost port=5432 dbname=sparky user=sparky password=s3cr3t sslmode=require
-
 // How many DLL chunks to send between mandatory client heartbeats.
 // At 4 KB/chunk, 8 chunks = 32 KB per heartbeat interval.
 // If the client goes silent for HEARTBEAT_DEADLINE_MS after its batch,
-// the server drops the connection mid-stream — the client can't "dump" the
-// full DLL by just reading the socket without responding.
+// the server drops the connection mid-stream.
 static constexpr uint32_t CHUNKS_PER_HEARTBEAT = 8;
 
 static constexpr const char* DLL_FILE    = "SparkyCore.dll";
 static constexpr const char* CONFIG_FILE = "config.bin";
+static constexpr const char* CERT_FILE   = "sparky.crt";
+static constexpr const char* KEY_FILE    = "sparky.key";
 static constexpr bool ENABLE_ADMIN_CONSOLE = true;
 
 // ---------------------------------------------------------------------------
@@ -62,6 +68,19 @@ static RateLimiter g_rl(10, 30, 60);
 static std::vector<uint8_t> g_dllBytes;
 static std::atomic<int>     g_activeSessions{0};
 static std::atomic<bool>    g_running{true};
+
+// TLS context — nullptr means plaintext (dev mode, no cert/key files found)
+static SSL_CTX* g_sslCtx = nullptr;
+
+// HWID pepper — server-side secret mixed into the HWID hash before DB storage.
+// Prevents an attacker with DB read access from reversing HWIDs.
+// Load: set SPARKY_HWID_PEPPER=<64 hex chars> before starting the server.
+// Generate one: openssl rand -hex 32
+static uint8_t g_hwidPepper[32]{};
+static bool    g_pepperSet = false;
+
+// Connection string stored globally for RunBackup()
+static std::string g_connstr;
 
 static BOOL WINAPI CtrlHandler(DWORD)
 {
@@ -91,29 +110,116 @@ static std::vector<uint8_t> ReadFileFull(const char* path)
 }
 
 // ---------------------------------------------------------------------------
+// PepperHwid — applies the server-side HWID pepper.
+//
+// The loader sends SHA-256(MachineGuid). If g_pepperSet is true, the server
+// computes SHA-256(raw_hwid_bytes || g_hwidPepper) before storing or looking
+// up the HWID. This means:
+//   - The stored HWID hash can never be reversed back to the machine GUID
+//     even if an attacker gets a full DB dump.
+//   - The pepper must never change, or all existing HWID bindings break.
+//   - Use --gen-token to generate a random pepper; store it in
+//     SPARKY_HWID_PEPPER and back it up separately from the database.
+// ---------------------------------------------------------------------------
+static std::string PepperHwid(const std::string& hwid)
+{
+    if (!g_pepperSet || hwid.size() < 64) return hwid;
+
+    // Decode 64 hex chars → 32 raw bytes
+    uint8_t raw[32]{};
+    auto h2 = [](char c) -> uint8_t {
+        if (c >= '0' && c <= '9') return (uint8_t)(c - '0');
+        if (c >= 'a' && c <= 'f') return (uint8_t)(c - 'a' + 10);
+        if (c >= 'A' && c <= 'F') return (uint8_t)(c - 'A' + 10);
+        return 0;
+    };
+    for (int i = 0; i < 32; ++i)
+        raw[i] = (h2(hwid[i*2]) << 4) | h2(hwid[i*2+1]);
+
+    // SHA-256(raw_hwid || pepper)
+    HCRYPTPROV hProv{};
+    if (!CryptAcquireContextW(&hProv, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+        return hwid; // fallback to unpepered on CryptAPI failure
+
+    uint8_t digest[32]{};
+    bool ok = false;
+    HCRYPTHASH hHash{};
+    if (CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash))
+    {
+        if (CryptHashData(hHash, raw, 32, 0)
+            && CryptHashData(hHash, g_hwidPepper, 32, 0))
+        {
+            DWORD hl = 32;
+            ok = CryptGetHashParam(hHash, HP_HASHVAL, digest, &hl, 0) == TRUE;
+        }
+        CryptDestroyHash(hHash);
+    }
+    CryptReleaseContext(hProv, 0);
+    return ok ? HexStr(digest, 32) : hwid;
+}
+
+// ---------------------------------------------------------------------------
+// RunBackup — dump the PostgreSQL database via pg_dump.
+// Writes to backups/sparky_YYYYMMDD_HHMMSS.sql next to the binary.
+// pg_dump must be in PATH (it ships with the PostgreSQL client tools).
+// Called from MaintenanceThread every 6 hours.
+// ---------------------------------------------------------------------------
+static void RunBackup()
+{
+    if (g_connstr.empty()) return;
+
+    // Ensure backups/ directory exists (no-op if already there)
+    CreateDirectoryA("backups", nullptr);
+
+    // Build timestamp filename
+    time_t now = time(nullptr);
+    tm* t = localtime(&now);
+    char fname[80]{};
+    snprintf(fname, sizeof(fname),
+             "backups/sparky_%04d%02d%02d_%02d%02d%02d.sql",
+             t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+             t->tm_hour, t->tm_min, t->tm_sec);
+
+    // Build command: pg_dump -d "<connstr>" -f "<fname>"
+    // Quotes around the connstr handle spaces in password / host values.
+    std::string cmd = std::string("pg_dump -d \"") + g_connstr + "\" -f \"" + fname + "\"";
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessA(nullptr, const_cast<char*>(cmd.c_str()),
+                        nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                        nullptr, nullptr, &si, &pi))
+    {
+        std::cout << "[S] RunBackup: CreateProcess failed — is pg_dump in PATH?\n";
+        return;
+    }
+
+    WaitForSingleObject(pi.hProcess, 120000); // wait up to 2 min
+    DWORD exitCode = 0;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    if (exitCode == 0)
+        std::cout << std::format("[S] DB backup → {}\n", fname);
+    else
+        std::cout << std::format("[S] pg_dump exited {} — check PATH / credentials\n", exitCode);
+}
+
+// ---------------------------------------------------------------------------
 // Per-client session state
 // ---------------------------------------------------------------------------
 struct ClientSession
 {
     SOCKET      sock;
+    SSL*        ssl      = nullptr;  // nullptr = plaintext dev mode
     uint64_t    hdrKey   = 0;
     uint64_t    dllKey   = 0;
     uint8_t     token[16]{};
     std::string hwid;
     std::string tokenHex;
     std::string loaderHash; // hex of loader SHA-256 from Hello
-};
-
-static auto RawSend = [](SOCKET s, const void* d, int n) -> bool {
-    const char* p = (const char*)d; int sent = 0;
-    while (sent < n) { int r = send(s, p+sent, n-sent, 0); if (r<=0) return false; sent+=r; }
-    return true;
-};
-static auto RawRecv = [](SOCKET s, void* d, int n, DWORD ms = 10000) -> bool {
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char*)&ms, sizeof(ms));
-    char* p = (char*)d; int got = 0;
-    while (got < n) { int r = recv(s, p+got, n-got, 0); if (r<=0) return false; got+=r; }
-    return true;
 };
 
 static bool SendMsg(ClientSession& s, MsgType t,
@@ -125,20 +231,20 @@ static bool SendMsg(ClientSession& s, MsgType t,
     if (s.hdrKey && !buf.empty()) XorStream(buf.data(), (uint32_t)buf.size(), s.hdrKey);
     uint32_t crc = Crc32((uint8_t*)&h, sizeof(h));
     if (!buf.empty()) crc ^= Crc32(buf.data(), (uint32_t)buf.size());
-    return RawSend(s.sock, &h, sizeof(h))
-        && (buf.empty() || RawSend(s.sock, buf.data(), (int)buf.size()))
-        && RawSend(s.sock, &crc, 4);
+    return NetSend(s.sock, s.ssl, &h, sizeof(h))
+        && (buf.empty() || NetSend(s.sock, s.ssl, buf.data(), (int)buf.size()))
+        && NetSend(s.sock, s.ssl, &crc, 4);
 }
 
 static bool RecvMsg(ClientSession& s, MsgType& t,
                     std::vector<uint8_t>& pay, DWORD ms = 10000)
 {
     MsgHeader h{};
-    if (!RawRecv(s.sock, &h, sizeof(h), ms)) return false;
+    if (!NetRecv(s.sock, s.ssl, &h, sizeof(h), ms)) return false;
     if (h.Magic != PROTO_MAGIC || h.Version != PROTO_VERSION) return false;
     pay.resize(h.Length);
-    if (h.Length && !RawRecv(s.sock, pay.data(), h.Length, ms)) return false;
-    uint32_t rc{}; if (!RawRecv(s.sock, &rc, 4, ms)) return false;
+    if (h.Length && !NetRecv(s.sock, s.ssl, pay.data(), h.Length, ms)) return false;
+    uint32_t rc{}; if (!NetRecv(s.sock, s.ssl, &rc, 4, ms)) return false;
     uint32_t lc = Crc32((uint8_t*)&h, sizeof(h));
     if (!pay.empty()) lc ^= Crc32(pay.data(), (uint32_t)pay.size());
     if (lc != rc) return false;
@@ -148,20 +254,6 @@ static bool RecvMsg(ClientSession& s, MsgType& t,
 
 // ---------------------------------------------------------------------------
 // StreamEncryptedDll — heartbeat-gated, rolling-key chunked DLL delivery.
-//
-// Protocol (mirrors loader's receive loop exactly):
-//   Server sends BinaryReady { total, chunkSize, numChunks, chunksPerHB }
-//   For each batch of chunksPerHB chunks (and the final partial batch):
-//     Server sends N × BinaryChunk, each encrypted with current rollingKey
-//     Server waits up to HEARTBEAT_DEADLINE_MS for a HeartbeatPayload (nonce)
-//     Both sides call RollKey(rollingKey, nonce) to advance to the next key
-//     Server sends Ack
-//   Server sends BinaryEnd
-//
-// Security properties:
-//   • Each 32 KB batch uses a different key — static packet capture is useless
-//   • Missing/wrong heartbeat → key divergence → DLL decrypts as garbage
-//   • No pre-buffering needed — chunks are encrypted on-the-fly from g_dllBytes
 // ---------------------------------------------------------------------------
 static bool StreamEncryptedDll(ClientSession& s)
 {
@@ -181,7 +273,7 @@ static bool StreamEncryptedDll(ClientSession& s)
     std::cout << std::format("[S] Streaming {:.16}... ({} chunks, key rolls every {})\n",
                               s.hwid, nChunks, hbInterval);
 
-    uint64_t rollingKey = s.dllKey; // initial key; rolled after each HB batch
+    uint64_t rollingKey = s.dllKey;
 
     for (uint32_t c = 0; c < nChunks; ++c)
     {
@@ -189,7 +281,6 @@ static bool StreamEncryptedDll(ClientSession& s)
         const uint32_t size = (uint32_t)std::min((size_t)CHUNK_SIZE,
                                                    (size_t)(total - off));
 
-        // Copy raw plaintext chunk, encrypt with current rolling key
         std::vector<uint8_t> chunk(g_dllBytes.begin() + off,
                                     g_dllBytes.begin() + off + size);
         XorStream(chunk.data(), size, rollingKey);
@@ -197,7 +288,6 @@ static bool StreamEncryptedDll(ClientSession& s)
         if (!SendMsg(s, MsgType::BinaryChunk, chunk.data(), (uint16_t)size))
             return false;
 
-        // Heartbeat point: after every hbInterval chunks, AND after the last chunk
         if ((c + 1) % hbInterval == 0 || c + 1 == nChunks)
         {
             MsgType mt{}; std::vector<uint8_t> mp;
@@ -214,7 +304,6 @@ static bool StreamEncryptedDll(ClientSession& s)
                 return false;
             }
 
-            // Extract nonce; malformed HB (no payload) → nonce = zeros → key diverges
             uint8_t nonce[16]{};
             if (mp.size() >= sizeof(HeartbeatPayload))
                 memcpy(nonce, mp.data(), 16);
@@ -234,42 +323,54 @@ static bool StreamEncryptedDll(ClientSession& s)
 // ---------------------------------------------------------------------------
 // HandleClient
 // ---------------------------------------------------------------------------
-static void HandleClient(SOCKET csock)
+static void HandleClient(SOCKET csock, SSL* ssl)
 {
-    ClientSession s{csock};
+    ClientSession s{};
+    s.sock = csock;
+    s.ssl  = ssl;
     const int64_t now = (int64_t)time(nullptr);
+
+    // Shared cleanup: TLS teardown then socket close.
+    // Called at every early return and at the end of the function.
+    auto cleanup = [&]() {
+        if (s.ssl) { SSL_shutdown(s.ssl); SSL_free(s.ssl); s.ssl = nullptr; }
+        closesocket(csock);
+    };
 
     // ---- 1. Receive Hello ----
     MsgHeader h{};
-    if (!RawRecv(s.sock, &h, sizeof(h), 10000)
+    if (!NetRecv(s.sock, s.ssl, &h, sizeof(h), 10000)
         || h.Magic   != PROTO_MAGIC
         || h.Version != PROTO_VERSION
         || h.Type    != MsgType::Hello)
     {
-        closesocket(csock); return;
+        cleanup(); return;
     }
     // HelloPayload is fixed-size: reject anything shorter or suspiciously large
-    // before allocating or reading further bytes from an untrusted source.
     if (h.Length < sizeof(HelloPayload) || h.Length > sizeof(HelloPayload) + 256)
     {
-        closesocket(csock); return;
+        cleanup(); return;
     }
     std::vector<uint8_t> pay(h.Length);
-    if (!RawRecv(s.sock, pay.data(), h.Length)) { closesocket(csock); return; }
-    uint32_t crc{}; if (!RawRecv(s.sock, &crc, 4)) { closesocket(csock); return; }
+    if (!NetRecv(s.sock, s.ssl, pay.data(), h.Length, 10000)) { cleanup(); return; }
+    uint32_t crc{}; if (!NetRecv(s.sock, s.ssl, &crc, 4, 10000)) { cleanup(); return; }
 
-    // Verify Hello CRC (same formula used by SendMsg/RecvMsg)
+    // Verify Hello CRC
     {
         uint32_t computed = Crc32((uint8_t*)&h, sizeof(h));
         if (!pay.empty()) computed ^= Crc32(pay.data(), (uint32_t)pay.size());
-        if (computed != crc) { closesocket(csock); return; }
+        if (computed != crc) { cleanup(); return; }
     }
 
-    if (pay.size() < sizeof(HelloPayload)) { closesocket(csock); return; }
+    if (pay.size() < sizeof(HelloPayload)) { cleanup(); return; }
     const auto& hello = *reinterpret_cast<HelloPayload*>(pay.data());
 
+    // Raw HWID hex from the loader
     s.hwid       = HexStr(hello.HwidHash,   32);
     s.loaderHash = HexStr(hello.LoaderHash, 32);
+
+    // Apply server-side pepper before any DB lookup or storage
+    if (g_pepperSet) s.hwid = PepperHwid(s.hwid);
 
     std::cout << std::format("[S] Hello HWID={:.16}... build={:08X} loader={:.16}...\n",
                               s.hwid, hello.BuildId, s.loaderHash);
@@ -279,19 +380,16 @@ static void HandleClient(SOCKET csock)
     {
         std::cout << "[S] Reject: stale build\n";
         SendMsg(s, MsgType::AuthFail);
-        closesocket(csock); return;
+        cleanup(); return;
     }
 
     // ---- 3. DB authorisation (ban + license + integrity check) ----
     {
         std::lock_guard lk(g_dbMu);
-
-        // Always record the HWID + loader hash (even rejected clients)
         g_db.TouchUser(s.hwid, now, s.loaderHash);
 
         if (!g_db.IsAuthorised(s.hwid, s.loaderHash, now))
         {
-            // Check specifically if they're banned so we can give a clear log line
             auto user = g_db.GetUser(s.hwid);
             if (user && user->is_banned)
                 std::cout << std::format("[S] Reject: banned ({}) — {:.16}...\n",
@@ -305,7 +403,7 @@ static void HandleClient(SOCKET csock)
                                           s.hwid);
 
             SendMsg(s, MsgType::AuthFail);
-            closesocket(csock); return;
+            cleanup(); return;
         }
     }
 
@@ -322,24 +420,20 @@ static void HandleClient(SOCKET csock)
         {
             std::cout << "[S] FATAL: CryptGenRandom failed — refusing connection\n";
             SendMsg(s, MsgType::AuthFail);
-            closesocket(csock); return;
+            cleanup(); return;
         }
     }
 
-    // ---- 5. Send AuthOk PLAIN (hdrKey still 0 here) ----
-    // CRITICAL: AuthOk MUST be sent before hdrKey is set.
-    // The loader reads this raw to extract the token, then derives its own keys.
-    // If we encrypt AuthOk with hdrKey, the loader can't decrypt it (chicken-egg).
+    // ---- 5. Send AuthOk PLAIN (hdrKey still 0) ----
     {
         AuthOkPayload aok{};
         memcpy(aok.SessionToken, s.token, 16);
         aok.ExpiresAt = (uint32_t)(now + 3600);
-        // hdrKey == 0 here → SendMsg sends payload unencrypted
         if (!SendMsg(s, MsgType::AuthOk, &aok, sizeof(aok)))
-        { closesocket(csock); return; }
+        { cleanup(); return; }
     }
 
-    // ---- 6. NOW derive session keys (all subsequent messages are encrypted) ----
+    // ---- 6. Derive session keys (all subsequent messages are encrypted) ----
     s.hdrKey   = DeriveKey(s.token, 0);
     s.dllKey   = DeriveKey(s.token, 1);
     s.tokenHex = HexStr(s.token, 16);
@@ -363,13 +457,9 @@ static void HandleClient(SOCKET csock)
     if (!cfg.empty())
     {
         if (cfg.size() > 0xFFFF)
-        {
             std::cout << "[S] WARNING: config.bin exceeds 65535 bytes — skipping\n";
-        }
         else
-        {
             SendMsg(s, MsgType::Config, cfg.data(), (uint16_t)cfg.size());
-        }
     }
 
     // ---- 9. Heartbeat-gated DLL stream ----
@@ -385,10 +475,7 @@ static void HandleClient(SOCKET csock)
         std::cout << "[S] No DLL loaded\n";
     }
 
-    // ---- 9. Post-delivery keep-alive loop ----
-    // Client must send a Heartbeat every 25 s (loader interval).
-    // We allow up to 2 consecutive misses (covers one transient network blip)
-    // before treating the session as dead and evicting it.
+    // ---- 10. Post-delivery keep-alive loop ----
     static constexpr int MAX_HB_MISSES = 2;
     int hbMisses = 0;
     while (g_running.load())
@@ -407,7 +494,7 @@ static void HandleClient(SOCKET csock)
             }
             continue;
         }
-        hbMisses = 0; // reset on any valid message
+        hbMisses = 0;
         if (mt == MsgType::Heartbeat)
         {
             SendMsg(s, MsgType::Ack);
@@ -416,7 +503,7 @@ static void HandleClient(SOCKET csock)
         }
     }
 
-    // ---- 10. Cleanup ----
+    // ---- 11. Cleanup ----
     {
         std::lock_guard lk(g_dbMu);
         g_db.DeleteSession(s.tokenHex);
@@ -424,7 +511,7 @@ static void HandleClient(SOCKET csock)
     --g_activeSessions;
     std::cout << std::format("[S] {:.16}... disconnected (active={})\n",
                               s.hwid, g_activeSessions.load());
-    closesocket(csock);
+    cleanup();
 }
 
 // ---------------------------------------------------------------------------
@@ -557,8 +644,7 @@ static void AdminConsole()
         }
         else if (cmd == "list-hashes")
         {
-            // Raw query since there's no ListHashes() helper — do it inline
-            std::cout << "[Admin] (use SQLite browser or add ListHashes() to Database)\n";
+            std::cout << "[Admin] (use admin.py or add ListHashes() to Database)\n";
         }
         else if (cmd == "help")
         {
@@ -573,25 +659,34 @@ static void AdminConsole()
 }
 
 // ---------------------------------------------------------------------------
-// Maintenance thread — respects g_running for graceful shutdown.
-// Sleeps in 1-second ticks instead of one 5-minute Sleep so shutdown is
-// immediate rather than blocking up to 5 minutes.
+// Maintenance thread — prunes stale sessions every 5 min + DB backup every 6 h.
+// Sleeps in 1-second ticks so shutdown is immediate rather than blocked.
 // ---------------------------------------------------------------------------
 static void MaintenanceThread()
 {
-    int ticks = 0;
+    int pruneTicks  = 0;   // fires every 300 ticks (5 min)
+    int backupTicks = 0;   // fires every 21600 ticks (6 h)
+
     while (g_running.load())
     {
         Sleep(1000);
-        if (++ticks < 300) continue; // 300 × 1 s = 5 minutes
-        ticks = 0;
+        ++pruneTicks;
+        ++backupTicks;
 
+        if (pruneTicks >= 300)
         {
+            pruneTicks = 0;
             std::lock_guard lk(g_dbMu);
             int n = g_db.PruneSessions((int64_t)time(nullptr), 7200);
             if (n > 0) std::cout << "[S] Pruned " << n << " stale session(s)\n";
+            g_rl.Prune();
         }
-        g_rl.Prune(); // free memory from inactive IPs
+
+        if (backupTicks >= 21600)
+        {
+            backupTicks = 0;
+            RunBackup();
+        }
     }
 }
 
@@ -600,27 +695,53 @@ static void MaintenanceThread()
 // ---------------------------------------------------------------------------
 int main(int argc, char** argv)
 {
-    // --gen-token: print a fresh 32-byte random hex token and exit
+    // --gen-token: print a fresh 32-byte random hex token and exit.
+    // Useful for generating both the HWID pepper and the admin secret.
     if (argc >= 2 && std::string(argv[1]) == "--gen-token")
     {
         KeyVault::GenerateToken();
         return 0;
     }
 
-    std::cout << "[SparkyServer] v3.0 (PostgreSQL)\n";
+    std::cout << "[SparkyServer] v3.1 (PostgreSQL + TLS + HWID pepper + DB backup)\n";
 
-    // Load PostgreSQL connection string
-    std::string connstr;
-    try { connstr = KeyVault::LoadConnStr(); }
+    // ---- Load PostgreSQL connection string ----
+    try { g_connstr = KeyVault::LoadConnStr(); }
     catch (const std::exception& e)
     {
         std::cerr << "[S] FATAL: " << e.what() << "\n";
         return 1;
     }
 
+    // ---- Load HWID pepper (optional) ----
+    if (const char* p = std::getenv("SPARKY_HWID_PEPPER"))
+    {
+        std::string ps(p);
+        if (ps.size() == 64)
+        {
+            auto h2 = [](char c) -> uint8_t {
+                if (c >= '0' && c <= '9') return (uint8_t)(c - '0');
+                if (c >= 'a' && c <= 'f') return (uint8_t)(c - 'a' + 10);
+                if (c >= 'A' && c <= 'F') return (uint8_t)(c - 'A' + 10);
+                return 0;
+            };
+            for (int i = 0; i < 32; ++i)
+                g_hwidPepper[i] = (h2(ps[i*2]) << 4) | h2(ps[i*2+1]);
+            g_pepperSet = true;
+            std::cout << "[S] HWID pepper: loaded\n";
+        }
+        else
+            std::cout << "[S] WARNING: SPARKY_HWID_PEPPER must be 64 hex chars — pepper disabled\n";
+    }
+    else
+    {
+        std::cout << "[S] HWID pepper: disabled (set SPARKY_HWID_PEPPER=<64 hex chars> to enable)\n";
+    }
+
+    // ---- Open database ----
     {
         std::lock_guard lk(g_dbMu);
-        if (!g_db.Open(connstr))
+        if (!g_db.Open(g_connstr))
         { std::cerr << "[S] FATAL: cannot connect to PostgreSQL\n"; return 1; }
         std::cout << "[S] PostgreSQL: connected\n";
         if (g_db.TrustedHashesEnabled())
@@ -638,6 +759,28 @@ int main(int argc, char** argv)
     else
         std::cout << std::format("[S] DLL loaded ({} bytes)\n", g_dllBytes.size());
 
+    // ---- TLS init (optional) ----
+    // Place sparky.crt + sparky.key next to the binary to enable TLS.
+    // Generate a self-signed cert for testing:
+    //   openssl req -x509 -newkey rsa:4096 -keyout sparky.key -out sparky.crt \
+    //               -days 365 -nodes -subj "/CN=sparky"
+    OPENSSL_init_ssl(0, nullptr);
+    g_sslCtx = SSL_CTX_new(TLS_server_method());
+    if (g_sslCtx)
+    {
+        if (SSL_CTX_use_certificate_file(g_sslCtx, CERT_FILE, SSL_FILETYPE_PEM) == 1
+            && SSL_CTX_use_PrivateKey_file(g_sslCtx, KEY_FILE,  SSL_FILETYPE_PEM) == 1)
+        {
+            std::cout << std::format("[S] TLS: enabled ({} / {})\n", CERT_FILE, KEY_FILE);
+        }
+        else
+        {
+            std::cout << "[S] TLS: cert/key not found — running in plaintext mode\n";
+            SSL_CTX_free(g_sslCtx);
+            g_sslCtx = nullptr;
+        }
+    }
+
     SetConsoleCtrlHandler(CtrlHandler, TRUE);
 
     std::thread(MaintenanceThread).detach();
@@ -653,12 +796,11 @@ int main(int argc, char** argv)
 
     if (bind(ls, (sockaddr*)&a, sizeof(a)) != 0 || listen(ls, SOMAXCONN) != 0)
     { std::cerr << "[S] Failed to bind :" << LISTEN_PORT << "\n"; return 1; }
-    std::cout << std::format("[S] Listening on :{}\n", LISTEN_PORT);
+    std::cout << std::format("[S] Listening on :{}{}\n",
+                              LISTEN_PORT, g_sslCtx ? " (TLS)" : " (plaintext)");
 
     while (g_running.load())
     {
-        // Poll accept() every 1 second so Ctrl+C / CtrlHandler can break the loop
-        // without leaving the listening socket blocked indefinitely.
         fd_set readfds;
         FD_ZERO(&readfds);
         FD_SET(ls, &readfds);
@@ -672,16 +814,32 @@ int main(int argc, char** argv)
 
         char ip[INET_ADDRSTRLEN]{}; inet_ntop(AF_INET, &ca.sin_addr, ip, sizeof(ip));
 
-        // Rate limit before spawning a thread — reject at accept() level
         if (!g_rl.Allow(ip))
         {
-            // Send nothing — hard-closed socket is the cleanest denial
             closesocket(cs);
             continue;
         }
 
-        std::cout << std::format("[S] Connection from {}\n", ip);
-        std::thread(HandleClient, cs).detach();
+        // Perform TLS handshake before spawning the client thread.
+        // The thread takes full ownership of cs and ssl (may be nullptr).
+        SSL* ssl = nullptr;
+        if (g_sslCtx)
+        {
+            ssl = SSL_new(g_sslCtx);
+            SSL_set_fd(ssl, (int)cs);
+            if (SSL_accept(ssl) <= 0)
+            {
+                std::cout << std::format("[S] TLS handshake failed from {} — {}\n",
+                                          ip, TlsLastError());
+                SSL_free(ssl);
+                closesocket(cs);
+                continue;
+            }
+        }
+
+        std::cout << std::format("[S] Connection from {}{}\n",
+                                  ip, ssl ? " (TLS)" : "");
+        std::thread(HandleClient, cs, ssl).detach();
     }
 
     std::cout << "[S] Shutting down...\n";
@@ -690,6 +848,7 @@ int main(int argc, char** argv)
         std::lock_guard lk(g_dbMu);
         g_db.Close();
     }
+    if (g_sslCtx) { SSL_CTX_free(g_sslCtx); g_sslCtx = nullptr; }
     WSACleanup();
     std::cout << "[S] Clean shutdown complete.\n";
     return 0;

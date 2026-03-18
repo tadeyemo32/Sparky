@@ -1,11 +1,24 @@
 cmake_minimum_required(VERSION 3.20...3.28)
-project(SparkyLoader VERSION 0.1 LANGUAGES CXX)
+project(SparkyLoader VERSION 0.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD          20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS        OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
+
+# ---------------------------------------------------------------------------
+# OpenSSL — for TLS connection to SparkyServer.
+#
+# Windows:  vcpkg install openssl:x64-windows  OR set OPENSSL_ROOT_DIR.
+# Linux:    apt install libssl-dev
+#
+# The loader attempts TLS on every connect. If the server is running in
+# plaintext dev-mode (no cert/key loaded), connect will fail — ensure
+# both sides are in the same mode.
+# ---------------------------------------------------------------------------
+find_package(OpenSSL REQUIRED)
+message(STATUS "SparkyLoader: OpenSSL ${OPENSSL_VERSION} found")
 
 # ---------------------------------------------------------------------------
 # GLFW (submodule)
@@ -56,6 +69,8 @@ target_link_libraries(SparkyLoader PRIVATE
     glfw
     psapi
     opengl32
+    OpenSSL::SSL
+    OpenSSL::Crypto
     crypt32
     ws2_32
 )

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20...3.28)
-project(SparkyServer VERSION 3.0 LANGUAGES CXX)
+project(SparkyServer VERSION 3.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,6 +24,19 @@ find_package(PostgreSQL REQUIRED)
 message(STATUS "SparkyServer: PostgreSQL ${PostgreSQL_VERSION_STRING} found")
 
 # ---------------------------------------------------------------------------
+# OpenSSL — optional at build time but enabled by default.
+#
+# Windows:  install via vcpkg (vcpkg install openssl:x64-windows) or
+#           from slproweb.com; point OPENSSL_ROOT_DIR at the install prefix.
+# Linux:    apt install libssl-dev  /  dnf install openssl-devel
+#
+# TLS is optional at *runtime*: place sparky.crt + sparky.key next to the
+# binary to enable TLS; if absent the server falls back to plaintext (dev mode).
+# ---------------------------------------------------------------------------
+find_package(OpenSSL REQUIRED)
+message(STATUS "SparkyServer: OpenSSL ${OPENSSL_VERSION} found")
+
+# ---------------------------------------------------------------------------
 # SparkyServer
 # ---------------------------------------------------------------------------
 add_executable(SparkyServer
@@ -40,8 +53,11 @@ target_include_directories(SparkyServer PRIVATE
 
 target_link_libraries(SparkyServer PRIVATE
     PostgreSQL::PostgreSQL
+    OpenSSL::SSL
+    OpenSSL::Crypto
     ws2_32
     advapi32
+    crypt32
 )
 
 target_compile_definitions(SparkyServer PRIVATE
