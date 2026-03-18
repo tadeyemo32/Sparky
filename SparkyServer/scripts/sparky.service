@@ -1,0 +1,64 @@
+[Unit]
+Description=SparkyServer — auth + binary delivery
+After=network.target
+Wants=network.target
+
+[Service]
+# ---- Security hardening ----
+# Run as dedicated low-privilege user
+User=__SERVER_USER__
+Group=__SERVER_USER__
+
+# Filesystem: read-write only to the server directory
+WorkingDirectory=__SERVER_DIR__
+ExecStart=__SERVER_DIR__/__BINARY__
+
+# DB key from env or key file — prefer environment injection via systemd credentials
+# Edit with:  systemctl edit sparky
+#   [Service]
+#   Environment=SPARKY_DB_KEYFILE=/opt/sparky/sparky.key
+EnvironmentFile=-__SERVER_DIR__/sparky.env
+
+# Auto-restart on crash
+Restart=on-failure
+RestartSec=5
+
+# ---- Systemd sandboxing ----
+# These restrict what the process can do even if exploited.
+
+# No new privileges (prevents setuid/setgid escalation)
+NoNewPrivileges=yes
+
+# Private /tmp — process gets its own isolated tmpfs
+PrivateTmp=yes
+
+# Read-only filesystem except for the server directory
+ProtectSystem=strict
+ReadWritePaths=__SERVER_DIR__
+
+# Cannot see /home or /root
+ProtectHome=yes
+
+# Block access to kernel/hardware interfaces
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+# Restrict syscalls to what a TCP server needs
+# (remove this line if it causes startup failures, then re-add gradually)
+SystemCallFilter=@system-service @network-io @basic-io @io-event
+
+# Restrict address families (TCP only — no Unix sockets, etc.)
+RestrictAddressFamilies=AF_INET AF_INET6
+
+# Prevent memory-mapped executable writes (basic RWX mitigation)
+MemoryDenyWriteExecute=yes
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sparky
+
+[Install]
+WantedBy=multi-user.target

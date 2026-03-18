@@ -77,7 +77,9 @@ struct PurchaseRow
 class Database
 {
 public:
-    bool Open(const char* path);
+    // key: SQLCipher PRAGMA key string in the form "x'<64 hex chars>'"
+    //      Pass empty string when building without SPARKY_SQLCIPHER.
+    bool Open(const char* path, const std::string& key = "");
     void Close();
     bool IsOpen() const { return m_db != nullptr; }
 

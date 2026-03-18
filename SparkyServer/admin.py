@@ -2,14 +2,19 @@
 """
 sparky_admin.py — Python-side admin tool for SparkyServer.
 
-Uses the same SQLite database file that the C++ server writes to.
+Uses the same SQLite/SQLCipher database file that the C++ server writes to.
 Can run while the server is live (WAL mode makes concurrent reads safe).
+
+SQLCipher support:
+  pip install sqlcipher3          # needs libsqlcipher-dev on Linux
+  Set SPARKY_DB_KEY=<64 hex chars> before running (same key as C++ server)
 
 Usage:
     python admin.py <db_path> <command> [args...]
 
 Examples:
     python admin.py sparky.db status
+    python admin.py sparky.db gen-key             # generate a fresh 32-byte key
     python admin.py sparky.db issue weekly
     python admin.py sparky.db issue daily --days 1
     python admin.py sparky.db issue lifetime
@@ -27,13 +32,22 @@ Examples:
 """
 
 import sys
+import os
 import time
 import random
-import string
 import sqlite3
-import hashlib
 import argparse
 from datetime import datetime, timezone
+
+# ---------------------------------------------------------------------------
+# SQLCipher: try pysqlcipher3 first; fall back to plain sqlite3 with warning.
+# ---------------------------------------------------------------------------
+_SQLCIPHER = False
+try:
+    from sqlcipher3 import dbapi2 as _sql_module
+    _SQLCIPHER = True
+except ImportError:
+    _sql_module = sqlite3
 
 DB_PATH = "sparky.db"
 
@@ -82,13 +96,53 @@ def expires_at(tier: int, days_override: int = 0, now: int = 0) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Key loading (mirrors KeyVault.h resolution order)
+# ---------------------------------------------------------------------------
+def _load_key() -> str | None:
+    """Return SQLCipher key string  "x'<64hex>'"  or None if not configured."""
+    hex_key = None
+    if k := os.environ.get("SPARKY_DB_KEY"):
+        hex_key = k.strip()
+    elif kf := os.environ.get("SPARKY_DB_KEYFILE"):
+        with open(kf) as f:
+            hex_key = f.readline().strip()
+    elif os.path.exists("sparky.key"):
+        with open("sparky.key") as f:
+            hex_key = f.readline().strip()
+
+    if hex_key is None:
+        return None
+    if len(hex_key) != 64 or not all(c in "0123456789abcdefABCDEF" for c in hex_key):
+        raise ValueError("SPARKY_DB_KEY must be exactly 64 hex characters")
+    return f"x'{hex_key.lower()}'"
+
+
+# ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
-def connect(db_path: str) -> sqlite3.Connection:
-    con = sqlite3.connect(db_path, timeout=10.0)
+def connect(db_path: str) -> _sql_module.Connection:
+    con = _sql_module.connect(db_path, timeout=10.0)
+
+    if _SQLCIPHER:
+        key = _load_key()
+        if key is None:
+            print("WARNING: SQLCipher available but no key set (SPARKY_DB_KEY)."
+                  " Trying to open as plaintext — this will fail if DB is encrypted.",
+                  file=sys.stderr)
+        else:
+            con.execute(f'PRAGMA key = "{key}"')
+            con.execute("PRAGMA cipher_page_size = 65536")
+            con.execute("PRAGMA kdf_iter = 256000")
+            con.execute("PRAGMA cipher_hmac_algorithm = HMAC_SHA512")
+            con.execute("PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA512")
+    else:
+        if os.environ.get("SPARKY_DB_KEY"):
+            print("WARNING: SPARKY_DB_KEY is set but sqlcipher3 is not installed."
+                  " Run:  pip install sqlcipher3", file=sys.stderr)
+
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA foreign_keys=ON")
-    con.row_factory = sqlite3.Row
+    con.row_factory = _sql_module.Row
     return con
 
 
@@ -131,7 +185,16 @@ def fmt_hwid(h: str) -> str:
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
-def cmd_status(con: sqlite3.Connection, _args):
+def cmd_gen_key(_con, _args):
+    """Print a cryptographically random 32-byte hex key."""
+    key = os.urandom(32).hex()
+    print(f"\n  {key}\n")
+    print("  Save this as SPARKY_DB_KEY in your environment,")
+    print("  or write it to sparky.key (chmod 400, owned by server user).")
+    print("  Keep it secret — if lost, the database cannot be opened.\n")
+
+
+def cmd_status(con, _args):
     r = con.execute("""
         SELECT
             (SELECT COUNT(*) FROM licenses)                        AS total_keys,
@@ -349,7 +412,10 @@ def main():
     # Sub-parse per command
     sub = argparse.ArgumentParser()
 
-    if cmd == "status":
+    if cmd in ("gen-key", "genkey"):
+        cmd_gen_key(None, None)
+
+    elif cmd == "status":
         cmd_status(con, None)
 
     elif cmd == "issue":

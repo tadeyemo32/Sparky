@@ -22,6 +22,8 @@
 
 #include "../include/Database.h"
 #include "../include/LicenseManager.h"
+#include "../include/RateLimiter.h"
+#include "../include/KeyVault.h"
 #include "../../SparkyLoader/include/Protocol.h"
 
 // ---------------------------------------------------------------------------
@@ -49,6 +51,10 @@ static constexpr bool ENABLE_ADMIN_CONSOLE = true;
 static Database        g_db;
 static LicenseManager* g_lm = nullptr;
 static std::mutex      g_dbMu;
+
+// Rate limiter: 10 connections per 60 s → soft throttle
+//               30 connections per 60 s → hard ban + iptables suggestion
+static RateLimiter g_rl(10, 30, 60);
 
 static std::vector<uint8_t> g_dllBytes;
 static std::atomic<int>     g_activeSessions{0};
@@ -159,11 +165,22 @@ static bool StreamEncryptedDll(ClientSession& s)
     std::cout << std::format("[S] Streaming DLL to {:.16}... ({} chunks, HB every {})\n",
                               s.hwid, nChunks, hbInterval);
 
+    // Current DLL XOR key — starts as session-derived dllKey, rolls after each HB
+    uint64_t rollingKey = s.dllKey;
+
     for (uint32_t c = 0; c < nChunks; ++c)
     {
         uint32_t off  = c * CHUNK_SIZE;
         uint32_t size = (uint32_t)std::min((size_t)CHUNK_SIZE, (size_t)(total - off));
-        if (!SendMsg(s, MsgType::BinaryChunk, enc.data() + off, (uint16_t)size))
+
+        // Encrypt this chunk with the current rolling key
+        std::vector<uint8_t> chunk(enc.begin() + off,
+                                    enc.begin() + off + size);
+        // enc is already XOR'd with dllKey — undo that first, re-apply rollingKey
+        XorStream(chunk.data(), (uint32_t)chunk.size(), s.dllKey);    // undo base
+        XorStream(chunk.data(), (uint32_t)chunk.size(), rollingKey);  // apply rolling
+
+        if (!SendMsg(s, MsgType::BinaryChunk, chunk.data(), (uint16_t)chunk.size()))
             return false;
 
         // After every hbInterval chunks (and at the very last chunk), wait for HB
@@ -171,7 +188,6 @@ static bool StreamEncryptedDll(ClientSession& s)
         if ((c + 1) % hbInterval == 0 || isLastChunk)
         {
             MsgType mt{}; std::vector<uint8_t> mp;
-            // Timeout = HEARTBEAT_DEADLINE_MS
             if (!RecvMsg(s, mt, mp, HEARTBEAT_DEADLINE_MS))
             {
                 std::cout << std::format(
@@ -184,7 +200,16 @@ static bool StreamEncryptedDll(ClientSession& s)
                 std::cout << "[S] Expected Heartbeat, got unexpected msg — dropping\n";
                 return false;
             }
-            // Acknowledge heartbeat and update DB timestamp
+
+            // Extract nonce from heartbeat payload — used to roll key on both sides
+            uint8_t nonce[16]{};
+            if (mp.size() >= sizeof(HeartbeatPayload))
+                memcpy(nonce, mp.data(), 16);
+            // else: malformed HB — nonce stays zero; keys diverge (client gets garbage)
+
+            // Roll key: both server and loader now derive the same new key
+            rollingKey = RollKey(rollingKey, nonce);
+
             SendMsg(s, MsgType::Ack);
             {
                 std::lock_guard lk(g_dbMu);
@@ -507,22 +532,46 @@ static void MaintenanceThread()
     while (true)
     {
         Sleep(300'000); // every 5 minutes
-        std::lock_guard lk(g_dbMu);
-        int n = g_db.PruneSessions((int64_t)time(nullptr), 7200);
-        if (n > 0) std::cout << "[S] Pruned " << n << " stale session(s)\n";
+        {
+            std::lock_guard lk(g_dbMu);
+            int n = g_db.PruneSessions((int64_t)time(nullptr), 7200);
+            if (n > 0) std::cout << "[S] Pruned " << n << " stale session(s)\n";
+        }
+        g_rl.Prune(); // free memory from inactive IPs
     }
 }
 
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
-int main()
+int main(int argc, char** argv)
 {
-    std::cout << "[SparkyServer] v2.1\n";
+    // --gen-key: print a fresh 32-byte hex key and exit
+    if (argc >= 2 && std::string(argv[1]) == "--gen-key")
+    {
+        KeyVault::GenerateKey();
+        return 0;
+    }
+
+    std::cout << "[SparkyServer] v2.2\n";
+
+    // Load DB encryption key (SQLCipher build requires this)
+    std::string dbKey;
+#ifdef SPARKY_SQLCIPHER
+    try { dbKey = KeyVault::LoadDbKey(); }
+    catch (const std::exception& e)
+    {
+        std::cerr << "[S] FATAL: " << e.what() << "\n";
+        return 1;
+    }
+    std::cout << "[S] DB encryption: AES-256 (SQLCipher)\n";
+#else
+    std::cout << "[S] DB encryption: NONE (dev build — do not deploy)\n";
+#endif
 
     {
         std::lock_guard lk(g_dbMu);
-        if (!g_db.Open(DB_FILE))
+        if (!g_db.Open(DB_FILE, dbKey))
         { std::cerr << "[S] FATAL: cannot open " << DB_FILE << "\n"; return 1; }
         std::cout << "[S] Database: " << DB_FILE << "\n";
         if (g_db.TrustedHashesEnabled())
@@ -560,7 +609,17 @@ int main()
         sockaddr_in ca{}; int cl = sizeof(ca);
         SOCKET cs = accept(ls, (sockaddr*)&ca, &cl);
         if (cs == INVALID_SOCKET) continue;
+
         char ip[INET_ADDRSTRLEN]{}; inet_ntop(AF_INET, &ca.sin_addr, ip, sizeof(ip));
+
+        // Rate limit before spawning a thread — reject at accept() level
+        if (!g_rl.Allow(ip))
+        {
+            // Send nothing — hard-closed socket is the cleanest denial
+            closesocket(cs);
+            continue;
+        }
+
         std::cout << std::format("[S] Connection from {}\n", ip);
         std::thread(HandleClient, cs).detach();
     }

@@ -26,7 +26,7 @@ bool Database::ExecSQL(const char* sql) const
 // ---------------------------------------------------------------------------
 // Open / Close
 // ---------------------------------------------------------------------------
-bool Database::Open(const char* path)
+bool Database::Open(const char* path, const std::string& key)
 {
     sqlite3* db = nullptr;
     if (sqlite3_open(path, &db) != SQLITE_OK)
@@ -36,6 +36,34 @@ bool Database::Open(const char* path)
         return false;
     }
     m_db = db;
+
+#ifdef SPARKY_SQLCIPHER
+    // SQLCipher: set the AES-256-CBC encryption key BEFORE any other operation.
+    // key format: "x'<64 hex chars>'"
+    if (key.empty())
+    {
+        std::cerr << "[DB] FATAL: SQLCipher build requires a database key.\n";
+        sqlite3_close(db); m_db = nullptr; return false;
+    }
+    {
+        std::string pragma = "PRAGMA key = \"" + key + "\";";
+        char* err = nullptr;
+        int rc = sqlite3_exec(DB(m_db), pragma.c_str(), nullptr, nullptr, &err);
+        if (rc != SQLITE_OK)
+        {
+            std::cerr << "[DB] Key pragma failed: " << (err ? err : "?") << "\n";
+            sqlite3_free(err); sqlite3_close(db); m_db = nullptr; return false;
+        }
+        // Additional hardening: 256-bit key, 64 KB page, 4096 iterations PBKDF2
+        sqlite3_exec(DB(m_db), "PRAGMA cipher_page_size = 65536;",    nullptr, nullptr, nullptr);
+        sqlite3_exec(DB(m_db), "PRAGMA kdf_iter = 256000;",           nullptr, nullptr, nullptr);
+        sqlite3_exec(DB(m_db), "PRAGMA cipher_hmac_algorithm = HMAC_SHA512;", nullptr, nullptr, nullptr);
+        sqlite3_exec(DB(m_db), "PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA512;", nullptr, nullptr, nullptr);
+    }
+#else
+    (void)key; // plaintext mode — acceptable for local dev only
+#endif
+
     sqlite3_exec(DB(m_db), "PRAGMA journal_mode=WAL;",   nullptr, nullptr, nullptr);
     sqlite3_exec(DB(m_db), "PRAGMA synchronous=NORMAL;", nullptr, nullptr, nullptr);
     sqlite3_exec(DB(m_db), "PRAGMA foreign_keys=ON;",    nullptr, nullptr, nullptr);
