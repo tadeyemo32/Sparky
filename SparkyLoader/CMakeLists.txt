@@ -14,12 +14,12 @@ set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
-add_subdirectory(deps/glfw)
+add_subdirectory(${CMAKE_SOURCE_DIR}/../deps/glfw deps/glfw_build)
 
 # ---------------------------------------------------------------------------
 # ImGui (submodule — compile sources directly)
 # ---------------------------------------------------------------------------
-set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps/imgui)
+set(IMGUI_DIR ${CMAKE_SOURCE_DIR}/../deps/imgui)
 
 add_library(imgui STATIC
     ${IMGUI_DIR}/imgui.cpp
