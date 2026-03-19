@@ -30,7 +30,7 @@
   letter-spacing: -0.03em;
   color: #fff;
   text-decoration: none;
-  background: linear-gradient(135deg, #fff 0%, #b090d0 100%);
+  background: #ffffff;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -66,8 +66,8 @@
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  background: rgba(123, 44, 191, 0.15);
-  border: 1px solid rgba(123, 44, 191, 0.35);
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.15);
   padding: 0.3rem 0.85rem;
   border-radius: 999px;
   font-size: 0.8rem;
@@ -78,7 +78,7 @@
   font-size: 0.65rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #9d4edd;
+  color: #888888;
   font-weight: 600;
 }
 
@@ -100,8 +100,8 @@
 }
 
 .signupBtn {
-  background: linear-gradient(135deg, #7b2cbf, #5a189a);
-  color: #fff;
+  background: #ffffff;
+  color: #000000;
   text-decoration: none;
   padding: 0.4rem 1rem;
   border-radius: 6px;

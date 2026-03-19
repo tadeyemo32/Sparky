@@ -56,6 +56,17 @@ struct UserRow
     std::string role;          // "user", "admin", or "owner"
 };
 
+// Web accounts — completely separate from HWID-based loader users.
+// Stored in the web_accounts table.  No HWID, no license required.
+struct WebAccountRow
+{
+    std::string username;
+    std::string password_hash; // SHA-256 hex
+    std::string role;          // "user", "admin", or "owner"
+    int64_t     created_at;
+    int64_t     last_login;
+};
+
 // Web sessions — separate from binary-protocol sessions; used by the React site.
 struct WebSessionRow
 {
@@ -165,6 +176,13 @@ public:
     std::optional<UserRow> GetUserByUsername(const std::string& username) const;
     bool SetUserRole(const std::string& hwid_hash, const std::string& role);
     std::vector<UserRow> ListAdminUsers() const; // role='admin' or 'owner'
+
+    // ---------- Web accounts (React site — no HWID/license required) ----------
+    bool CreateWebAccount(const WebAccountRow& row);
+    std::optional<WebAccountRow> GetWebAccount(const std::string& username) const;
+    bool SetWebAccountRole(const std::string& username, const std::string& role);
+    bool UpdateWebAccountLastLogin(const std::string& username, int64_t now);
+    std::vector<WebAccountRow> ListWebAdmins() const; // role='admin' or 'owner'
 
     // ---------- Web sessions (React site) ----------
     bool InsertWebSession(const WebSessionRow& row);

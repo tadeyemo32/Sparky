@@ -66,8 +66,8 @@
 }
 
 .primaryBtn {
-  background: linear-gradient(135deg, #7b2cbf, #5a189a);
-  color: #fff;
+  background: #ffffff;
+  color: #000000;
   border: none;
   padding: 0.5rem 1.25rem;
   border-radius: 8px;
@@ -239,9 +239,9 @@
   border-radius: 999px;
   font-size: 0.7rem;
   font-weight: 600;
-  background: rgba(123, 44, 191, 0.15);
-  color: #c084fc;
-  border: 1px solid rgba(123, 44, 191, 0.3);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .banBtn {
@@ -305,10 +305,6 @@
   letter-spacing: -0.05em;
   line-height: 1;
   margin-bottom: 0.5rem;
-  background: linear-gradient(135deg, #fff 0%, #b090d0 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
 }
 
 .sessionLabel {
@@ -405,8 +401,8 @@
 }
 
 .input:focus {
-  border-color: rgba(123, 44, 191, 0.6);
-  box-shadow: 0 0 0 3px rgba(123, 44, 191, 0.15);
+  border-color: rgba(255, 255, 255, 0.4);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
 }
 
 .input:disabled {
@@ -429,8 +425,8 @@
 }
 
 .select:focus {
-  border-color: rgba(123, 44, 191, 0.6);
-  box-shadow: 0 0 0 3px rgba(123, 44, 191, 0.15);
+  border-color: rgba(255, 255, 255, 0.4);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
 }
 
 .select option {
@@ -438,8 +434,8 @@
 }
 
 .submitBtn {
-  background: linear-gradient(135deg, #7b2cbf, #5a189a);
-  color: #fff;
+  background: #ffffff;
+  color: #000000;
   border: none;
   padding: 0.75rem;
   border-radius: 8px;
@@ -484,14 +480,14 @@
 .keyCode {
   font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
   font-size: 0.9rem;
-  color: #c084fc;
+  color: #ffffff;
   word-break: break-all;
 }
 
 .copyBtn {
-  background: rgba(123, 44, 191, 0.15);
-  border: 1px solid rgba(123, 44, 191, 0.35);
-  color: #c084fc;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #ffffff;
   padding: 0.6rem 1.5rem;
   border-radius: 8px;
   font-size: 0.875rem;
@@ -503,7 +499,7 @@
 }
 
 .copyBtn:hover {
-  background: rgba(123, 44, 191, 0.25);
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .doneBtn {
@@ -547,4 +543,89 @@
 
 .grantRow .input {
   flex: 1;
+}
+
+/* ── Metrics Dashboard ── */
+.metricsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.metricCard {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.metricLabel {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.metricValue {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #ffffff;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+
+.metricValueSmall {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #ffffff;
+  font-variant-numeric: tabular-nums;
+}
+
+.metricSub {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.onlineDot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22cc55;
+  box-shadow: 0 0 6px #22cc55;
+  margin-right: 0.4rem;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.autoRefreshRow {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.toggleLabel {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.lastUpdated {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-left: auto;
 }

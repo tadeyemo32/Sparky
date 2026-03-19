@@ -14,6 +14,7 @@ import { AdminUsers } from './pages/admin/Users';
 import { AdminLicenses } from './pages/admin/Licenses';
 import { AdminSessions } from './pages/admin/Sessions';
 import { OwnerAdmins } from './pages/admin/Admins';
+import { OwnerMetrics } from './pages/owner/Metrics';
 
 export default function App() {
   return (
@@ -77,6 +78,14 @@ export default function App() {
             element={
               <OwnerRoute>
                 <OwnerAdmins />
+              </OwnerRoute>
+            }
+          />
+          <Route
+            path="/owner/metrics"
+            element={
+              <OwnerRoute>
+                <OwnerMetrics />
               </OwnerRoute>
             }
           />

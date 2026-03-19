@@ -13,7 +13,7 @@ export function OwnerAdmins() {
   const [pendingAction, setPendingAction] = useState<string | null>(null);
 
   // Grant form
-  const [grantHwid, setGrantHwid] = useState('');
+  const [grantUsername, setGrantUsername] = useState('');
   const [grantLoading, setGrantLoading] = useState(false);
   const [grantError, setGrantError] = useState<string | null>(null);
   const [grantSuccess, setGrantSuccess] = useState(false);
@@ -35,12 +35,12 @@ export function OwnerAdmins() {
     load();
   }, [load]);
 
-  async function handleRevoke(hwid: string) {
+  async function handleRevoke(username: string) {
     if (!user?.token) return;
-    setPendingAction(hwid);
+    setPendingAction(username);
     setActionError(null);
     try {
-      await revokeAdmin(user.token, hwid);
+      await revokeAdmin(user.token, username);
       await load();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Revoke failed.');
@@ -52,17 +52,14 @@ export function OwnerAdmins() {
   async function handleGrant(e: React.FormEvent) {
     e.preventDefault();
     if (!user?.token) return;
-    const hwid = grantHwid.trim();
-    if (!hwid) {
-      setGrantError('HWID is required.');
-      return;
-    }
+    const uname = grantUsername.trim();
+    if (!uname) { setGrantError('Username is required.'); return; }
     setGrantLoading(true);
     setGrantError(null);
     setGrantSuccess(false);
     try {
-      await grantAdmin(user.token, hwid);
-      setGrantHwid('');
+      await grantAdmin(user.token, uname);
+      setGrantUsername('');
       setGrantSuccess(true);
       setTimeout(() => setGrantSuccess(false), 3000);
       await load();
@@ -73,16 +70,12 @@ export function OwnerAdmins() {
     }
   }
 
-  function formatDate(iso: string) {
-    try {
-      return new Date(iso).toLocaleDateString(undefined, {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-      });
-    } catch {
-      return iso;
-    }
+  function formatDate(ts: string) {
+    const n = parseInt(ts, 10);
+    if (!n) return '—';
+    return new Date(n * 1000).toLocaleDateString(undefined, {
+      year: 'numeric', month: 'short', day: 'numeric',
+    });
   }
 
   return (
@@ -91,7 +84,7 @@ export function OwnerAdmins() {
         <div>
           <h1 className={styles.title}>Admin Management</h1>
           <p className={styles.subtitle}>
-            Grant and revoke admin privileges by HWID. Owner access only — the server enforces
+            Grant and revoke admin privileges by username. Owner access only — the server enforces
             this.
           </p>
         </div>
@@ -114,9 +107,9 @@ export function OwnerAdmins() {
             <input
               type="text"
               className={styles.input}
-              placeholder="Enter full HWID"
-              value={grantHwid}
-              onChange={(e) => setGrantHwid(e.target.value)}
+              placeholder="Enter username"
+              value={grantUsername}
+              onChange={(e) => setGrantUsername(e.target.value)}
               disabled={grantLoading}
             />
             <button type="submit" className={styles.primaryBtn} disabled={grantLoading}>
@@ -131,31 +124,34 @@ export function OwnerAdmins() {
           <thead>
             <tr>
               <th>Username</th>
-              <th>HWID (masked)</th>
-              <th>Granted At</th>
+              <th>Role</th>
+              <th>Member Since</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {admins.length === 0 && !loading && (
               <tr>
-                <td colSpan={4} className={styles.emptyCell}>
-                  No admins found.
-                </td>
+                <td colSpan={4} className={styles.emptyCell}>No admins found.</td>
               </tr>
             )}
             {admins.map((admin) => (
-              <tr key={admin.hwid}>
+              <tr key={admin.username}>
                 <td className={styles.usernameCell}>{admin.username}</td>
-                <td className={styles.monoCell}>{admin.hwid}</td>
+                <td>
+                  <span style={{ fontSize: '0.7rem', textTransform: 'uppercase',
+                    letterSpacing: '0.08em', color: '#888', fontWeight: 600 }}>
+                    {(admin as Admin & { role?: string }).role || 'admin'}
+                  </span>
+                </td>
                 <td className={styles.dateCell}>{formatDate(admin.grantedAt)}</td>
                 <td>
                   <button
-                    onClick={() => handleRevoke(admin.hwid)}
-                    disabled={pendingAction === admin.hwid}
+                    onClick={() => handleRevoke(admin.username)}
+                    disabled={pendingAction === admin.username}
                     className={styles.banBtn}
                   >
-                    {pendingAction === admin.hwid ? '…' : 'Revoke'}
+                    {pendingAction === admin.username ? '…' : 'Revoke'}
                   </button>
                 </td>
               </tr>

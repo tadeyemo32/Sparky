@@ -14,13 +14,15 @@ export async function login(username: string, password: string): Promise<AuthRes
   return apiPost<AuthResponse>('/api/auth/login', { username, passwordHash });
 }
 
+// Web accounts are independent — no license key required.
+// licenseKey param kept for backwards-compat but ignored by the server.
 export async function signup(
   username: string,
-  licenseKey: string,
+  _licenseKey: string,
   password: string
 ): Promise<AuthResponse> {
   const passwordHash = await sha256Hex(password);
-  return apiPost<AuthResponse>('/api/auth/signup', { username, licenseKey, passwordHash });
+  return apiPost<AuthResponse>('/api/auth/signup', { username, passwordHash });
 }
 
 export async function logout(token: string): Promise<void> {

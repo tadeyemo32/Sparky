@@ -1,5 +1,5 @@
 import { apiGet, apiPost } from './client';
-import type { User, License, Admin, SessionsResponse, IssueLicenseResponse } from '../types';
+import type { User, License, Admin, SessionsResponse, IssueLicenseResponse, MetricsResponse } from '../types';
 
 // --- Admin: Users ---
 
@@ -41,10 +41,16 @@ export async function getAdmins(token: string): Promise<Admin[]> {
   return apiGet<Admin[]>('/api/owner/admins', token);
 }
 
-export async function grantAdmin(token: string, hwid: string): Promise<void> {
-  return apiPost<void>('/api/owner/admins/grant', { hwid }, token);
+export async function grantAdmin(token: string, username: string): Promise<void> {
+  return apiPost<void>('/api/owner/admins/grant', { username }, token);
 }
 
-export async function revokeAdmin(token: string, hwid: string): Promise<void> {
-  return apiPost<void>('/api/owner/admins/revoke', { hwid }, token);
+export async function revokeAdmin(token: string, username: string): Promise<void> {
+  return apiPost<void>('/api/owner/admins/revoke', { username }, token);
+}
+
+// --- Owner: Metrics ---
+
+export async function getMetrics(token: string): Promise<MetricsResponse> {
+  return apiGet<MetricsResponse>('/api/owner/metrics', token);
 }

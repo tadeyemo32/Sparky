@@ -43,9 +43,14 @@ export function Navbar() {
                 </>
               )}
               {isOwner && (
-                <Link to="/owner/admins" className={styles.link}>
-                  Admins
-                </Link>
+                <>
+                  <Link to="/owner/admins" className={styles.link}>
+                    Admins
+                  </Link>
+                  <Link to="/owner/metrics" className={styles.link}>
+                    Metrics
+                  </Link>
+                </>
               )}
             </div>
           )}

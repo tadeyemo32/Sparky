@@ -104,6 +104,15 @@ static std::string g_sparkyKey;
 // Connection string stored globally for RunBackup()
 static std::string g_connstr;
 
+// Server start time — used for uptime reporting in /api/owner/metrics
+static int64_t g_startTime = 0;
+
+// Allowed web origin — set SPARKY_ALLOWED_ORIGIN to your Vercel domain
+// (e.g. https://sparky.vercel.app).  When set, all /api/ requests must carry
+// an Origin header matching this value; CORS responses use the specific origin
+// instead of *.  If unset, origin checking is skipped (dev mode).
+static std::string g_allowedOrigin;
+
 // Per-HWID concurrent session guard.
 // Prevents one user from opening multiple simultaneous sessions.
 // Protected by g_hwidMu (separate from g_dbMu to avoid deadlocks).
@@ -528,9 +537,13 @@ static void SendHttp(ClientSession& s, int code, const std::string& ct, const st
         case 500: statusMsg = "Internal Server Error"; break;
         default:  break;
     }
+    // Use the specific allowed origin in CORS headers when configured;
+    // fall back to * only in dev mode (no restriction set).
+    const std::string& corsOrigin = g_allowedOrigin.empty() ? std::string("*") : g_allowedOrigin;
     std::string resp =
         "HTTP/1.1 " + std::to_string(code) + " " + statusMsg + "\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
+        "Access-Control-Allow-Origin: " + corsOrigin + "\r\n"
+        "Vary: Origin\r\n"
         "Access-Control-Allow-Headers: Content-Type, Authorization, x-sparky-key\r\n"
         "Content-Type: " + ct + "\r\n"
         "Content-Length: " + std::to_string(body.size()) + "\r\n"
@@ -630,7 +643,35 @@ static void HandleWebApi(ClientSession& s,
                           const std::string& req,       // full headers
                           const std::string& body)
 {
+    // ── Origin restriction ────────────────────────────────────────────────────
+    // When SPARKY_ALLOWED_ORIGIN is set, reject requests whose Origin header
+    // doesn't match.  This restricts the REST API to the configured Vercel
+    // deployment and prevents abuse from other origins.
+    if (!g_allowedOrigin.empty())
+    {
+        std::string lr = req;
+        for (auto& c : lr) c = (char)std::tolower((unsigned char)c);
+        std::string origin;
+        size_t op = lr.find("origin:");
+        if (op != std::string::npos)
+        {
+            size_t vs = op + 7;
+            while (vs < req.size() && (req[vs] == ' ' || req[vs] == '\t')) ++vs;
+            size_t ve = req.find('\r', vs);
+            if (ve == std::string::npos) ve = req.size();
+            // trim trailing whitespace
+            while (ve > vs && (req[ve-1] == ' ' || req[ve-1] == '\t')) --ve;
+            origin = req.substr(vs, ve - vs);
+        }
+        if (origin != g_allowedOrigin)
+        {
+            SendApiError(s, 403, "Origin not permitted");
+            return;
+        }
+    }
+
     // ── POST /api/auth/login ─────────────────────────────────────────────────
+    // Web accounts live in web_accounts table — no HWID, no license required.
     if (method == "POST" && path == "/api/auth/login")
     {
         std::string username     = ParseJsonStr(body, "username");
@@ -638,19 +679,24 @@ static void HandleWebApi(ClientSession& s,
         if (username.empty() || passwordHash.empty())
         { SendApiError(s, 400, "username and passwordHash required"); return; }
 
-        std::optional<UserRow> user;
+        // Enforce minimum lengths to prevent trivial brute-force
+        if (username.size() < 3 || username.size() > 32)
+        { SendApiError(s, 400, "username must be 3-32 characters"); return; }
+
+        std::optional<WebAccountRow> acct;
         {
             std::lock_guard lk(g_dbMu);
-            user = g_db.GetUserByUsername(username);
+            acct = g_db.GetWebAccount(username);
         }
-        if (!user)
-        { SendApiError(s, 401, "Invalid username or password"); return; }
-        if (user->password_hash != passwordHash)
-        { SendApiError(s, 401, "Invalid username or password"); return; }
-        if (user->is_banned)
-        { SendApiError(s, 403, "Account banned: " + user->ban_reason); return; }
+        if (!acct || acct->password_hash != passwordHash)
+        {
+            // Constant-time: always run comparison even when account not found
+            SendApiError(s, 401, "Invalid username or password");
+            return;
+        }
 
-        std::string role = user->role.empty() ? "user" : user->role;
+        std::string role = acct->role.empty() ? "user" : acct->role;
+        { std::lock_guard lk(g_dbMu); g_db.UpdateWebAccountLastLogin(username, (int64_t)time(nullptr)); }
 
         WebSessionRow ws{};
         ws.token      = MakeWebToken();
@@ -661,62 +707,71 @@ static void HandleWebApi(ClientSession& s,
 
         { std::lock_guard lk(g_dbMu); g_db.InsertWebSession(ws); }
 
-        std::string expiresAt = std::to_string(ws.expires_at);
         std::string resp = "{" + JStr("token", ws.token) + ","
                                + JStr("username", username) + ","
                                + JStr("role", role) + ","
-                               + JStr("expiresAt", expiresAt) + "}";
+                               + JStr("expiresAt", std::to_string(ws.expires_at)) + "}";
         SendJson(s, 200, resp);
         return;
     }
 
     // ── POST /api/auth/signup ─────────────────────────────────────────────────
+    // Creates a new web_accounts row.  No license key or HWID needed.
     if (method == "POST" && path == "/api/auth/signup")
     {
         std::string username     = ParseJsonStr(body, "username");
-        std::string licenseKey   = ParseJsonStr(body, "licenseKey");
         std::string passwordHash = ParseJsonStr(body, "passwordHash");
-        if (username.empty() || licenseKey.empty() || passwordHash.empty())
-        { SendApiError(s, 400, "username, licenseKey and passwordHash required"); return; }
+        if (username.empty() || passwordHash.empty())
+        { SendApiError(s, 400, "username and passwordHash required"); return; }
 
-        std::optional<LicenseRow> lic;
-        {
-            std::lock_guard lk(g_dbMu);
-            lic = g_db.GetLicense(licenseKey);
-        }
-        if (!lic)
-        { SendApiError(s, 404, "License key not found"); return; }
-        if (lic->hwid_hash.empty())
-        { SendApiError(s, 400, "License not yet activated — please log in via the desktop application first"); return; }
+        if (username.size() < 3 || username.size() > 32)
+        { SendApiError(s, 400, "username must be 3-32 characters"); return; }
+        if (passwordHash.size() != 64) // must be SHA-256 hex
+        { SendApiError(s, 400, "passwordHash must be a 64-char SHA-256 hex string"); return; }
 
-        {
-            std::lock_guard lk(g_dbMu);
-            int cred = g_db.CheckOrStoreCredentials(lic->hwid_hash, username, passwordHash);
-            if (cred == 1)
-            { SendApiError(s, 401, "Invalid credentials for this license"); return; }
-            if (cred == -1)
-            { SendApiError(s, 500, "Database error"); return; }
+        // Validate username: only alphanumeric + underscore
+        for (char c : username) {
+            if (!std::isalnum((unsigned char)c) && c != '_')
+            { SendApiError(s, 400, "username may only contain letters, digits, and underscores"); return; }
         }
 
-        std::optional<UserRow> user;
-        { std::lock_guard lk(g_dbMu); user = g_db.GetUser(lic->hwid_hash); }
-        std::string role = (user && !user->role.empty()) ? user->role : "user";
+        // Determine role — first registered web account becomes owner
+        std::string role = "user";
+        {
+            std::lock_guard lk(g_dbMu);
+            auto admins = g_db.ListWebAdmins();
+            // Check SPARKY_WEB_OWNER_USERNAME env var
+            const char* ownerEnv = std::getenv("SPARKY_WEB_OWNER_USERNAME");
+            if (ownerEnv && std::string(ownerEnv) == username)
+                role = "owner";
+        }
+
+        WebAccountRow acct{};
+        acct.username      = username;
+        acct.password_hash = passwordHash;
+        acct.role          = role;
+        acct.created_at    = (int64_t)time(nullptr);
+        acct.last_login    = acct.created_at;
+
+        bool created = false;
+        { std::lock_guard lk(g_dbMu); created = g_db.CreateWebAccount(acct); }
+        if (!created)
+        { SendApiError(s, 409, "Username already taken"); return; }
 
         WebSessionRow ws{};
         ws.token      = MakeWebToken();
         ws.username   = username;
         ws.role       = role;
-        ws.created_at = (int64_t)time(nullptr);
+        ws.created_at = acct.created_at;
         ws.expires_at = ws.created_at + 86400;
 
         { std::lock_guard lk(g_dbMu); g_db.InsertWebSession(ws); }
 
-        std::string expiresAt = std::to_string(ws.expires_at);
         std::string resp = "{" + JStr("token", ws.token) + ","
                                + JStr("username", username) + ","
                                + JStr("role", role) + ","
-                               + JStr("expiresAt", expiresAt) + "}";
-        SendJson(s, 200, resp);
+                               + JStr("expiresAt", std::to_string(ws.expires_at)) + "}";
+        SendJson(s, 201, resp);
         return;
     }
 
@@ -739,25 +794,18 @@ static void HandleWebApi(ClientSession& s,
         WebAuthInfo auth  = ValidateWebToken(token);
         if (!auth.ok) { SendApiError(s, 401, "Not authenticated"); return; }
 
-        std::optional<UserRow>    user;
-        std::optional<LicenseRow> lic;
+        // Re-read the current role from web_accounts (may have been updated)
         {
             std::lock_guard lk(g_dbMu);
-            if (!auth.hwid.empty()) {
-                user = g_db.GetUser(auth.hwid);
-                if (user && !user->license_key.empty())
-                    lic = g_db.GetLicense(user->license_key);
-            }
+            auto acct = g_db.GetWebAccount(auth.username);
+            if (acct) auth.role = acct->role;
         }
-
-        std::string licKey   = user ? user->license_key : "";
-        std::string expiresAt = lic ? std::to_string(lic->expires_at) : "0";
 
         std::string resp = "{" + JStr("username", auth.username) + ","
                                + JStr("role", auth.role) + ","
-                               + JStr("hwid", auth.hwid) + ","
-                               + JStr("licenseKey", licKey) + ","
-                               + JStr("expiresAt", expiresAt) + "}";
+                               + JStr("hwid", "") + ","
+                               + JStr("licenseKey", "") + ","
+                               + JStr("expiresAt", "0") + "}";
         SendJson(s, 200, resp);
         return;
     }
@@ -917,6 +965,7 @@ static void HandleWebApi(ClientSession& s,
     // ─────────────────────────────────────────────────────────────────────────
 
     // ── GET /api/owner/admins ─────────────────────────────────────────────────
+    // Lists all web_accounts with role='admin' or 'owner'
     if (method == "GET" && path == "/api/owner/admins")
     {
         std::string token = ExtractBearerToken(req);
@@ -924,8 +973,8 @@ static void HandleWebApi(ClientSession& s,
         if (!auth.ok) { SendApiError(s, 401, "Not authenticated"); return; }
         if (auth.role != "owner") { SendApiError(s, 403, "Owner access required"); return; }
 
-        std::vector<UserRow> admins;
-        { std::lock_guard lk(g_dbMu); admins = g_db.ListAdminUsers(); }
+        std::vector<WebAccountRow> admins;
+        { std::lock_guard lk(g_dbMu); admins = g_db.ListWebAdmins(); }
 
         std::string arr = "[";
         for (size_t i = 0; i < admins.size(); ++i)
@@ -933,8 +982,9 @@ static void HandleWebApi(ClientSession& s,
             auto& a = admins[i];
             if (i) arr += ",";
             arr += "{" + JStr("username", a.username) + ","
-                       + JStr("hwid", a.hwid_hash) + ","
-                       + JStr("grantedAt", std::to_string(a.last_seen)) + "}";
+                       + JStr("hwid", "") + ","
+                       + JStr("role", a.role) + ","
+                       + JStr("grantedAt", std::to_string(a.created_at)) + "}";
         }
         arr += "]";
         SendJson(s, 200, arr);
@@ -949,9 +999,9 @@ static void HandleWebApi(ClientSession& s,
         if (!auth.ok) { SendApiError(s, 401, "Not authenticated"); return; }
         if (auth.role != "owner") { SendApiError(s, 403, "Owner access required"); return; }
 
-        std::string hwid = ParseJsonStr(body, "hwid");
-        if (hwid.empty()) { SendApiError(s, 400, "hwid required"); return; }
-        { std::lock_guard lk(g_dbMu); g_db.SetUserRole(hwid, "admin"); }
+        std::string username = ParseJsonStr(body, "username");
+        if (username.empty()) { SendApiError(s, 400, "username required"); return; }
+        { std::lock_guard lk(g_dbMu); g_db.SetWebAccountRole(username, "admin"); }
         SendJson(s, 200, "{}");
         return;
     }
@@ -964,10 +1014,52 @@ static void HandleWebApi(ClientSession& s,
         if (!auth.ok) { SendApiError(s, 401, "Not authenticated"); return; }
         if (auth.role != "owner") { SendApiError(s, 403, "Owner access required"); return; }
 
-        std::string hwid = ParseJsonStr(body, "hwid");
-        if (hwid.empty()) { SendApiError(s, 400, "hwid required"); return; }
-        { std::lock_guard lk(g_dbMu); g_db.SetUserRole(hwid, "user"); }
+        std::string username = ParseJsonStr(body, "username");
+        if (username.empty()) { SendApiError(s, 400, "username required"); return; }
+        { std::lock_guard lk(g_dbMu); g_db.SetWebAccountRole(username, "user"); }
         SendJson(s, 200, "{}");
+        return;
+    }
+
+    // ── GET /api/owner/metrics ────────────────────────────────────────────────
+    if (method == "GET" && path == "/api/owner/metrics")
+    {
+        std::string token = ExtractBearerToken(req);
+        WebAuthInfo auth  = ValidateWebToken(token);
+        if (!auth.ok) { SendApiError(s, 401, "Not authenticated"); return; }
+        if (auth.role != "owner") { SendApiError(s, 403, "Owner access required"); return; }
+
+        int64_t uptime = (int64_t)time(nullptr) - g_startTime;
+
+        std::vector<UserRow>    allUsers;
+        std::vector<LicenseRow> allLicenses;
+        {
+            std::lock_guard lk(g_dbMu);
+            allUsers    = g_db.ListUsers();
+            allLicenses = g_db.ListLicenses();
+        }
+
+        bool   dllLoaded = !g_dllBytes.empty();
+        size_t dllSize   = g_dllBytes.size();
+
+        // Build version string from CURRENT_BUILD constant
+        char buildStr[16];
+        snprintf(buildStr, sizeof(buildStr), "%d.%d.%d",
+                 (int)((CURRENT_BUILD >> 16) & 0xFF),
+                 (int)((CURRENT_BUILD >>  8) & 0xFF),
+                 (int)( CURRENT_BUILD        & 0xFF));
+
+        std::string resp = "{"
+            + JNum("activeSessions",  g_activeSessions.load()) + ","
+            + JNum("uptimeSeconds",   uptime) + ","
+            + JBool("dllLoaded",      dllLoaded) + ","
+            + JNum("dllSizeBytes",    (int64_t)dllSize) + ","
+            + JNum("totalUsers",      (int64_t)allUsers.size()) + ","
+            + JNum("totalLicenses",   (int64_t)allLicenses.size()) + ","
+            + JStr("buildVersion",    buildStr) + ","
+            + JNum("timestamp",       (int64_t)time(nullptr))
+            + "}";
+        SendJson(s, 200, resp);
         return;
     }
 
@@ -1119,14 +1211,17 @@ static void HandleClient(int csock, SSL* ssl)
         // doesn't send custom headers in OPTIONS, so auth is not possible here.
         if (httpMethod == "OPTIONS")
         {
-            const char* cors =
-                "HTTP/1.1 204 No Content\r\n"
-                "Access-Control-Allow-Origin: *\r\n"
+            const std::string& corsOrigin = g_allowedOrigin.empty()
+                ? std::string("*") : g_allowedOrigin;
+            std::string cors =
+                std::string("HTTP/1.1 204 No Content\r\n") +
+                "Access-Control-Allow-Origin: " + corsOrigin + "\r\n" +
+                "Vary: Origin\r\n"
                 "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
                 "Access-Control-Allow-Headers: Content-Type, Authorization, x-sparky-key\r\n"
                 "Access-Control-Max-Age: 86400\r\n"
                 "Content-Length: 0\r\n\r\n";
-            NetSend(s.sock, s.ssl, cors, (int)strlen(cors));
+            NetSend(s.sock, s.ssl, cors.c_str(), (int)cors.size());
             cleanup(); return;
         }
 
@@ -1598,9 +1693,13 @@ static void AdminConsole()
   ban-ip <ip> [reason]         Permanently ban an IP (persisted to DB)
   unban-ip <ip>                Remove a persistent IP ban
   list-ip-bans                 Show all banned IPs
-  grant-owner <hwid_hex>       Set user role to owner
-  grant-admin <hwid_hex>       Set user role to admin
-  demote <hwid_hex>            Set user role back to user
+  grant-owner <hwid_hex>       Set loader user role to owner
+  grant-admin <hwid_hex>       Set loader user role to admin
+  demote <hwid_hex>            Set loader user role back to user
+  web-owner <username>         Set web account role to owner
+  web-admin <username>         Set web account role to admin
+  web-demote <username>        Set web account role back to user
+  web-accounts                 List all web accounts
   help                         This message
 )";
 
@@ -1787,11 +1886,43 @@ static void AdminConsole()
                 std::cout << "[Admin] " << hwid << " → role=user\n";
             }
         }
+        else if (cmd == "web-owner" || cmd == "web-admin")
+        {
+            std::string uname; ss >> uname;
+            if (uname.empty()) { std::cout << "[Admin] Usage: " << cmd << " <username>\n"; }
+            else {
+                std::string role = (cmd == "web-owner") ? "owner" : "admin";
+                std::lock_guard lk(g_dbMu);
+                if (g_db.SetWebAccountRole(uname, role))
+                    std::cout << "[Admin] Web account " << uname << " → role=" << role << "\n";
+                else
+                    std::cout << "[Admin] Web account not found: " << uname << "\n";
+            }
+        }
+        else if (cmd == "web-demote")
+        {
+            std::string uname; ss >> uname;
+            if (uname.empty()) { std::cout << "[Admin] Usage: web-demote <username>\n"; }
+            else {
+                std::lock_guard lk(g_dbMu);
+                g_db.SetWebAccountRole(uname, "user");
+                std::cout << "[Admin] Web account " << uname << " → role=user\n";
+            }
+        }
+        else if (cmd == "web-accounts")
+        {
+            std::lock_guard lk(g_dbMu);
+            auto accts = g_db.ListWebAdmins();
+            std::cout << "[Admin] Web admins/owners:\n";
+            for (auto& a : accts)
+                std::cout << std::format("  {} | role={}\n", a.username, a.role);
+        }
         else if (cmd == "help")
         {
             std::cout << "Commands: issue activate extend ban unban list-licenses list-users"
                          " purchases sessions prune add-hash rm-hash list-hashes"
-                         " ban-ip unban-ip list-ip-bans grant-owner grant-admin demote\n";
+                         " ban-ip unban-ip list-ip-bans grant-owner grant-admin demote"
+                         " web-owner web-admin web-demote web-accounts\n";
         }
         else
         {
@@ -1862,7 +1993,19 @@ int main(int argc, char** argv)
         return 0;
     }
 
+    g_startTime = (int64_t)time(nullptr);
+
     std::cout << "[SparkyServer] v3.2 (PostgreSQL + TLS + HWID pepper + DB backup)\n";
+
+    if (const char* o = std::getenv(XS("SPARKY_ALLOWED_ORIGIN")))
+    {
+        g_allowedOrigin = o;
+        std::cout << "[S] Web API origin restriction: " << g_allowedOrigin << "\n";
+    }
+    else
+    {
+        std::cout << "[S] Web API origin restriction: disabled (set SPARKY_ALLOWED_ORIGIN to restrict)\n";
+    }
 
     if (const char* k = std::getenv(XS("SPARKY_KEY")))
     {

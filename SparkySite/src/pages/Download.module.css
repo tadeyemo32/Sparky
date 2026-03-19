@@ -14,7 +14,7 @@
   transform: translate(-50%, -50%);
   width: 60vw;
   height: 60vw;
-  background: radial-gradient(circle, rgba(123, 44, 191, 0.12) 0%, rgba(10, 10, 12, 0) 70%);
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.04) 0%, rgba(10, 10, 12, 0) 70%);
   pointer-events: none;
   z-index: 0;
 }
@@ -97,8 +97,8 @@
   align-items: center;
   justify-content: center;
   gap: 10px;
-  background: linear-gradient(135deg, #7b2cbf 0%, #5a189a 100%);
-  color: #fff;
+  background: #ffffff;
+  color: #000000;
   border: none;
   padding: 0.95rem 2.25rem;
   border-radius: 50px;
@@ -106,15 +106,15 @@
   font-weight: 600;
   cursor: pointer;
   transition: all 0.25s;
-  box-shadow: 0 10px 30px rgba(123, 44, 191, 0.3);
+  box-shadow: none;
   font-family: inherit;
   width: 100%;
 }
 
 .downloadBtn:hover:not(:disabled) {
   transform: translateY(-2px);
-  box-shadow: 0 15px 40px rgba(123, 44, 191, 0.5);
-  background: linear-gradient(135deg, #9d4edd 0%, #7b2cbf 100%);
+  box-shadow: none;
+  background: #e0e0e0;
 }
 
 .downloadBtn:disabled {

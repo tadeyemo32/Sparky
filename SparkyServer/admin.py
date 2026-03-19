@@ -288,12 +288,14 @@ def cmd_list_users(con, _args):
     cur = cursor(con)
     cur.execute("SELECT * FROM users ORDER BY last_seen DESC")
     rows = cur.fetchall()
-    print(f"  {'HWID':<20}  {'LICENSE':<12}  {'LAST SEEN':<22}  STATUS")
-    print("  " + "-" * 80)
+    print(f"  {'HWID':<20}  {'USERNAME':<15}  {'ROLE':<10}  {'LICENSE':<12}  {'LAST SEEN':<22}  STATUS")
+    print("  " + "-" * 110)
     for r in rows:
-        status = f"BANNED({r['ban_reason'][:20]})" if r["is_banned"] else "ok"
+        status = f"BANNED({r['ban_reason'][:15]})" if r["is_banned"] else "ok"
         key    = r["license_key"][:8] + "..." if r["license_key"] else "(none)"
-        print(f"  {fmt_hwid(r['hwid_hash']):<20}  {key:<12}"
+        user   = r["username"] if r["username"] else "(none)"
+        role   = r["role"] if r["role"] else "user"
+        print(f"  {fmt_hwid(r['hwid_hash']):<20}  {user:<15}  {role:<10}  {key:<12}"
               f"  {fmt_ts(r['last_seen']):<22}  {status}")
 
 
@@ -448,6 +450,28 @@ def cmd_add_admin(con, args, role):
         print(f"  Admin '{username}' added successfully.")
     except psycopg2.errors.UniqueViolation:
         con.rollback()
+        print(f"ERROR: Admin '{username}' already exists.")
+
+def cmd_promote_user(con, args, role):
+    if role != "owner":
+        print("ERROR: Only the Owner can promote users.")
+        return
+    
+    ident = args.identifier.strip()
+    new_role = args.new_role.lower()
+    if new_role not in ("user", "admin", "owner"):
+        print("ERROR: Invalid role. Use 'user', 'admin', or 'owner'.")
+        return
+
+    cur = cursor(con)
+    # Try by username first, then HWID
+    cur.execute("UPDATE users SET role=%s WHERE username=%s OR hwid_hash=%s", 
+                (new_role, ident, ident))
+    if cur.rowcount == 0:
+        print(f"[-] No user found with identifier '{ident}'.")
+    else:
+        con.commit()
+        print(f"[+] User '{ident}' promoted to '{new_role}' successfully.")
         print(f"ERROR: Username '{username}' already exists.")
 
 def cmd_rm_admin(con, args, role):
@@ -667,9 +691,14 @@ def main():
         sub.add_argument("username")
         cmd_rm_admin(con, sub.parse_args(rest), role)
 
+    elif cmd == "promote-user":
+        sub.add_argument("identifier", help="HWID or Username")
+        sub.add_argument("new_role", help="user|admin|owner")
+        cmd_promote_user(con, sub.parse_args(rest), role)
+
     else:
         print(f"Unknown command: {cmd}")
-        print("Commands: status issue activate ban unban list-licenses list-users"
+        print("Commands: status issue activate ban unban list-licenses list-users promote-user"
               " purchases add-hash rm-hash list-hashes prune watch add-admin rm-admin reset-password")
         sys.exit(1)
 

@@ -14,7 +14,7 @@
   transform: translate(-50%, -50%);
   width: 60vw;
   height: 60vw;
-  background: radial-gradient(circle, rgba(123, 44, 191, 0.12) 0%, rgba(10, 10, 12, 0) 70%);
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.04) 0%, rgba(10, 10, 12, 0) 70%);
   pointer-events: none;
   z-index: 0;
 }
@@ -82,8 +82,8 @@
 }
 
 .input:focus {
-  border-color: rgba(123, 44, 191, 0.6);
-  box-shadow: 0 0 0 3px rgba(123, 44, 191, 0.15);
+  border-color: rgba(255, 255, 255, 0.4);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
 }
 
 .input::placeholder {
@@ -105,8 +105,8 @@
 }
 
 .submitBtn {
-  background: linear-gradient(135deg, #7b2cbf, #5a189a);
-  color: #fff;
+  background: #ffffff;
+  color: #000000;
   border: none;
   padding: 0.85rem;
   border-radius: 8px;
@@ -136,7 +136,7 @@
 }
 
 .link {
-  color: #9d4edd;
+  color: var(--text-secondary);
   text-decoration: none;
   font-weight: 500;
 }

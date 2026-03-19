@@ -22,6 +22,18 @@ export interface User {
   licenseKey: string;
   isBanned: boolean;
   lastSeen: string;
+  role?: string;
+}
+
+export interface MetricsResponse {
+  activeSessions: number;
+  uptimeSeconds: number;
+  dllLoaded: boolean;
+  dllSizeBytes: number;
+  totalUsers: number;
+  totalLicenses: number;
+  buildVersion: string;
+  timestamp: number;
 }
 
 export interface License {

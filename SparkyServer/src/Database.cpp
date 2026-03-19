@@ -172,6 +172,13 @@ bool Database::CreateSchema()
             expires_at BIGINT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions(username);
+        CREATE TABLE IF NOT EXISTS web_accounts (
+            username      TEXT PRIMARY KEY,
+            password_hash TEXT   NOT NULL,
+            role          TEXT   NOT NULL DEFAULT 'user',
+            created_at    BIGINT NOT NULL,
+            last_login    BIGINT NOT NULL DEFAULT 0
+        );
     )sql";
 
     PGresult* res = PQexec(PG(m_db), ddl);
@@ -759,6 +766,91 @@ std::vector<std::pair<std::string,std::string>> Database::ListIpBans() const
     rows.reserve(n);
     for (int i = 0; i < n; ++i)
         rows.emplace_back(PQgetvalue(res, i, 0), PQgetvalue(res, i, 1));
+    PQclear(res);
+    return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Web accounts (React site — username+password only, no HWID/license)
+// ---------------------------------------------------------------------------
+bool Database::CreateWebAccount(const WebAccountRow& row)
+{
+    auto* res = PgExec(PG(m_db),
+        "INSERT INTO web_accounts(username,password_hash,role,created_at,last_login)"
+        " VALUES($1,$2,$3,$4,$5)"
+        " ON CONFLICT(username) DO NOTHING",
+        { row.username, row.password_hash, row.role,
+          std::to_string(row.created_at), std::to_string(row.last_login) });
+    if (!res) return false;
+    bool created = std::atoi(PQcmdTuples(res)) > 0;
+    PQclear(res);
+    return created;
+}
+
+std::optional<WebAccountRow> Database::GetWebAccount(const std::string& username) const
+{
+    auto* res = PgExec(PG(m_db),
+        "SELECT username,password_hash,role,created_at,last_login"
+        " FROM web_accounts WHERE username=$1",
+        { username });
+    if (!res) return std::nullopt;
+
+    std::optional<WebAccountRow> result;
+    if (PQntuples(res) == 1)
+    {
+        WebAccountRow r;
+        r.username      = PQgetvalue(res, 0, 0);
+        r.password_hash = PQgetvalue(res, 0, 1);
+        r.role          = PQgetvalue(res, 0, 2);
+        r.created_at    = PgInt64(res, 0, 3);
+        r.last_login    = PgInt64(res, 0, 4);
+        if (r.role.empty()) r.role = "user";
+        result = r;
+    }
+    PQclear(res);
+    return result;
+}
+
+bool Database::SetWebAccountRole(const std::string& username, const std::string& role)
+{
+    auto* res = PgExec(PG(m_db),
+        "UPDATE web_accounts SET role=$1 WHERE username=$2",
+        { role, username });
+    if (!res) return false;
+    PQclear(res);
+    return true;
+}
+
+bool Database::UpdateWebAccountLastLogin(const std::string& username, int64_t now)
+{
+    auto* res = PgExec(PG(m_db),
+        "UPDATE web_accounts SET last_login=$1 WHERE username=$2",
+        { std::to_string(now), username });
+    if (!res) return false;
+    PQclear(res);
+    return true;
+}
+
+std::vector<WebAccountRow> Database::ListWebAdmins() const
+{
+    auto* res = PgExec(PG(m_db),
+        "SELECT username,password_hash,role,created_at,last_login"
+        " FROM web_accounts WHERE role IN ('admin','owner') ORDER BY username");
+    std::vector<WebAccountRow> rows;
+    if (!res) return rows;
+    int n = PQntuples(res);
+    rows.reserve(n);
+    for (int i = 0; i < n; ++i)
+    {
+        WebAccountRow r;
+        r.username      = PQgetvalue(res, i, 0);
+        r.password_hash = PQgetvalue(res, i, 1);
+        r.role          = PQgetvalue(res, i, 2);
+        r.created_at    = PgInt64(res, i, 3);
+        r.last_login    = PgInt64(res, i, 4);
+        if (r.role.empty()) r.role = "user";
+        rows.push_back(r);
+    }
     PQclear(res);
     return rows;
 }
