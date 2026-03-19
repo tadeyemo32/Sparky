@@ -397,10 +397,11 @@ static DWORD WINAPI SessionThread(LPVOID p)
     };
     auto done = [&]() {
         netCleanup();
-        state.serverConnected = false;
-        state.loggedIn        = false;
-        state.connecting      = false;
-        state.loggingIn       = false;
+        // serverConnected is NOT cleared here — PingerThread manages it
+        // independently so the dot stays green as long as the server is reachable.
+        state.loggedIn   = false;
+        state.connecting = false;
+        state.loggingIn  = false;
         delete a;
     };
 
@@ -629,6 +630,94 @@ static DWORD WINAPI SessionThread(LPVOID p)
 }
 
 // ---------------------------------------------------------------------------
+// PingerThread — periodic HTTP health-check that sets state.serverConnected
+// BEFORE the user logs in, so the status dot reflects server availability.
+// While a session is active the SessionThread owns the connection; we skip
+// pinging then to avoid redundant connections.
+// ---------------------------------------------------------------------------
+static DWORD WINAPI PingerThread(LPVOID p)
+{
+    struct Args { UIState* state; std::atomic<bool>* run; };
+    auto* a    = static_cast<Args*>(p);
+    UIState& state = *a->state;
+
+    while (a->run->load())
+    {
+        // SessionThread owns serverConnected while a session is active
+        if (state.loggedIn) { Sleep(3000); continue; }
+
+        bool ok = false;
+
+        WSADATA wsa{};
+        WSAStartup(MAKEWORD(2,2), &wsa);
+
+        const char* host = state.serverHost;
+        char portStr[8];
+        snprintf(portStr, sizeof(portStr), "%d", state.serverPort);
+
+        addrinfo hints{}, *res = nullptr;
+        hints.ai_family   = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+
+        SOCKET sock = INVALID_SOCKET;
+        SSL*   ssl  = nullptr;
+
+        if (getaddrinfo(host, portStr, &hints, &res) == 0 && res)
+        {
+            sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+            if (sock != INVALID_SOCKET)
+            {
+                DWORD to = 5000;
+                setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&to, sizeof(to));
+                setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char*)&to, sizeof(to));
+
+                if (connect(sock, res->ai_addr, (int)res->ai_addrlen) == 0)
+                {
+                    if (g_loaderSslCtx)
+                    {
+                        ssl = SSL_new(g_loaderSslCtx);
+                        SSL_set_fd(ssl, (int)sock);
+                        SSL_set_tlsext_host_name(ssl, host);
+                        if (SSL_connect(ssl) <= 0) { SSL_free(ssl); ssl = nullptr; }
+                    }
+
+                    if (!g_loaderSslCtx || ssl)
+                    {
+                        char req[512];
+                        snprintf(req, sizeof(req),
+                            "GET / HTTP/1.1\r\n"
+                            "Host: %s\r\n"
+                            "x-sparky-key: VhPuLNayUPLTtOkOMoChbnaKHexOCetJaa4iXkLDF2s=\r\n"
+                            "Connection: close\r\n\r\n",
+                            host);
+                        if (NetSend(sock, ssl, req, (int)strlen(req)))
+                        {
+                            char resp[256]{};
+                            NetRecv(sock, ssl, resp, sizeof(resp) - 1, 5000);
+                            ok = strstr(resp, " 200") != nullptr;
+                        }
+                    }
+                }
+            }
+            freeaddrinfo(res);
+        }
+
+        if (ssl)  { SSL_shutdown(ssl); SSL_free(ssl); }
+        if (sock != INVALID_SOCKET) closesocket(sock);
+        WSACleanup();
+
+        if (!state.loggedIn)
+            state.serverConnected = ok;
+
+        // Wait ~15 s, waking every second to check for shutdown or login
+        for (int i = 0; i < 15 && a->run->load() && !state.loggedIn; ++i)
+            Sleep(1000);
+    }
+    delete a;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // ProcessWatcher — background thread, no heap allocs
 // ---------------------------------------------------------------------------
 static void ProcessWatcher(UIState& state, std::atomic<bool>& running,
@@ -700,6 +789,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         new WatchArgs{&state, &watcherRunning, &dllInRam},
         0, nullptr);
 
+    // Start server connectivity pinger — sets state.serverConnected before login
+    struct PingArgs { UIState* state; std::atomic<bool>* run; };
+    CreateThread(nullptr, 0, PingerThread, new PingArgs{&state, &watcherRunning}, 0, nullptr);
+
     auto onConnect = [&]() {
         if (state.connecting) return;  // already in flight
 
@@ -724,7 +817,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
             SecureZeroMemory(state.passwordConf, sizeof(state.passwordConf));
         }
 
-        state.serverConnected  = false;
+        // serverConnected is left as-is; PingerThread keeps it accurate.
         state.dllReady         = false;
         state.dllSizeBytes     = 0;
         state.downloadProgress = 0.f;

@@ -225,12 +225,13 @@ static void StatusRow(const char* label, bool active, bool pending,
 // Small connection status dot used in the top-right corner chrome
 static void DrawStatusDot(ImDrawList* dl, ImVec2 center, bool connected, bool pending)
 {
-    ImVec4 col = connected ? Col::Green : pending ? Col::Orange : Col::Red;
-    if (connected || pending)
-    {
-        float r = connected ? 0.12f : PulseValue(4.f) * 0.22f;
-        dl->AddCircleFilled(center, 9.f, U32({col.x, col.y, col.z, r}));
-    }
+    // pending (logging in / connecting) takes priority so the dot pulses orange
+    // while authenticating; turns green as soon as the server is reachable.
+    ImVec4 col = pending ? Col::Orange : connected ? Col::Green : Col::Red;
+    if (pending)
+        dl->AddCircleFilled(center, 9.f, U32({col.x, col.y, col.z, PulseValue(4.f) * 0.22f}));
+    else if (connected)
+        dl->AddCircleFilled(center, 9.f, U32({col.x, col.y, col.z, 0.12f}));
     dl->AddCircleFilled(center, 4.f, U32(col));
 }
 
@@ -368,13 +369,15 @@ static void LoginScreen(UIState& state, std::function<void()>& onConnect)
 
     ImGui::Spacing();
 
-    ImGui::PushStyleColor(ImGuiCol_Text, Col::TextLabel);
-    ImGui::TextUnformatted("License Key");
-    ImGui::PopStyleColor();
-    ImGui::SetNextItemWidth(fieldW);
-    ImGui::InputText("##lic", state.licenseKey, sizeof(state.licenseKey));
-
-    ImGui::Spacing();
+    if (state.signUpMode)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, Col::TextLabel);
+        ImGui::TextUnformatted("License Key");
+        ImGui::PopStyleColor();
+        ImGui::SetNextItemWidth(fieldW);
+        ImGui::InputText("##lic", state.licenseKey, sizeof(state.licenseKey));
+        ImGui::Spacing();
+    }
 
     ImGui::PushStyleColor(ImGuiCol_Text, Col::TextLabel);
     ImGui::TextUnformatted("Password");
@@ -410,7 +413,7 @@ static void LoginScreen(UIState& state, std::function<void()>& onConnect)
     {
         bool busy    = state.loggingIn;
         bool canTry  = !busy && state.username[0] != '\0' && state.password[0] != '\0'
-                       && state.licenseKey[0] != '\0';
+                       && (!state.signUpMode || state.licenseKey[0] != '\0');
 
         ImVec4 btnBg = busy     ? ImVec4{0.05f,0.14f,0.20f,1.f}
                      : canTry   ? ImVec4{0.00f,0.42f,0.58f,1.f}

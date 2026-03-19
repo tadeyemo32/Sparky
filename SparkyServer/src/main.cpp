@@ -766,13 +766,19 @@ AUTH_LOGIC_START:
         g_db.TouchUser(s.hwid, now, s.loaderHash);
 
         // Validate the license key supplied by the loader and bind it to this HWID.
+        // Login mode sends an empty key — look it up from the users table by HWID.
         std::string licenseKey(hello.LicenseKey,
                                strnlen(hello.LicenseKey, sizeof(hello.LicenseKey)));
         if (licenseKey.empty())
         {
-            std::cout << std::format("[S] Reject: missing license key — {:.16}...\n", s.hwid);
-            SendMsg(s, MsgType::AuthFail);
-            cleanup(); return;
+            auto user = g_db.GetUser(s.hwid);
+            if (!user || user->license_key.empty())
+            {
+                std::cout << std::format("[S] Reject: no license bound for {:.16}...\n", s.hwid);
+                SendMsg(s, MsgType::AuthFail);
+                cleanup(); return;
+            }
+            licenseKey = user->license_key;
         }
         {
             auto lic = g_db.GetLicense(licenseKey);
