@@ -101,6 +101,11 @@ jobs:
     needs: [loader-build-and-tests, server-build-and-tests]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    env:
+      REGION: europe-west1
+      SERVICE_NAME: sparky-server
+      REPO_NAME: sparky-repo
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -113,33 +118,73 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Build and Deploy to Cloud Run
+      - name: Resolve project ID and image path
         run: |
-          # Securely inject SSL secrets during the CI run
+          RAW_PROJECT=$(gcloud config get-value project | tr -d '[:space:]')
+          LOWERCASE_PROJECT=$(echo "$RAW_PROJECT" | tr '[:upper:]' '[:lower:]')
+          echo "PROJECT_ID=$LOWERCASE_PROJECT" >> $GITHUB_ENV
+          echo "IMAGE=${REGION}-docker.pkg.dev/$LOWERCASE_PROJECT/$REPO_NAME/sparky-server" >> $GITHUB_ENV
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Create Artifact Registry repository (idempotent)
+        run: |
+          gcloud artifacts repositories create ${{ env.REPO_NAME }} \
+            --repository-format=docker \
+            --location=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --quiet 2>/dev/null || echo "Repository already exists, skipping."
+
+      - name: Inject SSL certificate and key
+        run: |
           if [ -n "${{ secrets.SPARKY_CERT_PEM }}" ]; then
             echo "${{ secrets.SPARKY_CERT_PEM }}" > SparkyServer/sparky.crt
             echo "${{ secrets.SPARKY_PRIVATE_KEY }}" > SparkyServer/sparky.key
+          else
+            touch SparkyServer/sparky.crt SparkyServer/sparky.key
           fi
 
-          echo "Checking if Cloud Storage bucket exists..."
+      - name: Build and push Docker image
+        run: |
+          docker build \
+            --cache-from ${{ env.IMAGE }}:latest \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            -f SparkyServer/Dockerfile \
+            -t ${{ env.IMAGE }}:${{ github.sha }} \
+            -t ${{ env.IMAGE }}:latest \
+            .
+          docker push ${{ env.IMAGE }}:${{ github.sha }}
+          docker push ${{ env.IMAGE }}:latest
+
+      - name: Ensure Cloud Storage bucket exists
+        run: |
           if ! gcloud storage buckets describe "gs://${{ secrets.GCP_BUCKET_NAME }}" >/dev/null 2>&1; then
-            echo "Bucket does not exist. Creating gs://${{ secrets.GCP_BUCKET_NAME }} in europe-west1..."
-            gcloud storage buckets create "gs://${{ secrets.GCP_BUCKET_NAME }}" --location=europe-west1
+            gcloud storage buckets create "gs://${{ secrets.GCP_BUCKET_NAME }}" --location=${{ env.REGION }}
           fi
 
-          echo "Moving Dockerfile to root to capture full context"
-          cp SparkyServer/Dockerfile .
-
-          gcloud run deploy sparky-server \
-            --source . \
-            --region europe-west1 \
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image ${{ env.IMAGE }}:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --platform managed \
             --allow-unauthenticated \
             --execution-environment gen2 \
             --add-volume=name=sparky-data,type=cloud-storage,bucket=${{ secrets.GCP_BUCKET_NAME }} \
             --add-volume-mount=volume=sparky-data,mount-path=/app/data \
             --add-volume=name=sparky-payloads,type=cloud-storage,bucket=sparky-payloads-490704 \
             --add-volume-mount=volume=sparky-payloads,mount-path=/app/payloads \
-            --set-env-vars SPARKY_KEY="${{ secrets.SPARKY_KEY }}",SPARKY_PG_CONNSTR="${{ secrets.SPARKY_PG_CONNSTR }}",SPARKY_HWID_PEPPER="${{ secrets.SPARKY_HWID_PEPPER }}"
+            --set-env-vars SPARKY_KEY="${{ secrets.SPARKY_KEY }}",SPARKY_PG_CONNSTR="${{ secrets.SPARKY_PG_CONNSTR }}",SPARKY_HWID_PEPPER="${{ secrets.SPARKY_HWID_PEPPER }}" \
+            --quiet
+
+      - name: Bind public invoker IAM policy
+        run: |
+          gcloud run services add-iam-policy-binding ${{ env.SERVICE_NAME }} \
+            --region=${{ env.REGION }} \
+            --member=allUsers \
+            --role=roles/run.invoker \
+            --quiet || echo "IAM binding skipped — set manually in GCP Console if needed."
 
   # ── Module 4: Attach Loader to Release (on tags only) ─────────────────
   release:
