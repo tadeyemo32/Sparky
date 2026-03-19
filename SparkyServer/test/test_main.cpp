@@ -636,8 +636,8 @@ static void test_protocol_layout()
     uint32_t* raw = reinterpret_cast<uint32_t*>(&h);
     EXPECT_EQ(raw[0], 0x12345678u);
 
-    TEST_BEGIN("HelloPayload — size is 76 bytes (32 + 4 + 32 + 8)");
-    EXPECT_EQ((int)sizeof(HelloPayload), 76);
+    TEST_BEGIN("HelloPayload — size is 180 bytes (32 + 4 + 32 + 8 + 32 + 40 + 32)");
+    EXPECT_EQ((int)sizeof(HelloPayload), 180);
 
     TEST_BEGIN("AuthOkPayload — size is 20 bytes (16 + 4)");
     EXPECT_EQ((int)sizeof(AuthOkPayload), 20);
