@@ -27,11 +27,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /src
 COPY . .
 
+# Ensure placeholder SSL files exist so COPY never fails in stage 2
+RUN touch SparkyServer/sparky.crt SparkyServer/sparky.key
+
 # CMAKE_SOURCE_DIR will be /src/SparkyServer, so the binary lands in
 # /src/SparkyServer/bin/SparkyServer (set by CMAKE_RUNTIME_OUTPUT_DIRECTORY).
 RUN cmake -S SparkyServer -B SparkyServer/build \
         -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build SparkyServer/build --parallel
+    && cmake --build SparkyServer/build --target SparkyServer --parallel
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
@@ -63,20 +66,9 @@ RUN mkdir -p /app/data/backups /app/payloads && \
     ln -s /app/data/config.bin /app/config.bin && \
     ln -s /app/payloads/SparkyCore.dll /app/SparkyCore.dll && \
     chown -R sparky:sparky /app/data /app/payloads
-# Note: /app/backups, /app/config.bin and /app/SparkyCore.dll are symlinks
-# into the cloud-mounted /app/data and /app/payloads volumes.  Chowning the
-# symlinks themselves at build time is a no-op (dangling targets), so we only
-# chown the directories — the mounted content will be owned by the runtime UID.
 
 USER sparky
 
-# SPARKY_ALLOW_PLAINTEXT is intentionally NOT set here.
-# TLS is mandatory in production: sparky.crt + sparky.key are injected by CI
-# via GitHub Secrets (see deploy.yml).  Set this only for local dev explicitly:
-#   docker run -e SPARKY_ALLOW_PLAINTEXT=1 ...
-
-# Default standalone port. On GCP Cloud Run, $PORT is injected automatically
-# (typically 8080) and the binary honours it at startup — EXPOSE is advisory only.
 EXPOSE 7777
 
 ENTRYPOINT ["/app/SparkyServer"]
