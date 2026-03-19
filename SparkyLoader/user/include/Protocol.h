@@ -1,7 +1,7 @@
-#pragma once
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
+#include <string>
 
 // =============================================================================
 // Shared binary wire protocol — SparkyLoader <-> SparkyServer
@@ -92,6 +92,36 @@ struct HeartbeatPayload
 
 // Server must receive a Heartbeat within this many milliseconds after each batch.
 static constexpr uint32_t HEARTBEAT_DEADLINE_MS = 30000; // 30 s
+
+// ---------------------------------------------------------------------------
+// String conversion helpers (shared)
+// ---------------------------------------------------------------------------
+inline std::string HexStr(const uint8_t* d, size_t n)
+{
+    static const char h[] = "0123456789abcdef";
+    std::string out; out.reserve(n * 2);
+    for (size_t i = 0; i < n; ++i) { out += h[d[i]>>4]; out += h[d[i]&0xF]; }
+    return out;
+}
+
+inline bool ParseHex(const std::string& s, uint8_t* out, size_t maxLen)
+{
+    if (s.size() % 2 != 0 || (s.size() / 2) > maxLen) return false;
+    for (size_t i = 0; i < s.size() / 2; ++i)
+    {
+        char hi = s[i * 2], lo = s[i * 2 + 1];
+        auto val = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+            if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+            return -1;
+        };
+        int vh = val(hi), vl = val(lo);
+        if (vh == -1 || vl == -1) return false;
+        out[i] = (uint8_t)((vh << 4) | vl);
+    }
+    return true;
+}
 
 // ---------------------------------------------------------------------------
 // Crypto helpers — all inline, no external deps

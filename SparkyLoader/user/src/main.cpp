@@ -386,7 +386,7 @@ static std::vector<uint8_t> ConnectAndFetchDll(
     }
 
     // ------------------------------------------------------------------
-    // Step 2: Send Hello  (plain — hdrKey == 0, so SendMsg sends raw)
+    // Step 2: Send HTTP Hello (to bypass Cloud Armor / Load Balancer)
     // ------------------------------------------------------------------
     HelloPayload hello{};
     memcpy(hello.HwidHash,      hwidHash,     32);
@@ -397,10 +397,39 @@ static std::vector<uint8_t> ConnectAndFetchDll(
     strncpy_s(hello.Username,   sizeof(hello.Username),   state.username,   _TRUNCATE);
     strncpy_s(hello.LicenseKey, sizeof(hello.LicenseKey), state.licenseKey, _TRUNCATE);
 
-    if (!SendMsg(ss, MsgType::Hello, &hello, sizeof(hello)))
+    std::string authHex = HexStr(reinterpret_cast<uint8_t*>(&hello), sizeof(hello));
+    
+    // Construct HTTP GET request with Cloud Armor key and Auth payload
+    std::string httpReq = 
+        std::string(_S("GET /auth HTTP/1.1\r\n")) +
+        _S("Host: ") + state.serverHost + _S("\r\n") +
+        _S("Connection: keep-alive\r\n") +
+        _S("x-sparky-key: VhPuLNayUPLTtOkOMoChbnaKHexOCetJaa4iXkLDF2s=\r\n") +
+        _S("x-sparky-auth: ") + authHex + _S("\r\n\r\n");
+
+    if (!NetSend(ss.sock, ss.ssl, httpReq.c_str(), (int)httpReq.size()))
     {
-        state.AddLog("[ERR] Send Hello failed");
+        state.AddLog(_S("[ERR] Send HTTP Hello failed"));
         cleanup(); return {};
+    }
+
+    // Read HTTP response (expect 200 OK)
+    {
+        char resp[1024]{};
+        int received = 0;
+        // Simple read for the 200 OK header
+        while (received < sizeof(resp) - 1)
+        {
+            char c;
+            if (!NetRecv(ss.sock, ss.ssl, &c, 1, 10000)) break;
+            resp[received++] = c;
+            if (received >= 4 && memcmp(resp + received - 4, "\r\n\r\n", 4) == 0) break;
+        }
+        if (strstr(resp, _S("200 OK")) == nullptr)
+        {
+            state.AddLog(_S("[ERR] Cloud Armor / LB rejected the request (no 200 OK)"));
+            cleanup(); return {};
+        }
     }
 
     // ------------------------------------------------------------------

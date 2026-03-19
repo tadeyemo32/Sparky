@@ -5,7 +5,11 @@ on:
     branches: [main, dev]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
+# ... (rest of the file)
   # ── Module 1: Loader Build & Tests (Windows) ──────────────────────────
   loader-build-and-tests:
     name: Loader Build & Tests
@@ -186,11 +190,11 @@ jobs:
             --role=roles/run.invoker \
             --quiet || echo "IAM binding skipped — set manually in GCP Console if needed."
 
-  # ── Module 4: Attach Loader to Release (on tags only) ─────────────────
+  # ── Module 4: Attach Loader to Release ────────────────────────────────
   release:
     name: Publish Release
     needs: [loader-build-and-tests]
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - name: Download Loader Artifact
@@ -198,9 +202,13 @@ jobs:
         with:
           name: SparkyLoader
 
-      - name: Create GitHub Release
+      - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: SparkyLoader.exe
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || 'Development Build (Latest)' }}
+          prerelease: ${{ github.ref_type != 'tag' }}
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

