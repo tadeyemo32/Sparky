@@ -1,31 +1,67 @@
-name: Deploy SparkyServer to Cloud Run
+name: Sparky CI/CD Pipeline
 
 on:
   push:
-    branches:
-      - main
+    branches: [main, dev]
   workflow_dispatch:
 
 jobs:
-  loader-tests-and-checks:
-    name: Loader Tests & Checks
+  # ── Module 1: Loader Build & Tests (Windows) ──────────────────────────
+  loader-build-and-tests:
+    name: Loader Build & Tests
     runs-on: windows-latest
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows
     steps:
-      - name: Checkout Code
+      - name: Checkout Code (with submodules)
         uses: actions/checkout@v4
-      - name: Run Windows Integrity Checks
-        run: echo "Executing Loader specific security routines and unit tests..."
+        with:
+          submodules: recursive
 
-  server-tests:
-    name: Server Tests & Suite
+      - name: Setup vcpkg & Install OpenSSL
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 'a42af01b72c28a8e1d7b48107b33e4f286a55ef6'
+
+      - name: Install OpenSSL via vcpkg
+        run: vcpkg install openssl:x64-windows
+
+      - name: Configure CMake (Release)
+        run: |
+          cd SparkyLoader/user
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+
+      - name: Build SparkyLoader
+        run: |
+          cd SparkyLoader/user
+          cmake --build build --config Release --target SparkyLoader -j 2
+
+      - name: Build & Run Unit Tests
+        run: |
+          cd SparkyLoader/user
+          cmake --build build --config Release --target SparkyTests -j 2
+          if (Test-Path "bin/Release/SparkyTests.exe") { ./bin/Release/SparkyTests.exe } else { Write-Host "No test binary found, skipping." }
+
+      - name: Upload SparkyLoader.exe Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SparkyLoader
+          path: SparkyLoader/user/bin/Release/SparkyLoader.exe
+          if-no-files-found: warn
+
+  # ── Module 2: Server Build & Tests (Linux) ────────────────────────────
+  server-build-and-tests:
+    name: Server Build & Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
       - name: Install Runtime Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libssl-dev libpq-dev
+          sudo apt-get install -y libssl-dev libpq-dev cmake
+
       - name: Build Server Binary
         run: |
           cd SparkyServer
@@ -33,14 +69,17 @@ jobs:
           cd build
           cmake ..
           make -j2
+
       - name: Execute Test Suite
         run: |
           cd SparkyServer/build
-          if [ -f "SparkyTests" ]; then ./SparkyTests; else echo "No active test suite emitted by Makefile, proceeding."; fi
+          if [ -f "SparkyTests" ]; then ./SparkyTests; else echo "No test binary found, skipping."; fi
 
+  # ── Module 3: Production Deployment (gated by Module 1 & 2) ───────────
   deploy:
     name: Production Deployment
-    needs: [loader-tests-and-checks, server-tests]
+    needs: [loader-build-and-tests, server-build-and-tests]
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -61,7 +100,7 @@ jobs:
             echo "${{ secrets.SPARKY_CERT_PEM }}" > SparkyServer/sparky.crt
             echo "${{ secrets.SPARKY_PRIVATE_KEY }}" > SparkyServer/sparky.key
           fi
-          
+
           echo "Checking if Cloud Storage bucket exists..."
           if ! gcloud storage buckets describe "gs://${{ secrets.GCP_BUCKET_NAME }}" >/dev/null 2>&1; then
             echo "Bucket does not exist. Creating gs://${{ secrets.GCP_BUCKET_NAME }} in europe-west1..."
@@ -70,7 +109,7 @@ jobs:
 
           echo "Moving Dockerfile to root to capture full context"
           cp SparkyServer/Dockerfile .
-          
+
           gcloud run deploy sparky-server \
             --source . \
             --region europe-west1 \
@@ -81,3 +120,22 @@ jobs:
             --add-volume=name=sparky-payloads,type=cloud-storage,bucket=sparky-payloads-490704 \
             --add-volume-mount=volume=sparky-payloads,mount-path=/app/payloads \
             --set-env-vars SPARKY_KEY="${{ secrets.SPARKY_KEY }}",SPARKY_PG_CONNSTR="${{ secrets.SPARKY_PG_CONNSTR }}",SPARKY_HWID_PEPPER="${{ secrets.SPARKY_HWID_PEPPER }}"
+
+  # ── Module 4: Attach Loader to Release (on tags only) ─────────────────
+  release:
+    name: Publish Release
+    needs: [loader-build-and-tests]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Loader Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: SparkyLoader
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: SparkyLoader.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
