@@ -472,6 +472,7 @@ static std::vector<uint8_t> ConnectAndFetchDll(
 
         XorStream(cp.data(), (uint32_t)cp.size(), rollingKey);
         dllBuf.insert(dllBuf.end(), cp.begin(), cp.end());
+        state.downloadProgress = static_cast<float>(c + 1) / static_cast<float>(br.NumChunks);
 
         if ((c + 1) % br.ChunksPerHeartbeat == 0 || c + 1 == br.NumChunks)
         {
@@ -535,13 +536,30 @@ static std::vector<uint8_t> ConnectAndFetchDll(
 // ---------------------------------------------------------------------------
 // ProcessWatcher — background thread, no heap allocs
 // ---------------------------------------------------------------------------
-static void ProcessWatcher(UIState& state, std::atomic<bool>& running)
+static void ProcessWatcher(UIState& state, std::atomic<bool>& running,
+                           const std::vector<uint8_t>& dllInRam)
 {
     while (running.load())
     {
         DWORD pid = FindProcessByName(state.processName);
         state.processFound = (pid != 0);
         state.targetPid    = pid;
+
+        // Keep dllReady accurate: true if server RAM buffer OR local file is present.
+        if (!state.dllReady)
+        {
+            if (!dllInRam.empty())
+            {
+                state.dllReady     = true;
+                state.dllSizeBytes = static_cast<uint32_t>(dllInRam.size());
+            }
+            else if (strlen(state.dllPath) > 0)
+            {
+                DWORD attr = GetFileAttributesA(state.dllPath);
+                state.dllReady = (attr != INVALID_FILE_ATTRIBUTES);
+            }
+        }
+
         Sleep(1000);
     }
 }
@@ -572,27 +590,38 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     if (!GetLoaderHash(loaderHash))
         state.AddLog("[WRN] Loader hash failed — integrity check will reject");
 
-    std::atomic<bool> watcherRunning = true;
-    HANDLE hWatcher = CreateThread(nullptr, 0,
-        [](LPVOID p) -> DWORD {
-            auto* args = (std::pair<UIState*, std::atomic<bool>*>*)p;
-            ProcessWatcher(*args->first, *args->second);
-            delete args;
-            return 0;
-        },
-        new std::pair<UIState*, std::atomic<bool>*>(&state, &watcherRunning),
-        0, nullptr);
-
     std::vector<uint8_t> dllInRam;
 
+    std::atomic<bool> watcherRunning = true;
+    struct WatchArgs { UIState* st; std::atomic<bool>* run; std::vector<uint8_t>* dll; };
+    HANDLE hWatcher = CreateThread(nullptr, 0,
+        [](LPVOID p) -> DWORD {
+            auto* a = static_cast<WatchArgs*>(p);
+            ProcessWatcher(*a->st, *a->run, *a->dll);
+            delete a;
+            return 0;
+        },
+        new WatchArgs{&state, &watcherRunning, &dllInRam},
+        0, nullptr);
+
     auto onConnect = [&]() {
+        if (state.connecting) return;  // already in flight
+
+        state.serverConnected  = false;
+        state.dllReady         = false;
+        state.dllSizeBytes     = 0;
+        state.downloadProgress = 0.f;
+        state.connecting       = true;
+        dllInRam.clear();
+
         state.AddLog("[INF] Connecting to " + std::string(state.serverHost)
-                     + ":" + std::to_string(state.serverPort) + "...");
+                     + ":" + std::to_string(state.serverPort)
+                     + (state.useTls ? "  (TLS)" : "  (plain)") + "...");
 
         struct ConnArgs {
-            UIState*             st;
-            uint8_t              hwid[32];
-            uint8_t              loader[32];
+            UIState*              st;
+            uint8_t               hwid[32];
+            uint8_t               loader[32];
             std::vector<uint8_t>* dll;
         };
         auto* args = new ConnArgs{};
@@ -607,19 +636,27 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
                 *a->dll = ConnectAndFetchDll(
                     a->st->serverHost, a->st->serverPort,
                     a->hwid, a->loader, *a->st);
+
+                a->st->connecting = false;
+
                 if (!a->dll->empty())
+                {
+                    a->st->dllSizeBytes = static_cast<uint32_t>(a->dll->size());
+                    a->st->dllReady     = true;
                     a->st->AddLog("[INF] DLL ready in RAM ("
                                   + std::to_string(a->dll->size()) + " bytes)");
+                }
                 delete a;
                 return 0;
             }, args, 0, nullptr);
     };
 
     auto onInject = [&]() {
+        if (state.injecting || state.injected) return;
         if (!state.processFound)
-        { state.AddLog("[ERR] Process not found"); return; }
+        { state.AddLog("[ERR] Process not found — is the target running?"); return; }
 
-        // Dev mode fallback: read DLL from disk if server hasn't delivered one
+        // Dev mode fallback: read DLL from disk if server hasn't delivered one yet.
         if (dllInRam.empty() && strlen(state.dllPath) > 0)
         {
             HANDLE hF = CreateFileA(state.dllPath, GENERIC_READ, FILE_SHARE_READ,
@@ -628,18 +665,22 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
             {
                 LARGE_INTEGER sz{};
                 GetFileSizeEx(hF, &sz);
-                dllInRam.resize((size_t)sz.QuadPart);
+                dllInRam.resize(static_cast<size_t>(sz.QuadPart));
                 DWORD r{};
-                ReadFile(hF, dllInRam.data(), (DWORD)sz.QuadPart, &r, nullptr);
+                ReadFile(hF, dllInRam.data(), static_cast<DWORD>(sz.QuadPart), &r, nullptr);
                 CloseHandle(hF);
-                state.AddLog("[WRN] Using local DLL (dev mode — no server encryption)");
+                state.dllSizeBytes = static_cast<uint32_t>(dllInRam.size());
+                state.dllReady     = true;
+                state.AddLog("[WRN] Using local DLL (dev mode — server DLL not loaded)");
             }
         }
 
         if (dllInRam.empty())
-        { state.AddLog("[ERR] No DLL available"); return; }
+        { state.AddLog("[ERR] No DLL available — connect to server first or set a local DLL path"); return; }
 
-        state.AddLog("[INF] Injecting into PID " + std::to_string(state.targetPid) + "...");
+        state.injecting = true;
+        state.AddLog("[INF] Injecting " + std::to_string(dllInRam.size())
+                     + " bytes into PID " + std::to_string(state.targetPid) + "...");
 
         struct InjectArgs { UIState* st; DWORD pid; std::vector<uint8_t> dll; };
         auto* args = new InjectArgs{ &state, state.targetPid, dllInRam };
@@ -649,13 +690,20 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
                 auto* a = static_cast<InjectArgs*>(p);
                 HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, a->pid);
                 if (!hProc)
-                { a->st->AddLog("[ERR] OpenProcess failed"); delete a; return 1; }
+                {
+                    a->st->AddLog("[ERR] OpenProcess failed (error "
+                                  + std::to_string(GetLastError()) + ")");
+                    a->st->injecting = false;
+                    delete a; return 1;
+                }
 
                 bool ok = ManualMapDll(hProc, a->dll);
                 CloseHandle(hProc);
 
-                a->st->injected = ok;
-                a->st->AddLog(ok ? "[INF] Injection successful" : "[ERR] Injection failed");
+                a->st->injecting = false;
+                a->st->injected  = ok;
+                a->st->AddLog(ok ? "[INF] Injection successful — DLL running in target"
+                                 : "[ERR] Injection failed");
                 delete a;
                 return 0;
             }, args, 0, nullptr);

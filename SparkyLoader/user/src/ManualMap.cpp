@@ -1,5 +1,6 @@
 #include "ManualMap.h"
 #include "Logger.h"
+#include "StringCrypt.h"
 
 #include <TlHelp32.h>
 #include <psapi.h>
@@ -51,7 +52,7 @@ static_assert(sizeof(SysProcessInfo) == 0x100);
 static NTSTATUS QuerySystemInformation(ULONG cls, PVOID buf, ULONG len, PULONG ret)
 {
     static auto fn = reinterpret_cast<NTSTATUS(NTAPI*)(ULONG,PVOID,ULONG,PULONG)>(
-        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemInformation"));
+        GetProcAddress(GetModuleHandleW(_SW(L"ntdll.dll")), _S("NtQuerySystemInformation")));
     return fn ? fn(cls, buf, len, ret) : STATUS_NOT_IMPLEMENTED;
 }
 
@@ -82,7 +83,7 @@ namespace Nt
     static Fn Resolve(const char* name)
     {
         // GetModuleHandleW walks the PEB InMemoryOrderModuleList — no LoadLibrary.
-        HMODULE hNt = GetModuleHandleW(L"ntdll.dll");
+        HMODULE hNt = GetModuleHandleW(_SW(L"ntdll.dll"));
         return reinterpret_cast<Fn>(GetProcAddress(hNt, name));
     }
 
@@ -90,7 +91,7 @@ namespace Nt
                                     SIZE_T* pSize, ULONG type, ULONG protect)
     {
         static auto fn = Resolve<NTSTATUS(NTAPI*)(HANDLE,PVOID*,ULONG_PTR,PSIZE_T,ULONG,ULONG)>(
-            "NtAllocateVirtualMemory");
+            _S("NtAllocateVirtualMemory"));
         return fn(hProcess, pBase, 0, pSize, type, protect);
     }
 
@@ -98,7 +99,7 @@ namespace Nt
                                  PVOID src, SIZE_T size, SIZE_T* written)
     {
         static auto fn = Resolve<NTSTATUS(NTAPI*)(HANDLE,PVOID,PVOID,SIZE_T,PSIZE_T)>(
-            "NtWriteVirtualMemory");
+            _S("NtWriteVirtualMemory"));
         return fn(hProcess, dest, src, size, written);
     }
 
@@ -106,7 +107,7 @@ namespace Nt
                                 PVOID dest, SIZE_T size, SIZE_T* read)
     {
         static auto fn = Resolve<NTSTATUS(NTAPI*)(HANDLE,PVOID,PVOID,SIZE_T,PSIZE_T)>(
-            "NtReadVirtualMemory");
+            _S("NtReadVirtualMemory"));
         return fn(hProcess, src, dest, size, read);
     }
 
@@ -114,7 +115,7 @@ namespace Nt
                                    SIZE_T* pSize, ULONG newProt, ULONG* oldProt)
     {
         static auto fn = Resolve<NTSTATUS(NTAPI*)(HANDLE,PVOID*,PSIZE_T,ULONG,PULONG)>(
-            "NtProtectVirtualMemory");
+            _S("NtProtectVirtualMemory"));
         return fn(hProcess, pBase, pSize, newProt, oldProt);
     }
 
@@ -122,7 +123,7 @@ namespace Nt
                                 SIZE_T* pSize, ULONG freeType)
     {
         static auto fn = Resolve<NTSTATUS(NTAPI*)(HANDLE,PVOID*,PSIZE_T,ULONG)>(
-            "NtFreeVirtualMemory");
+            _S("NtFreeVirtualMemory"));
         return fn(hProcess, pBase, pSize, freeType);
     }
 }
@@ -369,16 +370,17 @@ static void MappingShellcodeEnd() {}
 static bool ResolveNtdllThunks(MappingData& d)
 {
     // GetModuleHandleW — no LoadLibrary, just PEB walk
-    HMODULE hNt = GetModuleHandleW(L"ntdll.dll");
+    SPARKY_WSTR(ntdll_name, L"ntdll.dll");
+    HMODULE hNt = GetModuleHandleW(ntdll_name.c_str());
     if (!hNt) return false;
 
-    d.LdrLoadDll             = (MappingData::fnLdrLoadDll)     GetProcAddress(hNt, "LdrLoadDll");
-    d.LdrGetProcedureAddress = (MappingData::fnLdrGetProcAddr) GetProcAddress(hNt, "LdrGetProcedureAddress");
-    d.RtlInitUnicodeString   = (MappingData::fnRtlInitUniStr)  GetProcAddress(hNt, "RtlInitUnicodeString");
-    d.RtlInitAnsiString      = (MappingData::fnRtlInitAnsiStr) GetProcAddress(hNt, "RtlInitAnsiString");
+    d.LdrLoadDll             = (MappingData::fnLdrLoadDll)     GetProcAddress(hNt, _S("LdrLoadDll"));
+    d.LdrGetProcedureAddress = (MappingData::fnLdrGetProcAddr) GetProcAddress(hNt, _S("LdrGetProcedureAddress"));
+    d.RtlInitUnicodeString   = (MappingData::fnRtlInitUniStr)  GetProcAddress(hNt, _S("RtlInitUnicodeString"));
+    d.RtlInitAnsiString      = (MappingData::fnRtlInitAnsiStr) GetProcAddress(hNt, _S("RtlInitAnsiString"));
     // Optional — present on all supported Windows versions (Win10+).
     // Failure here is non-fatal: the shellcode checks for nullptr before calling.
-    d.RtlAddFunctionTable    = (MappingData::fnRtlAddFuncTable)GetProcAddress(hNt, "RtlAddFunctionTable");
+    d.RtlAddFunctionTable    = (MappingData::fnRtlAddFuncTable)GetProcAddress(hNt, _S("RtlAddFunctionTable"));
 
     return d.LdrLoadDll && d.LdrGetProcedureAddress
         && d.RtlInitUnicodeString && d.RtlInitAnsiString;
@@ -407,8 +409,8 @@ static DWORD FindAlertableThread(HANDLE hProcess)
     // Get address ranges of preferred system DLLs (same in every process).
     // win32u.dll is the user-mode → win32k bridge; its threads are the
     // most reliably alertable in any GUI application.
-    const auto [w32uBase, w32uSize] = GetModuleRange(L"win32u.dll");
-    const auto [ntBase,   ntSize]   = GetModuleRange(L"ntdll.dll");
+    const auto [w32uBase, w32uSize] = GetModuleRange(_SW(L"win32u.dll"));
+    const auto [ntBase,   ntSize]   = GetModuleRange(_SW(L"ntdll.dll"));
 
     // Query system process/thread information.
     // Retry with a growing buffer if the initial size is too small.
@@ -611,7 +613,7 @@ static bool ExecuteShellcode(HANDLE hProcess, uintptr_t imageBase,
     {
         static auto rtlGenRandom =
             reinterpret_cast<BOOLEAN(NTAPI*)(PVOID, ULONG)>(
-                GetProcAddress(GetModuleHandleW(L"advapi32.dll"), "SystemFunction036"));
+                GetProcAddress(GetModuleHandleW(_SW(L"advapi32.dll")), _S("SystemFunction036")));
         if (!rtlGenRandom || !rtlGenRandom(&xorKey, sizeof(xorKey)))
         {
             // advapi32 not yet loaded (rare) — fall back to RDTSC mix
@@ -775,7 +777,7 @@ bool ManualMapDll(HANDLE hProcess,
     md.EraseSeed = 0;
     {
         static auto rtlGen = reinterpret_cast<BOOLEAN(NTAPI*)(PVOID, ULONG)>(
-            GetProcAddress(GetModuleHandleW(L"advapi32.dll"), "SystemFunction036"));
+            GetProcAddress(GetModuleHandleW(_SW(L"advapi32.dll")), _S("SystemFunction036")));
         if (rtlGen) rtlGen(&md.EraseSeed, sizeof(md.EraseSeed));
         if (!md.EraseSeed)
         {

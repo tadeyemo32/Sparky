@@ -775,9 +775,28 @@ int main(int argc, char** argv)
         }
         else
         {
-            std::cout << "[S] TLS: cert/key not found — running in plaintext mode\n";
             SSL_CTX_free(g_sslCtx);
             g_sslCtx = nullptr;
+
+            // Plaintext is only permitted in explicit dev mode.
+            // In production SPARKY_ALLOW_PLAINTEXT must NOT be set.
+            const bool devMode = (getenv("SPARKY_ALLOW_PLAINTEXT") != nullptr);
+            if (!devMode)
+            {
+                std::cerr << "[S] FATAL: TLS cert/key not found.\n"
+                          << "[S]        Expected: " << CERT_FILE
+                          << " / " << KEY_FILE << "\n"
+                          << "[S]        Generate with:\n"
+                          << "[S]          openssl req -x509 -newkey rsa:4096 "
+                             "-keyout sparky.key -out sparky.crt "
+                             "-days 365 -nodes -subj /CN=sparky\n"
+                          << "[S]        Set SPARKY_ALLOW_PLAINTEXT=1 only for "
+                             "local dev/testing.\n";
+                WSACleanup();
+                return 1;
+            }
+            std::cout << "[S] TLS: cert/key not found — plaintext dev mode "
+                         "(SPARKY_ALLOW_PLAINTEXT=1)\n";
         }
     }
 
