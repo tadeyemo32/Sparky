@@ -368,15 +368,13 @@ static void LoginScreen(UIState& state, std::function<void()>& onConnect)
 
     ImGui::Spacing();
 
-    if (state.signUpMode)
-    {
-        ImGui::PushStyleColor(ImGuiCol_Text, Col::TextLabel);
-        ImGui::TextUnformatted("License Key");
-        ImGui::PopStyleColor();
-        ImGui::SetNextItemWidth(fieldW);
-        ImGui::InputText("##lic", state.licenseKey, sizeof(state.licenseKey));
-        ImGui::Spacing();
-    }
+    ImGui::PushStyleColor(ImGuiCol_Text, Col::TextLabel);
+    ImGui::TextUnformatted("License Key");
+    ImGui::PopStyleColor();
+    ImGui::SetNextItemWidth(fieldW);
+    ImGui::InputText("##lic", state.licenseKey, sizeof(state.licenseKey));
+
+    ImGui::Spacing();
 
     ImGui::PushStyleColor(ImGuiCol_Text, Col::TextLabel);
     ImGui::TextUnformatted("Password");
@@ -412,7 +410,7 @@ static void LoginScreen(UIState& state, std::function<void()>& onConnect)
     {
         bool busy    = state.loggingIn;
         bool canTry  = !busy && state.username[0] != '\0' && state.password[0] != '\0'
-                       && (!state.signUpMode || state.licenseKey[0] != '\0');
+                       && state.licenseKey[0] != '\0';
 
         ImVec4 btnBg = busy     ? ImVec4{0.05f,0.14f,0.20f,1.f}
                      : canTry   ? ImVec4{0.00f,0.42f,0.58f,1.f}
