@@ -16,7 +16,15 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Cache OpenSSL
+        id: cache-openssl
+        uses: actions/cache@v4
+        with:
+          path: C:\Program Files\OpenSSL
+          key: openssl-win64-3.6.1
+
       - name: Install OpenSSL via Chocolatey
+        if: steps.cache-openssl.outputs.cache-hit != 'true'
         run: choco install openssl -y --no-progress
 
       - name: Locate OpenSSL root
