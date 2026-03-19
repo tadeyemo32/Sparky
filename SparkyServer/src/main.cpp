@@ -912,20 +912,10 @@ AUTH_LOGIC_START:
             SendMsg(s, MsgType::Config, g_cfgBytes.data(), (uint16_t)g_cfgBytes.size());
     }
 
-    // ---- 9. Heartbeat-gated DLL stream ----
-    if (!g_dllBytes.empty())
-    {
-        if (!StreamEncryptedDll(s))
-            std::cout << std::format("[S] DLL stream aborted for {:.16}...\n", s.hwid);
-        else
-            std::cout << std::format("[S] DLL delivered to {:.16}...\n", s.hwid);
-    }
-    else
-    {
-        std::cout << "[S] No DLL loaded\n";
-    }
-
-    // ---- 10. Post-delivery keep-alive loop ----
+    // ---- 9. Session keep-alive loop ----
+    // DLL is streamed on-demand: the loader sends RequestDll when the user
+    // presses Inject, decoupling login from DLL delivery.  Heartbeats keep
+    // the session alive while the user is on the main panel.
     static constexpr int MAX_HB_MISSES = 2;
     int hbMisses = 0;
     while (g_running.load())
@@ -945,11 +935,33 @@ AUTH_LOGIC_START:
             continue;
         }
         hbMisses = 0;
+
         if (mt == MsgType::Heartbeat)
         {
             SendMsg(s, MsgType::Ack);
             std::lock_guard lk(g_dbMu);
             g_db.TouchSession(s.tokenHex, (int64_t)time(nullptr));
+        }
+        else if (mt == MsgType::RequestDll)
+        {
+            // User pressed Inject — stream the DLL now.
+            if (!g_dllBytes.empty())
+            {
+                std::cout << std::format("[S] RequestDll from {:.16}...\n", s.hwid);
+                if (!StreamEncryptedDll(s))
+                    std::cout << std::format("[S] DLL stream aborted for {:.16}...\n", s.hwid);
+                else
+                    std::cout << std::format("[S] DLL delivered to {:.16}...\n", s.hwid);
+            }
+            else
+            {
+                // No DLL on server — send empty BinaryReady + BinaryEnd so the
+                // loader doesn't time out waiting and stays in the session loop.
+                std::cout << "[S] RequestDll — no DLL loaded; sending empty response\n";
+                BinaryReadyPayload br{};  // all-zero: TotalBytes=0, NumChunks=0
+                SendMsg(s, MsgType::BinaryReady, &br, sizeof(br));
+                SendMsg(s, MsgType::BinaryEnd);
+            }
         }
     }
 

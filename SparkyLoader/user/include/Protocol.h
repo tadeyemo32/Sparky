@@ -20,6 +20,7 @@ enum class MsgType : uint8_t
     Hello        = 0x01,  // HelloPayload: HWID + BuildId + LoaderHash
     Heartbeat    = 0x02,  // HeartbeatPayload: 16-byte nonce (during transfer)
                           //   or zero nonce (post-delivery keep-alive)
+    RequestDll   = 0x03,  // no payload — loader asks server to stream the DLL
 
     // Server → Loader
     AuthOk       = 0x10,  // AuthOkPayload: session token + expiry  (sent PLAIN)

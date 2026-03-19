@@ -69,6 +69,11 @@ struct UIState
     int  selectedPreset    = -1;    // 0-4; -1 = none
     bool autoInjectPending = false;
 
+    // ── Session DLL request ────────────────────────────────────────────────
+    // Set by onConnect when inject is pending; cleared by SessionThread after
+    // DLL delivery.  Allows login and inject to be separate UI operations.
+    bool dllRequested = false;
+
     // ── Custom inject  (Tab 2 — "Inject") ─────────────────────────────────
     std::vector<ProcessEntry> processList;
     int      selectedProcessIdx = -1;

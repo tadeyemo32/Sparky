@@ -264,64 +264,155 @@ static bool RecvMsg(ServerSession& ss, MsgType& t,
 }
 
 // ---------------------------------------------------------------------------
-// Post-delivery heartbeat thread — keeps the server session alive after the
-// DLL has been received.  Takes ownership of the socket and SSL object.
-// Sends a Heartbeat every 25 seconds; stops when the server closes.
+// ReceiveDll — called by SessionThread after sending RequestDll.
+// Reads optional Config, then BinaryReady + chunks + BinaryEnd.
+// Returns true on protocol success; dllBuf is empty if server has no DLL.
 // ---------------------------------------------------------------------------
-struct HeartbeatArgs
+static bool ReceiveDll(ServerSession& ss, std::vector<uint8_t>& dllBuf, UIState& state)
 {
-    SOCKET   sock;
-    SSL*     ssl;     // may be nullptr (plaintext mode)
-    uint64_t hdrKey;
-    bool     wsMode;
-};
-
-static DWORD WINAPI HeartbeatLoop(LPVOID p)
-{
-    auto* a = static_cast<HeartbeatArgs*>(p);
-    ServerSession ss{};
-    ss.sock   = a->sock;
-    ss.ssl    = a->ssl;
-    ss.hdrKey = a->hdrKey;
-    ss.wsMode = a->wsMode;
-    delete a;
-
-    while (true)
+    MsgType t{}; std::vector<uint8_t> p;
+    if (!RecvMsg(ss, t, p, 30000))
     {
-        Sleep(25000); // every 25 s (server deadline is 35 s)
-
-        HeartbeatPayload hb{};
-        // Post-delivery HBs use zero nonce — server just ACKs, no key roll here
-        if (!SendMsg(ss, MsgType::Heartbeat, &hb, sizeof(hb))) break;
-
-        MsgType mt{}; std::vector<uint8_t> mp;
-        if (!RecvMsg(ss, mt, mp, 10000)) break; // server gone
+        state.AddLog("[ERR] No response from server after RequestDll");
+        return false;
     }
 
-    if (ss.ssl) { SSL_shutdown(ss.ssl); SSL_free(ss.ssl); }
-    closesocket(ss.sock);
-    WSACleanup();
-    return 0;
+    if (t == MsgType::Config)
+    {
+        state.AddLog("[INF] Config received (" + std::to_string(p.size()) + " bytes)");
+        if (!RecvMsg(ss, t, p, 30000))
+        {
+            state.AddLog("[ERR] No BinaryReady after Config");
+            return false;
+        }
+    }
+
+    // Server sends BinaryEnd (TotalBytes=0) when it has no DLL loaded.
+    if (t == MsgType::BinaryEnd)
+    {
+        state.AddLog("[WRN] Server has no DLL loaded yet");
+        return true; // dllBuf stays empty; session remains alive
+    }
+
+    if (t != MsgType::BinaryReady || p.size() < sizeof(BinaryReadyPayload))
+    {
+        state.AddLog("[ERR] Expected BinaryReady — got unexpected message");
+        return false;
+    }
+
+    BinaryReadyPayload br = *reinterpret_cast<const BinaryReadyPayload*>(p.data());
+    if (br.TotalBytes == 0 || br.NumChunks == 0)
+    {
+        state.AddLog("[WRN] Server reported empty DLL (TotalBytes=0)");
+        return true; // dllBuf empty; session alive
+    }
+
+    state.AddLog("[INF] DLL incoming: " + std::to_string(br.TotalBytes)
+                 + " bytes, " + std::to_string(br.NumChunks) + " chunks");
+    dllBuf.reserve(br.TotalBytes);
+
+    uint64_t rollingKey = ss.dllKey;
+    for (uint32_t c = 0; c < br.NumChunks; ++c)
+    {
+        MsgType ct{}; std::vector<uint8_t> cp;
+        if (!RecvMsg(ss, ct, cp, 20000) || ct != MsgType::BinaryChunk)
+        {
+            state.AddLog("[ERR] Expected BinaryChunk at chunk " + std::to_string(c));
+            return false;
+        }
+        XorStream(cp.data(), (uint32_t)cp.size(), rollingKey);
+        dllBuf.insert(dllBuf.end(), cp.begin(), cp.end());
+        state.downloadProgress = static_cast<float>(c + 1) / static_cast<float>(br.NumChunks);
+
+        if ((c + 1) % br.ChunksPerHeartbeat == 0 || c + 1 == br.NumChunks)
+        {
+            HeartbeatPayload hb{};
+            RAND_bytes(hb.Nonce, 16);
+            if (!SendMsg(ss, MsgType::Heartbeat, &hb, sizeof(hb)))
+            {
+                state.AddLog("[ERR] Heartbeat send failed during DLL transfer");
+                return false;
+            }
+            MsgType at{}; std::vector<uint8_t> ap;
+            if (!RecvMsg(ss, at, ap, HEARTBEAT_DEADLINE_MS) || at != MsgType::Ack)
+            {
+                state.AddLog("[ERR] No Ack after heartbeat");
+                return false;
+            }
+            rollingKey = RollKey(rollingKey, hb.Nonce);
+        }
+    }
+
+    MsgType et{}; std::vector<uint8_t> ep;
+    if (!RecvMsg(ss, et, ep, 10000) || et != MsgType::BinaryEnd)
+        state.AddLog("[WRN] Missing BinaryEnd — continuing anyway");
+    else
+        state.AddLog("[INF] DLL transfer complete");
+
+    if (dllBuf.size() != br.TotalBytes)
+    {
+        state.AddLog("[ERR] DLL size mismatch: got " + std::to_string(dllBuf.size())
+                     + " expected " + std::to_string(br.TotalBytes));
+        return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
-// ConnectAndFetchDll
+// SessionThread — long-running background thread that owns the server connection.
+//
+// Phase 1: Connect → TLS → WebSocket → Authenticate.
+//          Sets state.loggedIn = true and state.connecting = false on success.
+//
+// Phase 2: Session loop.
+//          Sends a Heartbeat every 25 s to keep the session alive.
+//          When state.dllRequested is set (user pressed Inject), sends a
+//          RequestDll message to the server and receives the DLL stream.
+//          After DLL delivery, sets state.dllReady = true and writes the
+//          bytes into *dll.
+//
+// Phase 3: Cleanup on disconnect.
+//          Resets loggedIn / serverConnected so the UI shows a fresh login.
 // ---------------------------------------------------------------------------
-static std::vector<uint8_t> ConnectAndFetchDll(
-    const char* host, int port,
-    const uint8_t hwidHash[32],
-    const uint8_t loaderHash[32],
-    const uint8_t passwordHash[32],
-    UIState& state)
+struct SessionArgs
 {
-    // Reset connection indicator at the start of every attempt so a stale
-    // green dot from a previous session never persists across failures.
+    UIState*              state;
+    uint8_t               hwid[32];
+    uint8_t               loader[32];
+    uint8_t               pwHash[32];
+    std::vector<uint8_t>* dll;
+};
+
+static DWORD WINAPI SessionThread(LPVOID p)
+{
+    auto* a     = static_cast<SessionArgs*>(p);
+    UIState& state = *a->state;
+
+    // Shared cleanup — called on every error path before returning.
+    ServerSession ss{};
+    auto netCleanup = [&]() {
+        if (ss.ssl) { SSL_shutdown(ss.ssl); SSL_free(ss.ssl); ss.ssl = nullptr; }
+        if (ss.sock != INVALID_SOCKET) { closesocket(ss.sock); ss.sock = INVALID_SOCKET; }
+        WSACleanup();
+    };
+    auto done = [&]() {
+        netCleanup();
+        state.serverConnected = false;
+        state.loggedIn        = false;
+        state.connecting      = false;
+        state.loggingIn       = false;
+        delete a;
+    };
+
+    // ── Phase 1: Connect ──────────────────────────────────────────────────
     state.serverConnected = false;
 
     WSADATA wsa{};
     WSAStartup(MAKEWORD(2,2), &wsa);
 
-    // Resolve host (supports both raw IPs and DNS hostnames like *.run.app)
+    const char* host = state.serverHost;
+    const int   port = state.serverPort;
+
     char portStr[8];
     snprintf(portStr, sizeof(portStr), "%d", port);
     addrinfo hints{}, *res = nullptr;
@@ -330,12 +421,11 @@ static std::vector<uint8_t> ConnectAndFetchDll(
     if (getaddrinfo(host, portStr, &hints, &res) != 0 || !res)
     {
         state.AddLog("[ERR] DNS resolution failed for " + std::string(host));
-        WSACleanup(); return {};
+        done(); return 1;
     }
 
-    ServerSession ss{};
     ss.sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (ss.sock == INVALID_SOCKET) { freeaddrinfo(res); WSACleanup(); return {}; }
+    if (ss.sock == INVALID_SOCKET) { freeaddrinfo(res); done(); return 1; }
 
     DWORD connTo = 5000;
     setsockopt(ss.sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&connTo, sizeof(connTo));
@@ -343,119 +433,61 @@ static std::vector<uint8_t> ConnectAndFetchDll(
     if (connect(ss.sock, res->ai_addr, (int)res->ai_addrlen) != 0)
     {
         state.AddLog("[ERR] Cannot connect to " + std::string(host));
-        freeaddrinfo(res); closesocket(ss.sock); WSACleanup(); return {};
+        freeaddrinfo(res); done(); return 1;
     }
     freeaddrinfo(res);
 
-    // Cleanup helper used at every error path below.
-    // On success the socket/ssl ownership is transferred to HeartbeatLoop.
-    auto cleanup = [&]() {
-        if (ss.ssl) { SSL_shutdown(ss.ssl); SSL_free(ss.ssl); ss.ssl = nullptr; }
-        closesocket(ss.sock); ss.sock = INVALID_SOCKET;
-        WSACleanup();
-    };
-
-    // ------------------------------------------------------------------
-    // TLS handshake (if g_loaderSslCtx was initialised)
-    // ------------------------------------------------------------------
+    // ── Phase 1b: TLS handshake ───────────────────────────────────────────
     if (g_loaderSslCtx)
     {
         ss.ssl = SSL_new(g_loaderSslCtx);
-        if (!ss.ssl)
-        {
-            state.AddLog("[ERR] SSL_new failed");
-            cleanup(); return {};
-        }
+        if (!ss.ssl) { state.AddLog("[ERR] SSL_new failed"); done(); return 1; }
         SSL_set_fd(ss.ssl, (int)ss.sock);
-        SSL_set_tlsext_host_name(ss.ssl, host); // SNI hint
+        SSL_set_tlsext_host_name(ss.ssl, host);
 
         if (SSL_connect(ss.ssl) <= 0)
         {
             state.AddLog("[ERR] TLS handshake failed: " + TlsLastError());
-            cleanup(); return {};
+            done(); return 1;
         }
 
-        // ------------------------------------------------------------------
-        // Certificate pinning — verify the server cert fingerprint matches
-        // the value compiled into SPARKY_CERT_PIN (CertPin.h).
-        //
-        // Prevents MITM attacks via Fiddler / Charles / mitmproxy / rogue CA:
-        // even if the attacker installs a trusted root on the victim machine,
-        // they cannot forge a certificate that matches our specific pin.
-        // ------------------------------------------------------------------
         if (SPARKY_CERT_PIN && *SPARKY_CERT_PIN)
         {
             X509* cert = SSL_get_peer_certificate(ss.ssl);
-            if (!cert)
-            {
-                state.AddLog("[ERR] Server presented no certificate");
-                cleanup(); return {};
-            }
-
-            // SHA-256 of the DER-encoded certificate (same as
-            // `openssl x509 -fingerprint -sha256`)
-            uint8_t digest[32]{};
-            unsigned int digestLen = 32;
-            const int digestOk =
-                X509_digest(cert, EVP_sha256(), digest, &digestLen);
+            if (!cert) { state.AddLog("[ERR] Server presented no certificate"); done(); return 1; }
+            uint8_t digest[32]{}; unsigned int digestLen = 32;
+            const int digestOk = X509_digest(cert, EVP_sha256(), digest, &digestLen);
             X509_free(cert);
-
-            if (!digestOk)
-            {
-                state.AddLog("[ERR] Certificate digest computation failed");
-                cleanup(); return {};
-            }
-
-            // Convert digest to lowercase hex for string comparison
+            if (!digestOk) { state.AddLog("[ERR] Certificate digest failed"); done(); return 1; }
             static const char h[] = "0123456789abcdef";
-            char fingerprint[65]{};
-            for (int i = 0; i < 32; ++i)
-            {
-                fingerprint[i*2]   = h[digest[i] >> 4];
-                fingerprint[i*2+1] = h[digest[i] & 0xF];
-            }
-
-            if (strncmp(fingerprint, SPARKY_CERT_PIN, 64) != 0)
+            char fp[65]{};
+            for (int i = 0; i < 32; ++i) { fp[i*2] = h[digest[i]>>4]; fp[i*2+1] = h[digest[i]&0xF]; }
+            if (strncmp(fp, SPARKY_CERT_PIN, 64) != 0)
             {
                 state.AddLog("[ERR] Certificate pin mismatch — possible MITM!");
-                state.AddLog(std::string("[ERR] Expected: ") + SPARKY_CERT_PIN);
-                state.AddLog(std::string("[ERR] Got:      ") + fingerprint);
-                cleanup(); return {};
+                done(); return 1;
             }
             state.AddLog("[INF] Certificate pin OK");
         }
         else
         {
-            // No pin configured — TLS encrypts traffic but does not
-            // authenticate the server. Update CertPin.h before shipping.
             state.AddLog("[WRN] No certificate pin set — MITM not prevented");
         }
-
     }
 
-    // ------------------------------------------------------------------
-    // Step 2: Send HTTP Upgrade (WebSocket) with Cloud Armor key + auth
-    //
-    // Using WebSocket upgrade instead of plain GET + Content-Length:0 because
-    // GCP's HTTP(S) Load Balancer terminates the connection after the HTTP
-    // response body, dropping binary protocol frames sent on the same TCP
-    // connection. WebSocket connections are proxied transparently by the LB
-    // (RFC 6455 passthrough), allowing our binary framing to flow in both
-    // directions after the 101 Switching Protocols handshake.
-    // ------------------------------------------------------------------
+    // ── Phase 1c: WebSocket upgrade + Hello ──────────────────────────────
     HelloPayload hello{};
-    memcpy(hello.HwidHash,      hwidHash,     32);
-    memcpy(hello.LoaderHash,    loaderHash,   32);
-    memcpy(hello.PasswordHash,  passwordHash, 32);
+    memcpy(hello.HwidHash,     a->hwid,   32);
+    memcpy(hello.LoaderHash,   a->loader, 32);
+    memcpy(hello.PasswordHash, a->pwHash, 32);
     hello.BuildId   = 0x0001'0000;
     hello.Timestamp = (uint64_t)time(nullptr);
     strncpy_s(hello.Username,   sizeof(hello.Username),   state.username,   _TRUNCATE);
     strncpy_s(hello.LicenseKey, sizeof(hello.LicenseKey), state.licenseKey, _TRUNCATE);
 
     std::string authHex = HexStr(reinterpret_cast<uint8_t*>(&hello), sizeof(hello));
-    std::string wsKey   = WsGenKey(); // random base64 key for WebSocket handshake
+    std::string wsKey   = WsGenKey();
 
-    // Construct HTTP GET with WebSocket upgrade headers
     std::string httpReq =
         std::string(_S("GET /auth HTTP/1.1\r\n")) +
         _S("Host: ") + state.serverHost + _S("\r\n") +
@@ -468,11 +500,10 @@ static std::vector<uint8_t> ConnectAndFetchDll(
 
     if (!NetSend(ss.sock, ss.ssl, httpReq.c_str(), (int)httpReq.size()))
     {
-        state.AddLog(_S("[ERR] Send WebSocket upgrade request failed"));
-        cleanup(); return {};
+        state.AddLog("[ERR] Send WebSocket upgrade request failed");
+        done(); return 1;
     }
 
-    // Read HTTP response — expect 101 Switching Protocols
     {
         char resp[2048]{};
         int received = 0;
@@ -483,191 +514,118 @@ static std::vector<uint8_t> ConnectAndFetchDll(
             resp[received++] = c;
             if (received >= 4 && memcmp(resp + received - 4, "\r\n\r\n", 4) == 0) break;
         }
-
         if (strstr(resp, _S(" 101")) != nullptr)
         {
             ss.wsMode = true;
-            state.AddLog(_S("[INF] WebSocket upgrade accepted — binary protocol active"));
+            state.AddLog("[INF] WebSocket upgrade accepted");
         }
         else if (strstr(resp, _S(" 200")) != nullptr)
         {
-            // Legacy server (pre-WebSocket) — continue without WS framing.
-            // This keeps old server deployments working during rollout.
             ss.wsMode = false;
-            state.AddLog(_S("[WRN] Server did not upgrade to WebSocket (legacy mode)"));
+            state.AddLog("[WRN] Legacy server (no WebSocket upgrade)");
         }
         else
         {
-            state.AddLog(_S("[ERR] Cloud Armor / LB rejected the request"));
-            cleanup(); return {};
+            state.AddLog("[ERR] Cloud Armor / LB rejected the request");
+            done(); return 1;
         }
-        // serverConnected stays false until AuthOk — the LB/server accepting
-        // the upgrade just means network is reachable, not that auth succeeded.
     }
 
-    // ------------------------------------------------------------------
-    // Step 3: Receive AuthOk or AuthFail  (PLAIN — hdrKey still 0)
-    // ------------------------------------------------------------------
+    // ── Phase 1d: Receive AuthOk / AuthFail ──────────────────────────────
     {
-        MsgType t{};
-        std::vector<uint8_t> pay;
+        MsgType t{}; std::vector<uint8_t> pay;
         if (!RecvMsg(ss, t, pay))
         {
-            state.AddLog("[ERR] No response from server");
-            cleanup(); return {};
+            state.AddLog("[ERR] No auth response from server");
+            done(); return 1;
         }
-
         if (t == MsgType::AuthFail)
         {
             state.AddLog("[ERR] Auth rejected by server");
             strncpy_s(state.loginError, sizeof(state.loginError),
                       "Authentication failed \xe2\x80\x94 check your credentials or license key.",
                       _TRUNCATE);
-            state.loggingIn = false;
-            cleanup(); return {};
+            done(); return 1;
         }
-
         if (t != MsgType::AuthOk || pay.size() < sizeof(AuthOkPayload))
         {
             state.AddLog("[ERR] Unexpected message during auth");
-            cleanup(); return {};
+            done(); return 1;
         }
-
         const auto& aok = *reinterpret_cast<const AuthOkPayload*>(pay.data());
         memcpy(ss.token, aok.SessionToken, 16);
-
-        // NOW derive session keys — all messages from here on are encrypted
         ss.hdrKey = DeriveKey(ss.token, 0);
         ss.dllKey = DeriveKey(ss.token, 1);
 
         state.serverConnected = true;
         state.loggedIn        = true;
         state.loggingIn       = false;
+        state.connecting      = false;
         state.loginError[0]   = '\0';
-        state.AddLog("[INF] Authenticated — session keys active");
+        state.AddLog("[INF] Authenticated — session active");
     }
 
-    // ------------------------------------------------------------------
-    // Step 4: Receive optional Config, then BinaryReady
-    // ------------------------------------------------------------------
-    BinaryReadyPayload br{};
+    // ── Phase 2: Session loop ─────────────────────────────────────────────
+    // Sends heartbeats every 25 s to keep the server session alive.
+    // When state.dllRequested is set (user pressed Inject), sends RequestDll
+    // and receives the DLL stream via ReceiveDll().
+    int hbTicks = 0;
+    static constexpr int HB_INTERVAL_TICKS = 25; // 25 × 1 s = 25 s
+
+    while (true)
     {
-        MsgType t{};
-        std::vector<uint8_t> pay;
-        if (!RecvMsg(ss, t, pay))
-        {
-            state.AddLog("[ERR] No post-auth message received");
-            cleanup(); return {};
-        }
+        Sleep(1000);
+        ++hbTicks;
 
-        if (t == MsgType::Config)
+        if (state.dllRequested)
         {
-            state.AddLog("[INF] Config received (" + std::to_string(pay.size()) + " bytes)");
+            state.dllRequested    = false;
+            state.connecting      = true;  // show "Fetching…" spinner
+            state.downloadProgress = 0.f;
 
-            if (!RecvMsg(ss, t, pay))
+            if (!SendMsg(ss, MsgType::RequestDll))
             {
-                state.AddLog("[ERR] No BinaryReady after Config");
-                cleanup(); return {};
+                state.AddLog("[ERR] RequestDll send failed");
+                state.connecting = false;
+                break;
             }
+
+            std::vector<uint8_t> dllBuf;
+            bool ok = ReceiveDll(ss, dllBuf, state);
+            state.connecting = false;
+
+            if (!ok)
+            {
+                state.AddLog("[ERR] DLL receive failed — session closing");
+                break;
+            }
+
+            if (!dllBuf.empty())
+            {
+                *a->dll            = std::move(dllBuf);
+                state.dllSizeBytes = (uint32_t)a->dll->size();
+                state.dllReady     = true;
+                state.AddLog("[INF] DLL ready in RAM ("
+                             + std::to_string(a->dll->size()) + " bytes)");
+            }
+
+            hbTicks = 0; // reset heartbeat timer after DLL exchange
         }
 
-        if (t != MsgType::BinaryReady || pay.size() < sizeof(BinaryReadyPayload))
+        if (hbTicks >= HB_INTERVAL_TICKS)
         {
-            state.AddLog("[ERR] Expected BinaryReady");
-            cleanup(); return {};
-        }
-
-        br = *reinterpret_cast<const BinaryReadyPayload*>(pay.data());
-        state.AddLog("[INF] DLL incoming: " + std::to_string(br.TotalBytes)
-                     + " bytes, " + std::to_string(br.NumChunks)
-                     + " chunks, HB every " + std::to_string(br.ChunksPerHeartbeat));
-    }
-
-    if (br.TotalBytes == 0 || br.NumChunks == 0 || br.ChunksPerHeartbeat == 0)
-    {
-        state.AddLog("[ERR] Invalid BinaryReady parameters");
-        cleanup(); return {};
-    }
-
-    // ------------------------------------------------------------------
-    // Step 6: Receive chunks with rolling-key decryption + heartbeat sync
-    // ------------------------------------------------------------------
-    std::vector<uint8_t> dllBuf;
-    dllBuf.reserve(br.TotalBytes);
-
-    uint64_t rollingKey = ss.dllKey;
-
-    for (uint32_t c = 0; c < br.NumChunks; ++c)
-    {
-        MsgType ct{};
-        std::vector<uint8_t> cp;
-        if (!RecvMsg(ss, ct, cp, 20000) || ct != MsgType::BinaryChunk)
-        {
-            state.AddLog("[ERR] Expected BinaryChunk at " + std::to_string(c));
-            cleanup(); return {};
-        }
-
-        XorStream(cp.data(), (uint32_t)cp.size(), rollingKey);
-        dllBuf.insert(dllBuf.end(), cp.begin(), cp.end());
-        state.downloadProgress = static_cast<float>(c + 1) / static_cast<float>(br.NumChunks);
-
-        if ((c + 1) % br.ChunksPerHeartbeat == 0 || c + 1 == br.NumChunks)
-        {
+            hbTicks = 0;
             HeartbeatPayload hb{};
-            if (!CryptRandBytes(hb.Nonce, 16))
-            {
-                state.AddLog("[ERR] CryptRandBytes failed — cannot generate heartbeat nonce");
-                cleanup(); return {};
-            }
-
-            if (!SendMsg(ss, MsgType::Heartbeat, &hb, sizeof(hb)))
-            {
-                state.AddLog("[ERR] Heartbeat send failed at chunk " + std::to_string(c));
-                cleanup(); return {};
-            }
-
-            MsgType at{}; std::vector<uint8_t> ap;
-            if (!RecvMsg(ss, at, ap, HEARTBEAT_DEADLINE_MS) || at != MsgType::Ack)
-            {
-                state.AddLog("[ERR] No Ack after heartbeat at chunk " + std::to_string(c));
-                cleanup(); return {};
-            }
-
-            rollingKey = RollKey(rollingKey, hb.Nonce);
+            if (!SendMsg(ss, MsgType::Heartbeat, &hb, sizeof(hb))) break;
+            MsgType t{}; std::vector<uint8_t> mp;
+            if (!RecvMsg(ss, t, mp, 10000)) break;
         }
     }
 
-    // ------------------------------------------------------------------
-    // Step 7: Receive BinaryEnd
-    // ------------------------------------------------------------------
-    {
-        MsgType et{}; std::vector<uint8_t> ep;
-        if (!RecvMsg(ss, et, ep, 10000) || et != MsgType::BinaryEnd)
-            state.AddLog("[WRN] Missing BinaryEnd — continuing anyway");
-        else
-            state.AddLog("[INF] Transfer complete");
-    }
-
-    if (dllBuf.size() != br.TotalBytes)
-    {
-        state.AddLog("[ERR] DLL size mismatch: got " + std::to_string(dllBuf.size())
-                     + " expected " + std::to_string(br.TotalBytes));
-        cleanup(); return {};
-    }
-
-    state.AddLog("[INF] DLL decrypted in RAM (" + std::to_string(dllBuf.size()) + " bytes)");
-
-    // ------------------------------------------------------------------
-    // Step 8: Hand socket + SSL to background heartbeat thread.
-    // Thread owns both and will SSL_shutdown + SSL_free + closesocket.
-    // ------------------------------------------------------------------
-    auto* hbArgs = new HeartbeatArgs{ ss.sock, ss.ssl, ss.hdrKey, ss.wsMode };
-    ss.sock = INVALID_SOCKET; // thread now owns
-    ss.ssl  = nullptr;        // thread now owns
-    CreateThread(nullptr, 0, HeartbeatLoop, hbArgs, 0, nullptr);
-    // WSACleanup is called by HeartbeatLoop when the socket closes
-
-    return dllBuf;
+    // ── Phase 3: Cleanup ─────────────────────────────────────────────────
+    state.AddLog("[INF] Session closed");
+    done();
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -745,7 +703,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     auto onConnect = [&]() {
         if (state.connecting) return;  // already in flight
 
-        // Hash the password now (UI thread), then zero the plaintext field.
+        // If already authenticated, just request the DLL (user pressed Inject
+        // while logged in but before the DLL was fetched).
+        if (state.loggedIn && state.serverConnected)
+        {
+            if (!state.dllReady && !state.dllRequested)
+            {
+                state.dllRequested = true;
+                state.connecting   = true;
+            }
+            return;
+        }
+
+        // New session — hash password on the UI thread, zero plaintext immediately.
         uint8_t passwordHash[32]{};
         if (state.password[0] != '\0')
         {
@@ -759,53 +729,22 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         state.dllSizeBytes     = 0;
         state.downloadProgress = 0.f;
         state.connecting       = true;
-        state.loggingIn        = !state.loggedIn;  // true during first-time login
+        state.loggingIn        = true;
+        // If a preset was already chosen, queue the DLL request for right after login.
+        state.dllRequested     = state.autoInjectPending;
         dllInRam.clear();
 
         state.AddLog("[INF] Connecting...");
 
-        struct ConnArgs {
-            UIState*              st;
-            uint8_t               hwid[32];
-            uint8_t               loader[32];
-            uint8_t               pwHash[32];
-            std::vector<uint8_t>* dll;
-        };
-        auto* args = new ConnArgs{};
-        args->st  = &state;
-        args->dll = &dllInRam;
-        memcpy(args->hwid,   hwidHash,    32);
-        memcpy(args->loader, loaderHash,  32);
+        auto* args = new SessionArgs{};
+        args->state = &state;
+        args->dll   = &dllInRam;
+        memcpy(args->hwid,   hwidHash,     32);
+        memcpy(args->loader, loaderHash,   32);
         memcpy(args->pwHash, passwordHash, 32);
+        SecureZeroMemory(passwordHash, 32);
 
-        CreateThread(nullptr, 0,
-            [](LPVOID p) -> DWORD {
-                auto* a = static_cast<ConnArgs*>(p);
-                *a->dll = ConnectAndFetchDll(
-                    a->st->serverHost, a->st->serverPort,
-                    a->hwid, a->loader, a->pwHash, *a->st);
-
-                a->st->connecting = false;
-                a->st->loggingIn  = false;
-
-                if (!a->dll->empty())
-                {
-                    a->st->dllSizeBytes = static_cast<uint32_t>(a->dll->size());
-                    a->st->dllReady     = true;
-                    a->st->AddLog("[INF] DLL ready in RAM ("
-                                  + std::to_string(a->dll->size()) + " bytes)");
-                }
-                else if (!a->st->loggedIn && a->st->loginError[0] == '\0')
-                {
-                    // Connection or TLS failure before auth completed
-                    strncpy_s(a->st->loginError, sizeof(a->st->loginError),
-                              "Could not reach the server \xe2\x80\x94 check your connection.",
-                              _TRUNCATE);
-                }
-                SecureZeroMemory(a->pwHash, 32);
-                delete a;
-                return 0;
-            }, args, 0, nullptr);
+        CreateThread(nullptr, 0, SessionThread, args, 0, nullptr);
     };
 
     auto onInject = [&]() {
