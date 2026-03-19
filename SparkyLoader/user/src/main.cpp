@@ -278,26 +278,38 @@ static std::vector<uint8_t> ConnectAndFetchDll(
     const uint8_t passwordHash[32],
     UIState& state)
 {
+    // Reset connection indicator at the start of every attempt so a stale
+    // green dot from a previous session never persists across failures.
+    state.serverConnected = false;
+
     WSADATA wsa{};
     WSAStartup(MAKEWORD(2,2), &wsa);
 
-    ServerSession ss{};
-    ss.sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (ss.sock == INVALID_SOCKET) { WSACleanup(); return {}; }
+    // Resolve host (supports both raw IPs and DNS hostnames like *.run.app)
+    char portStr[8];
+    snprintf(portStr, sizeof(portStr), "%d", port);
+    addrinfo hints{}, *res = nullptr;
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, portStr, &hints, &res) != 0 || !res)
+    {
+        state.AddLog("[ERR] DNS resolution failed for " + std::string(host));
+        WSACleanup(); return {};
+    }
 
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons((uint16_t)port);
-    inet_pton(AF_INET, host, &addr.sin_addr);
+    ServerSession ss{};
+    ss.sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (ss.sock == INVALID_SOCKET) { freeaddrinfo(res); WSACleanup(); return {}; }
 
     DWORD connTo = 5000;
     setsockopt(ss.sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&connTo, sizeof(connTo));
 
-    if (connect(ss.sock, (sockaddr*)&addr, sizeof(addr)) != 0)
+    if (connect(ss.sock, res->ai_addr, (int)res->ai_addrlen) != 0)
     {
-        state.AddLog("[ERR] Cannot connect to server");
-        closesocket(ss.sock); WSACleanup(); return {};
+        state.AddLog("[ERR] Cannot connect to " + std::string(host));
+        freeaddrinfo(res); closesocket(ss.sock); WSACleanup(); return {};
     }
+    freeaddrinfo(res);
 
     // Cleanup helper used at every error path below.
     // On success the socket/ssl ownership is transferred to HeartbeatLoop.
@@ -430,7 +442,8 @@ static std::vector<uint8_t> ConnectAndFetchDll(
             state.AddLog(_S("[ERR] Cloud Armor / LB rejected the request (no 200 status)"));
             cleanup(); return {};
         }
-        state.serverConnected = true; // Show green dot as soon as LB accepts our key
+        // serverConnected stays false until AuthOk — the LB accepting the
+        // request just means network is reachable, not that auth succeeded.
     }
 
     // ------------------------------------------------------------------
@@ -645,7 +658,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         SSL_CTX_set_verify(g_loaderSslCtx, SSL_VERIFY_NONE, nullptr);
 
     UIState state{};
-    strcpy_s(state.serverHost, sizeof(state.serverHost), _S("35.206.181.36"));
+    strcpy_s(state.serverHost, sizeof(state.serverHost),
+             _S("sparky-server-1010632413681.europe-west1.run.app"));
     state.AddLog("[INF] Sparky ready");
 
     uint8_t hwidHash[32]{};
