@@ -658,8 +658,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         SSL_CTX_set_verify(g_loaderSslCtx, SSL_VERIFY_NONE, nullptr);
 
     UIState state{};
-    strcpy_s(state.serverHost, sizeof(state.serverHost),
-             _S("sparky-server-1010632413681.europe-west1.run.app"));
+    strcpy_s(state.serverHost, sizeof(state.serverHost), _S("35.206.181.36"));
     state.AddLog("[INF] Sparky ready");
 
     uint8_t hwidHash[32]{};
