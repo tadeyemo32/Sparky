@@ -23,6 +23,7 @@ void Logger::Init(const std::string& logFile) {
     initialized = true;
 }
 
+#ifndef NDEBUG
 void Logger::Log(LogLevel level, const char* fmt, ...) {
     char buffer[2048]{};
     va_list args;
@@ -66,6 +67,7 @@ void Logger::LogW(LogLevel level, const wchar_t* fmt, ...) {
 
     Log(level, "%s", narrow.c_str());
 }
+#endif // NDEBUG
 
 void Logger::Shutdown() {
     std::lock_guard<std::mutex> lock(mtx);

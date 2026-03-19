@@ -29,6 +29,7 @@
 #include "Protocol.h"
 #include "TlsLayer.h"
 #include "CertPin.h"
+#include "StringCrypt.h"
 
 // ---------------------------------------------------------------------------
 // Client-side SSL_CTX — one context shared across all connections.
@@ -133,11 +134,13 @@ static DWORD FindProcessByName(const char* name)
 {
     HANDLE hSn = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSn == INVALID_HANDLE_VALUE) return 0;
-    PROCESSENTRY32A pe{ sizeof(pe) };
+    PROCESSENTRY32W pe{ sizeof(pe) };
+    wchar_t wname[MAX_PATH]{};
+    MultiByteToWideChar(CP_ACP, 0, name, -1, wname, MAX_PATH);
     DWORD pid = 0;
-    if (Process32FirstA(hSn, &pe))
-        do { if (_stricmp(pe.szExeFile, name) == 0) { pid = pe.th32ProcessID; break; } }
-        while (Process32NextA(hSn, &pe));
+    if (Process32FirstW(hSn, &pe))
+        do { if (_wcsicmp(pe.szExeFile, wname) == 0) { pid = pe.th32ProcessID; break; } }
+        while (Process32NextW(hSn, &pe));
     CloseHandle(hSn);
     return pid;
 }
@@ -567,8 +570,6 @@ static void ProcessWatcher(UIState& state, std::atomic<bool>& running,
 }
 
 // ---------------------------------------------------------------------------
-#include "../../../SparkyCore/tf2/Sparky/src/Utils/XorStr/XorStr.h"
-
 // wWinMain — WIN32 subsystem entry point (no console window)
 // ---------------------------------------------------------------------------
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
@@ -584,7 +585,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         SSL_CTX_set_verify(g_loaderSslCtx, SSL_VERIFY_NONE, nullptr);
 
     UIState state{};
-    strcpy_s(state.serverHost, sizeof(state.serverHost), XS("35.206.181.36"));
+    strcpy_s(state.serverHost, sizeof(state.serverHost), _S("35.206.181.36"));
     state.AddLog("[INF] Sparky ready");
 
     uint8_t hwidHash[32]{};

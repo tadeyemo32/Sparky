@@ -42,11 +42,19 @@ struct SysProcessInfo
     ULONG         NumberOfThreads;    // +0x04
     uint8_t       _reserved[0x48];   // +0x08  skip fields we don't need
     HANDLE        UniqueProcessId;    // +0x50
-    uint8_t       _reserved2[0xB0];  // +0x58  remainder of the fixed header
+    uint8_t       _reserved2[0xA8];  // +0x58  remainder of the fixed header
     // SysThreadInfo Threads[] immediately follows at +0x100
 };
 static_assert(sizeof(SysProcessInfo) == 0x100);
 #pragma pack(pop)
+
+// NT status codes not always available without DDK/ntstatus.h
+#ifndef STATUS_NOT_IMPLEMENTED
+#define STATUS_NOT_IMPLEMENTED       ((NTSTATUS)0xC0000002L)
+#endif
+#ifndef STATUS_INFO_LENGTH_MISMATCH
+#define STATUS_INFO_LENGTH_MISMATCH  ((NTSTATUS)0xC0000004L)
+#endif
 
 // NtQuerySystemInformation — resolve from ntdll (already loaded, no LoadLibrary)
 static NTSTATUS QuerySystemInformation(ULONG cls, PVOID buf, ULONG len, PULONG ret)
@@ -451,7 +459,7 @@ static DWORD FindAlertableThread(HANDLE hProcess)
     {
         auto* proc = reinterpret_cast<const SysProcessInfo*>(ptr);
 
-        if (reinterpret_cast<DWORD>(proc->UniqueProcessId) == pid)
+        if ((DWORD)(uintptr_t)(proc->UniqueProcessId) == pid)
         {
             // Thread array sits immediately after the fixed 0x100-byte header
             auto* threads = reinterpret_cast<const SysThreadInfo*>(ptr + 0x100);
@@ -500,8 +508,8 @@ static DWORD FindAlertableThread(HANDLE hProcess)
 static void ApplySectionProtections(HANDLE hProcess, uintptr_t imageBase,
                                      const std::vector<uint8_t>& raw)
 {
-    auto pDos  = reinterpret_cast<const PIMAGE_DOS_HEADER>(raw.data());
-    auto pNT   = reinterpret_cast<const PIMAGE_NT_HEADERS>(raw.data() + pDos->e_lfanew);
+    auto pDos  = reinterpret_cast<PIMAGE_DOS_HEADER>(const_cast<uint8_t*>(raw.data()));
+    auto pNT   = reinterpret_cast<PIMAGE_NT_HEADERS>(const_cast<uint8_t*>(raw.data()) + pDos->e_lfanew);
     auto pSect = IMAGE_FIRST_SECTION(pNT);
 
     for (int i = 0; i < pNT->FileHeader.NumberOfSections; ++i, ++pSect)
@@ -721,10 +729,10 @@ bool ManualMapDll(HANDLE hProcess,
 {
     if (dllBytes.empty())               { Logger::Log(LogLevel::Error, "ManualMap: empty buffer"); return false; }
 
-    auto pDos = reinterpret_cast<const PIMAGE_DOS_HEADER>(dllBytes.data());
+    auto pDos = reinterpret_cast<PIMAGE_DOS_HEADER>(const_cast<uint8_t*>(dllBytes.data()));
     if (pDos->e_magic != IMAGE_DOS_SIGNATURE) { Logger::Log(LogLevel::Error, "ManualMap: bad DOS sig"); return false; }
 
-    auto pNT = reinterpret_cast<const PIMAGE_NT_HEADERS>(dllBytes.data() + pDos->e_lfanew);
+    auto pNT = reinterpret_cast<PIMAGE_NT_HEADERS>(const_cast<uint8_t*>(dllBytes.data()) + pDos->e_lfanew);
     if (pNT->Signature != IMAGE_NT_SIGNATURE)           { Logger::Log(LogLevel::Error, "ManualMap: bad NT sig"); return false; }
     if (pNT->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64) { Logger::Log(LogLevel::Error, "ManualMap: not x64"); return false; }
 
