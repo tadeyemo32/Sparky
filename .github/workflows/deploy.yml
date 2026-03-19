@@ -19,10 +19,28 @@ jobs:
       - name: Install OpenSSL via Chocolatey
         run: choco install openssl -y --no-progress
 
+      - name: Locate OpenSSL root
+        run: |
+          $candidates = @(
+            "C:\Program Files\OpenSSL-Win64",
+            "C:\Program Files\OpenSSL",
+            "C:\OpenSSL-Win64",
+            "C:\OpenSSL-Win32"
+          )
+          foreach ($p in $candidates) {
+            if (Test-Path "$p\include\openssl\ssl.h") {
+              "OPENSSL_ROOT_DIR=$p" | Out-File -FilePath $env:GITHUB_ENV -Append
+              Write-Host "OpenSSL found at $p"
+              exit 0
+            }
+          }
+          Write-Error "OpenSSL not found in any expected location"
+          exit 1
+
       - name: Configure CMake (Release)
         run: |
           cd SparkyLoader/user
-          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL-Win64"
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DOPENSSL_ROOT_DIR="$env:OPENSSL_ROOT_DIR"
 
       - name: Build SparkyLoader
         run: |
