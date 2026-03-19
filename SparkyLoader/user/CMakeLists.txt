@@ -9,10 +9,22 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
 
 # ---------------------------------------------------------------------------
 # Force every target (glfw, imgui, SparkyLoader) to use the same static CRT.
-# Without this glfw/imgui default to /MD while SparkyLoader uses /MT, causing
-# LNK2001 for __imp_strncpy, __imp_fminf, __imp___stdio_common_vsscanf, etc.
+# CMAKE_MSVC_RUNTIME_LIBRARY alone is not inherited by subprojects that call
+# project() themselves (e.g. GLFW), so we also patch the global flag vars
+# to replace /MD -> /MT before any add_subdirectory.
 # ---------------------------------------------------------------------------
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)
+if(MSVC)
+    foreach(_flag
+        CMAKE_C_FLAGS   CMAKE_C_FLAGS_DEBUG   CMAKE_C_FLAGS_RELEASE
+        CMAKE_C_FLAGS_MINSIZEREL              CMAKE_C_FLAGS_RELWITHDEBINFO
+        CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
+        CMAKE_CXX_FLAGS_MINSIZEREL            CMAKE_CXX_FLAGS_RELWITHDEBINFO)
+        if(${_flag} MATCHES "/MD")
+            string(REGEX REPLACE "/MD" "/MT" ${_flag} "${${_flag}}")
+        endif()
+    endforeach()
+endif()
 
 # ---------------------------------------------------------------------------
 # OpenSSL — for TLS connection to SparkyServer.
