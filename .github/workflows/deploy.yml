@@ -14,6 +14,8 @@ jobs:
   loader-build-and-tests:
     name: Loader Build & Tests
     runs-on: windows-latest
+    outputs:
+      loader_sha256: ${{ steps.hash.outputs.loader_sha256 }}
     steps:
       - name: Checkout Code (with submodules)
         uses: actions/checkout@v4
@@ -64,6 +66,13 @@ jobs:
           cd SparkyLoader/user
           cmake --build build --config Release --target SparkyTests -j 2
           if (Test-Path "bin/Release/SparkyTests.exe") { ./bin/Release/SparkyTests.exe } else { Write-Host "No test binary found, skipping." }
+
+      - name: Compute SHA-256 of SparkyLoader.exe
+        id: hash
+        run: |
+          $hash = (Get-FileHash "SparkyLoader/user/bin/Release/SparkyLoader.exe" -Algorithm SHA256).Hash.ToLower()
+          Write-Host "Loader SHA-256: $hash"
+          "loader_sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Upload SparkyLoader.exe Artifact
         uses: actions/upload-artifact@v4
@@ -189,6 +198,17 @@ jobs:
             --member=allUsers \
             --role=roles/run.invoker \
             --quiet || echo "IAM binding skipped — set manually in GCP Console if needed."
+
+      - name: Register loader hash in trusted_hashes
+        run: |
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          LOADER_HASH="${{ needs.loader-build-and-tests.outputs.loader_sha256 }}"
+          NOTE="ci-build-${{ github.sha }}"
+          ADDED_AT=$(date -u +%s)
+          psql "${{ secrets.SPARKY_PG_CONNSTR }}" -c \
+            "INSERT INTO trusted_hashes(hash, note, added_at)
+             VALUES ('$LOADER_HASH', '$NOTE', $ADDED_AT)
+             ON CONFLICT(hash) DO UPDATE SET note = EXCLUDED.note, added_at = EXCLUDED.added_at;"
 
   # ── Module 4: Attach Loader to Release ────────────────────────────────
   # Gated on deploy so the loader and server are always in sync.
