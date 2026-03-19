@@ -8,6 +8,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
 
 # ---------------------------------------------------------------------------
+# Force every target (glfw, imgui, SparkyLoader) to use the same static CRT.
+# Without this glfw/imgui default to /MD while SparkyLoader uses /MT, causing
+# LNK2001 for __imp_strncpy, __imp_fminf, __imp___stdio_common_vsscanf, etc.
+# ---------------------------------------------------------------------------
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
 # OpenSSL — for TLS connection to SparkyServer.
 #
 # Windows:  vcpkg install openssl:x64-windows  OR set OPENSSL_ROOT_DIR.
