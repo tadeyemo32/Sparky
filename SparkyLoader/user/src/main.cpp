@@ -413,11 +413,11 @@ static std::vector<uint8_t> ConnectAndFetchDll(
         cleanup(); return {};
     }
 
-    // Read HTTP response (expect 200 OK)
+    // Read HTTP response (expect 200 OK or 200)
     {
         char resp[1024]{};
         int received = 0;
-        // Simple read for the 200 OK header
+        // Simple read for the status header
         while (received < sizeof(resp) - 1)
         {
             char c;
@@ -425,11 +425,12 @@ static std::vector<uint8_t> ConnectAndFetchDll(
             resp[received++] = c;
             if (received >= 4 && memcmp(resp + received - 4, "\r\n\r\n", 4) == 0) break;
         }
-        if (strstr(resp, _S("200 OK")) == nullptr)
+        if (strstr(resp, _S(" 200")) == nullptr)
         {
-            state.AddLog(_S("[ERR] Cloud Armor / LB rejected the request (no 200 OK)"));
+            state.AddLog(_S("[ERR] Cloud Armor / LB rejected the request (no 200 status)"));
             cleanup(); return {};
         }
+        state.serverConnected = true; // Show green dot as soon as LB accepts our key
     }
 
     // ------------------------------------------------------------------
