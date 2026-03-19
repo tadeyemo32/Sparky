@@ -50,6 +50,7 @@
 #include "../include/XorStr.h"
 #include "../../SparkyLoader/user/include/Protocol.h"
 #include "../../SparkyLoader/user/include/TlsLayer.h"
+#include "../../SparkyLoader/user/include/WebSocket.h"
 
 // ---------------------------------------------------------------------------
 // Config
@@ -377,6 +378,7 @@ struct ClientSession
     std::string hwid;
     std::string tokenHex;
     std::string loaderHash; // hex of loader SHA-256 from Hello
+    bool        wsMode   = false;   // true after WebSocket upgrade handshake
 };
 
 static bool SendMsg(ClientSession& s, MsgType t,
@@ -388,6 +390,17 @@ static bool SendMsg(ClientSession& s, MsgType t,
     if (s.hdrKey && !buf.empty()) XorStream(buf.data(), (uint32_t)buf.size(), s.hdrKey);
     uint32_t crc = Crc32((uint8_t*)&h, sizeof(h));
     if (!buf.empty()) crc ^= Crc32(buf.data(), (uint32_t)buf.size());
+
+    if (s.wsMode) {
+        // Pack the entire message into one buffer and send as a single WS frame.
+        // The LB forwards WebSocket frames transparently (RFC 6455 passthrough).
+        std::vector<uint8_t> msg(sizeof(h) + buf.size() + 4);
+        memcpy(msg.data(), &h, sizeof(h));
+        if (!buf.empty()) memcpy(msg.data() + sizeof(h), buf.data(), buf.size());
+        memcpy(msg.data() + sizeof(h) + buf.size(), &crc, 4);
+        return WsSendFrame(s.sock, s.ssl, msg.data(), msg.size());
+    }
+
     return NetSend(s.sock, s.ssl, &h, sizeof(h))
         && (buf.empty() || NetSend(s.sock, s.ssl, buf.data(), (int)buf.size()))
         && NetSend(s.sock, s.ssl, &crc, 4);
@@ -396,6 +409,25 @@ static bool SendMsg(ClientSession& s, MsgType t,
 static bool RecvMsg(ClientSession& s, MsgType& t,
                     std::vector<uint8_t>& pay, unsigned int ms = 10000)
 {
+    if (s.wsMode) {
+        std::vector<uint8_t> frame;
+        if (!WsRecvFrame(s.sock, s.ssl, frame, ms)) return false;
+        if (frame.size() < sizeof(MsgHeader) + 4) return false;
+        MsgHeader h{};
+        memcpy(&h, frame.data(), sizeof(h));
+        if (h.Magic != PROTO_MAGIC || h.Version != PROTO_VERSION) return false;
+        if (sizeof(MsgHeader) + h.Length + 4 > frame.size()) return false;
+        pay.resize(h.Length);
+        if (h.Length) memcpy(pay.data(), frame.data() + sizeof(h), h.Length);
+        uint32_t rc{};
+        memcpy(&rc, frame.data() + sizeof(h) + h.Length, 4);
+        uint32_t lc = Crc32((uint8_t*)&h, sizeof(h));
+        if (!pay.empty()) lc ^= Crc32(pay.data(), (uint32_t)pay.size());
+        if (lc != rc) return false;
+        if (s.hdrKey && !pay.empty()) XorStream(pay.data(), (uint32_t)pay.size(), s.hdrKey);
+        t = h.Type; return true;
+    }
+
     MsgHeader h{};
     if (!NetRecv(s.sock, s.ssl, &h, sizeof(h), ms)) return false;
     if (h.Magic != PROTO_MAGIC || h.Version != PROTO_VERSION) return false;
@@ -573,6 +605,20 @@ static void HandleClient(int csock, SSL* ssl)
                 while (end < req.size() && req[end] != '\r' && req[end] != '\n') end++;
                 authHex = req.substr(start, end - start);
             }
+
+            // 3. Extract Sec-WebSocket-Key for WebSocket upgrade detection
+            // (compare lowercase header name, but extract value from original req)
+            size_t wsKeyPos = lowerReq.find(XS("sec-websocket-key:"));
+            if (wsKeyPos != std::string::npos)
+            {
+                size_t start = wsKeyPos + 18; // len("sec-websocket-key:")
+                while (start < req.size() && (req[start] == ' ' || req[start] == '\t')) start++;
+                size_t end = start;
+                while (end < req.size() && req[end] != '\r' && req[end] != '\n') end++;
+                s.wsMode = true; // Upgrade: websocket present; capture key for 101 response
+                // Temporarily store the key in tokenHex for the handshake
+                s.tokenHex = req.substr(start, end - start);
+            }
         }
 
         if (authorized)
@@ -583,22 +629,34 @@ static void HandleClient(int csock, SSL* ssl)
                 HelloPayload hp{};
                 if (ParseHex(authHex, reinterpret_cast<uint8_t*>(&hp), sizeof(hp)))
                 {
-                    std::cout << "[S] HTTP Auth detected (Loader handshake via LB)\n";
-                    // Send HTTP 200 OK immediately so the LB is happy, 
-                    // then handle the rest of the protocol on the same socket.
-                    std::string ok = XS("HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n");
-                    NetSend(s.sock, s.ssl, ok.c_str(), (int)ok.size());
-                    
-                    // Now jump to the 'Process Hello' logic with our parsed HelloPayload
-                    // We need to wrap this in a way that the existing logic can consume it.
-                    std::vector<uint8_t> fakePay(reinterpret_cast<uint8_t*>(&hp), reinterpret_cast<uint8_t*>(&hp) + sizeof(hp));
-                    // Note: This requires refactoring HandleClient slightly or just copying logic.
-                    // For now, I'll copy the logic below but it's cleaner to use a helper.
-                    
-                    // [REFACTORED AUTH LOGIC INJECTED HERE]
-                    // (I will call a helper function or labels)
-                    pay = std::move(fakePay); // Use the fake payload for authentication
-                    goto AUTH_LOGIC_START; // Jump to shared authentication logic
+                    if (s.wsMode && !s.tokenHex.empty())
+                    {
+                        // WebSocket upgrade path — sends RFC 6455 §4.2.2 handshake.
+                        // The GCP HTTP LB then proxies frames transparently, allowing
+                        // binary protocol messages to flow in both directions.
+                        std::string accept = WsComputeAccept(s.tokenHex);
+                        std::string resp =
+                            std::string(XS("HTTP/1.1 101 Switching Protocols\r\n")) +
+                            XS("Upgrade: websocket\r\n") +
+                            XS("Connection: Upgrade\r\n") +
+                            XS("Sec-WebSocket-Accept: ") + accept + XS("\r\n\r\n");
+                        NetSend(s.sock, s.ssl, resp.c_str(), (int)resp.size());
+                        s.tokenHex.clear(); // will be overwritten later with the real token hex
+                        std::cout << "[S] WebSocket upgrade complete — switching to WS framing\n";
+                    }
+                    else
+                    {
+                        // Legacy plain HTTP path (kept for backward compatibility)
+                        s.wsMode = false;
+                        std::string ok = XS("HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n");
+                        NetSend(s.sock, s.ssl, ok.c_str(), (int)ok.size());
+                        std::cout << "[S] HTTP Auth detected (legacy — no WS upgrade)\n";
+                    }
+
+                    std::vector<uint8_t> fakePay(reinterpret_cast<uint8_t*>(&hp),
+                                                  reinterpret_cast<uint8_t*>(&hp) + sizeof(hp));
+                    pay = std::move(fakePay);
+                    goto AUTH_LOGIC_START;
                 }
             }
             if (req.find(XS("GET /download")) != std::string::npos || req.find(XS("GET /loader")) != std::string::npos)

@@ -28,6 +28,7 @@
 #include "UI.h"
 #include "Protocol.h"
 #include "TlsLayer.h"
+#include "WebSocket.h"
 #include "CertPin.h"
 #include "StringCrypt.h"
 
@@ -179,9 +180,11 @@ struct ServerSession
     uint64_t hdrKey  = 0;        // 0 until AuthOk is processed (AuthOk itself is plain)
     uint64_t dllKey  = 0;
     uint8_t  token[16]{};
+    bool     wsMode  = false;    // true after WebSocket upgrade handshake
 };
 
 // SendMsg: encrypts payload with hdrKey if non-zero, computes CRC-32.
+// In WebSocket mode the entire binary message is wrapped in a masked WS frame.
 static bool SendMsg(ServerSession& ss, MsgType t,
                     const void* pay = nullptr, uint16_t len = 0)
 {
@@ -199,15 +202,46 @@ static bool SendMsg(ServerSession& ss, MsgType t,
     uint32_t crc = Crc32(reinterpret_cast<uint8_t*>(&h), sizeof(h));
     if (!buf.empty()) crc ^= Crc32(buf.data(), (uint32_t)buf.size());
 
+    if (ss.wsMode) {
+        // Pack into one buffer and send as a single masked WS binary frame.
+        std::vector<uint8_t> msg(sizeof(h) + buf.size() + 4);
+        memcpy(msg.data(), &h, sizeof(h));
+        if (!buf.empty()) memcpy(msg.data() + sizeof(h), buf.data(), buf.size());
+        memcpy(msg.data() + sizeof(h) + buf.size(), &crc, 4);
+        return WsSendFrameMasked(ss.sock, ss.ssl, msg.data(), msg.size());
+    }
+
     return NetSend(ss.sock, ss.ssl, &h, sizeof(h))
         && (buf.empty() || NetSend(ss.sock, ss.ssl, buf.data(), (int)buf.size()))
         && NetSend(ss.sock, ss.ssl, &crc, 4);
 }
 
 // RecvMsg: reads header + payload + CRC, verifies integrity, decrypts payload.
+// In WebSocket mode it first receives a WS frame and then parses the binary message from it.
 static bool RecvMsg(ServerSession& ss, MsgType& t,
                     std::vector<uint8_t>& pay, DWORD ms = 10000)
 {
+    if (ss.wsMode) {
+        std::vector<uint8_t> frame;
+        if (!WsRecvFrame(ss.sock, ss.ssl, frame, ms)) return false;
+        if (frame.size() < sizeof(MsgHeader) + 4) return false;
+        MsgHeader h{};
+        memcpy(&h, frame.data(), sizeof(h));
+        if (h.Magic != PROTO_MAGIC || h.Version != PROTO_VERSION) return false;
+        if (sizeof(MsgHeader) + h.Length + 4 > frame.size()) return false;
+        pay.resize(h.Length);
+        if (h.Length) memcpy(pay.data(), frame.data() + sizeof(h), h.Length);
+        uint32_t rc{};
+        memcpy(&rc, frame.data() + sizeof(h) + h.Length, 4);
+        uint32_t lc = Crc32(reinterpret_cast<uint8_t*>(&h), sizeof(h));
+        if (!pay.empty()) lc ^= Crc32(pay.data(), (uint32_t)pay.size());
+        if (lc != rc) return false;
+        if (ss.hdrKey && !pay.empty())
+            XorStream(pay.data(), (uint32_t)pay.size(), ss.hdrKey);
+        t = h.Type;
+        return true;
+    }
+
     MsgHeader h{};
     if (!NetRecv(ss.sock, ss.ssl, &h, sizeof(h), ms))              return false;
     if (h.Magic != PROTO_MAGIC || h.Version != PROTO_VERSION)      return false;
@@ -239,6 +273,7 @@ struct HeartbeatArgs
     SOCKET   sock;
     SSL*     ssl;     // may be nullptr (plaintext mode)
     uint64_t hdrKey;
+    bool     wsMode;
 };
 
 static DWORD WINAPI HeartbeatLoop(LPVOID p)
@@ -248,6 +283,7 @@ static DWORD WINAPI HeartbeatLoop(LPVOID p)
     ss.sock   = a->sock;
     ss.ssl    = a->ssl;
     ss.hdrKey = a->hdrKey;
+    ss.wsMode = a->wsMode;
     delete a;
 
     while (true)
@@ -398,7 +434,14 @@ static std::vector<uint8_t> ConnectAndFetchDll(
     }
 
     // ------------------------------------------------------------------
-    // Step 2: Send HTTP Hello (to bypass Cloud Armor / Load Balancer)
+    // Step 2: Send HTTP Upgrade (WebSocket) with Cloud Armor key + auth
+    //
+    // Using WebSocket upgrade instead of plain GET + Content-Length:0 because
+    // GCP's HTTP(S) Load Balancer terminates the connection after the HTTP
+    // response body, dropping binary protocol frames sent on the same TCP
+    // connection. WebSocket connections are proxied transparently by the LB
+    // (RFC 6455 passthrough), allowing our binary framing to flow in both
+    // directions after the 101 Switching Protocols handshake.
     // ------------------------------------------------------------------
     HelloPayload hello{};
     memcpy(hello.HwidHash,      hwidHash,     32);
@@ -410,40 +453,56 @@ static std::vector<uint8_t> ConnectAndFetchDll(
     strncpy_s(hello.LicenseKey, sizeof(hello.LicenseKey), state.licenseKey, _TRUNCATE);
 
     std::string authHex = HexStr(reinterpret_cast<uint8_t*>(&hello), sizeof(hello));
-    
-    // Construct HTTP GET request with Cloud Armor key and Auth payload
-    std::string httpReq = 
+    std::string wsKey   = WsGenKey(); // random base64 key for WebSocket handshake
+
+    // Construct HTTP GET with WebSocket upgrade headers
+    std::string httpReq =
         std::string(_S("GET /auth HTTP/1.1\r\n")) +
         _S("Host: ") + state.serverHost + _S("\r\n") +
-        _S("Connection: keep-alive\r\n") +
+        _S("Upgrade: websocket\r\n") +
+        _S("Connection: Upgrade\r\n") +
+        _S("Sec-WebSocket-Key: ") + wsKey + _S("\r\n") +
+        _S("Sec-WebSocket-Version: 13\r\n") +
         _S("x-sparky-key: VhPuLNayUPLTtOkOMoChbnaKHexOCetJaa4iXkLDF2s=\r\n") +
         _S("x-sparky-auth: ") + authHex + _S("\r\n\r\n");
 
     if (!NetSend(ss.sock, ss.ssl, httpReq.c_str(), (int)httpReq.size()))
     {
-        state.AddLog(_S("[ERR] Send HTTP Hello failed"));
+        state.AddLog(_S("[ERR] Send WebSocket upgrade request failed"));
         cleanup(); return {};
     }
 
-    // Read HTTP response (expect 200 OK or 200)
+    // Read HTTP response — expect 101 Switching Protocols
     {
-        char resp[1024]{};
+        char resp[2048]{};
         int received = 0;
-        // Simple read for the status header
-        while (received < sizeof(resp) - 1)
+        while (received < (int)sizeof(resp) - 1)
         {
             char c;
             if (!NetRecv(ss.sock, ss.ssl, &c, 1, 10000)) break;
             resp[received++] = c;
             if (received >= 4 && memcmp(resp + received - 4, "\r\n\r\n", 4) == 0) break;
         }
-        if (strstr(resp, _S(" 200")) == nullptr)
+
+        if (strstr(resp, _S(" 101")) != nullptr)
         {
-            state.AddLog(_S("[ERR] Cloud Armor / LB rejected the request (no 200 status)"));
+            ss.wsMode = true;
+            state.AddLog(_S("[INF] WebSocket upgrade accepted — binary protocol active"));
+        }
+        else if (strstr(resp, _S(" 200")) != nullptr)
+        {
+            // Legacy server (pre-WebSocket) — continue without WS framing.
+            // This keeps old server deployments working during rollout.
+            ss.wsMode = false;
+            state.AddLog(_S("[WRN] Server did not upgrade to WebSocket (legacy mode)"));
+        }
+        else
+        {
+            state.AddLog(_S("[ERR] Cloud Armor / LB rejected the request"));
             cleanup(); return {};
         }
-        // serverConnected stays false until AuthOk — the LB accepting the
-        // request just means network is reachable, not that auth succeeded.
+        // serverConnected stays false until AuthOk — the LB/server accepting
+        // the upgrade just means network is reachable, not that auth succeeded.
     }
 
     // ------------------------------------------------------------------
@@ -602,7 +661,7 @@ static std::vector<uint8_t> ConnectAndFetchDll(
     // Step 8: Hand socket + SSL to background heartbeat thread.
     // Thread owns both and will SSL_shutdown + SSL_free + closesocket.
     // ------------------------------------------------------------------
-    auto* hbArgs = new HeartbeatArgs{ ss.sock, ss.ssl, ss.hdrKey };
+    auto* hbArgs = new HeartbeatArgs{ ss.sock, ss.ssl, ss.hdrKey, ss.wsMode };
     ss.sock = INVALID_SOCKET; // thread now owns
     ss.ssl  = nullptr;        // thread now owns
     CreateThread(nullptr, 0, HeartbeatLoop, hbArgs, 0, nullptr);
