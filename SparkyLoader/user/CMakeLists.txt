@@ -52,14 +52,14 @@ target_link_libraries(imgui PUBLIC glfw)
 # SparkyLoader executable
 # ---------------------------------------------------------------------------
 add_executable(SparkyLoader WIN32
-    user/src/main.cpp
-    user/src/Logger.cpp
-    user/src/ManualMap.cpp
-    user/src/UI.cpp
+    src/main.cpp
+    src/Logger.cpp
+    src/ManualMap.cpp
+    src/UI.cpp
 )
 
 target_include_directories(SparkyLoader PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/user/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
 )
@@ -113,10 +113,10 @@ add_custom_command(TARGET SparkyLoader POST_BUILD
 # Run:    bin/SparkyTests.exe        (returns 0 on all-pass, 1 on any failure)
 # ---------------------------------------------------------------------------
 add_executable(SparkyTests
-    user/tests/unit/test_protocol.cpp
-    user/tests/unit/test_manualmap_validation.cpp
-    user/src/Logger.cpp
-    user/src/ManualMap.cpp
+    tests/unit/test_protocol.cpp
+    tests/unit/test_manualmap_validation.cpp
+    src/Logger.cpp
+    src/ManualMap.cpp
 )
 
 # main() is generated into the build directory so we don't need a committed file.
@@ -125,8 +125,8 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/tests_main.cpp"
 target_sources(SparkyTests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/tests_main.cpp")
 
 target_include_directories(SparkyTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/user/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/user/tests/unit
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit
 )
 
 target_link_libraries(SparkyTests PRIVATE
@@ -171,11 +171,11 @@ add_custom_command(TARGET SparkyTests POST_BUILD
 # Exit code 0 = DLL signalled success; 1 = timeout.
 # ---------------------------------------------------------------------------
 add_executable(AntiCheatSim
-    user/tests/AntiCheatSim.cpp
+    tests/AntiCheatSim.cpp
 )
 
 target_include_directories(AntiCheatSim PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/user/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 target_link_libraries(AntiCheatSim PRIVATE
@@ -209,13 +209,13 @@ target_compile_options(AntiCheatSim PRIVATE
 # Exit:  0 = success, 1 = failure, 2 = bad args
 # ---------------------------------------------------------------------------
 add_executable(InjectDirect
-    user/tests/InjectDirect.cpp
-    user/src/Logger.cpp
-    user/src/ManualMap.cpp
+    tests/InjectDirect.cpp
+    src/Logger.cpp
+    src/ManualMap.cpp
 )
 
 target_include_directories(InjectDirect PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/user/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 target_link_libraries(InjectDirect PRIVATE
@@ -253,7 +253,7 @@ target_compile_options(InjectDirect PRIVATE
 # No MessageBox, no visible side effects.
 # ---------------------------------------------------------------------------
 add_library(DummyDll SHARED
-    user/tests/DummyDll.cpp
+    tests/DummyDll.cpp
 )
 
 target_compile_definitions(DummyDll PRIVATE
