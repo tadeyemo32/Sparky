@@ -515,6 +515,7 @@ static void HandleClient(int csock, SSL* ssl)
     // ---- 1. Receive Hello (or HTTP Health Check) ----
     MsgHeader h{};
     std::vector<uint8_t> pay;
+    uint32_t crc = 0;
     if (!NetRecv(s.sock, s.ssl, &h, sizeof(h), 10000))
     {
         cleanup(); return;
@@ -661,7 +662,7 @@ static void HandleClient(int csock, SSL* ssl)
     }
     pay.resize(h.Length);
     if (!NetRecv(s.sock, s.ssl, pay.data(), h.Length, 10000)) { cleanup(); return; }
-    uint32_t crc{}; if (!NetRecv(s.sock, s.ssl, &crc, 4, 10000)) { cleanup(); return; }
+    if (!NetRecv(s.sock, s.ssl, &crc, 4, 10000)) { cleanup(); return; }
 
     // Verify Hello CRC
     {
