@@ -191,24 +191,45 @@ jobs:
             --quiet || echo "IAM binding skipped — set manually in GCP Console if needed."
 
   # ── Module 4: Attach Loader to Release ────────────────────────────────
+  # Gated on deploy so the loader and server are always in sync.
+  # A failed server deploy will not publish a new loader binary.
   release:
     name: Publish Release
-    needs: [loader-build-and-tests]
+    needs: [deploy]
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 5
+
       - name: Download Loader Artifact
         uses: actions/download-artifact@v4
         with:
           name: SparkyLoader
+
+      - name: Build release body
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "SHORT_SHA=$SHORT_SHA" >> $GITHUB_ENV
+          {
+            echo "RELEASE_BODY<<EOF"
+            echo "**Commit:** \`$GITHUB_SHA\`"
+            echo "**Branch:** \`${GITHUB_REF_NAME}\`"
+            echo ""
+            echo "### Recent changes"
+            git log --oneline -5 --no-walk=unsorted HEAD | sed 's/^/- /'
+            echo "EOF"
+          } >> $GITHUB_ENV
 
       - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: SparkyLoader.exe
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
-          name: ${{ github.ref_type == 'tag' && github.ref_name || 'Development Build (Latest)' }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || format('Development Build ({0})', env.SHORT_SHA) }}
           prerelease: ${{ github.ref_type != 'tag' }}
-          generate_release_notes: true
+          body: ${{ env.RELEASE_BODY }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
