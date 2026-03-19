@@ -92,11 +92,17 @@ namespace TestRunner
 // Macros
 // ---------------------------------------------------------------------------
 
+// Two-level indirection forces __LINE__ to expand before token-pasting.
+// Without this MSVC pastes the literal token __LINE__ and every TEST()
+// in a translation unit gets the same name (_reg___LINE__).
+#define _TR_CAT_(a, b) a##b
+#define _TR_CAT(a, b)  _TR_CAT_(a, b)
+
 // Define a test. Body runs as a lambda.
 #define TEST(name) \
-    static void _test_body_##__LINE__(); \
-    static TestRunner::Registrar _reg_##__LINE__(name, _test_body_##__LINE__); \
-    static void _test_body_##__LINE__()
+    static void _TR_CAT(_test_body_, __LINE__)(); \
+    static TestRunner::Registrar _TR_CAT(_reg_, __LINE__)(name, _TR_CAT(_test_body_, __LINE__)); \
+    static void _TR_CAT(_test_body_, __LINE__)()
 
 // Basic assertions.
 #define EXPECT(expr) \

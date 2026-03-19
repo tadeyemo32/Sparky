@@ -21,7 +21,9 @@ if(MSVC)
         CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
         CMAKE_CXX_FLAGS_MINSIZEREL            CMAKE_CXX_FLAGS_RELWITHDEBINFO)
         if(${_flag} MATCHES "/MD")
-            string(REGEX REPLACE "/MD" "/MT" ${_flag} "${${_flag}}")
+            string(REGEX REPLACE "/MD" "/MT" _patched "${${_flag}}")
+            # FORCE overwrites stale /MD values already in the CMake cache
+            set(${_flag} "${_patched}" CACHE STRING "" FORCE)
         endif()
     endforeach()
 endif()
