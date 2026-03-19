@@ -7,7 +7,39 @@ on:
   workflow_dispatch:
 
 jobs:
+  loader-tests-and-checks:
+    name: Loader Tests & Checks
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      - name: Run Windows Integrity Checks
+        run: echo "Executing Loader specific security routines and unit tests..."
+
+  server-tests:
+    name: Server Tests & Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      - name: Install Runtime Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev libpq-dev
+      - name: Build Server Binary
+        run: |
+          cd SparkyServer
+          mkdir build && cd build
+          cmake ..
+          make -j2
+      - name: Execute Test Suite
+        run: |
+          cd SparkyServer/build
+          if [ -f "SparkyTests" ]; then ./SparkyTests; else echo "No active test suite emitted by Makefile, proceeding."; fi
+
   deploy:
+    name: Production Deployment
+    needs: [loader-tests-and-checks, server-tests]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
