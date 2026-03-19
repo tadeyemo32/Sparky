@@ -1,108 +1,85 @@
 /**
  * Vercel Serverless Proxy — /api/*
  *
- * All /api/* requests from the browser are forwarded server-side to the
- * backend. The backend URL and SPARKY_KEY are read from Vercel environment
- * variables — neither ever appears in the browser bundle or network traffic.
+ * Proxies all /api/* browser requests server-side to the backend.
+ * BACKEND_URL and SPARKY_KEY are read from Vercel env vars — neither
+ * ever appears in the browser bundle or network traffic.
  *
- * TLS verification is intentionally disabled for the backend connection
- * because the backend uses a self-signed certificate (we own both ends).
+ * Uses only raw Node.js http/https APIs so there is no dependency on
+ * @vercel/node helpers at runtime. TLS verification is intentionally
+ * disabled (self-signed backend cert; we own both ends).
  */
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import * as https from 'node:https';
 import * as http from 'node:http';
 
-export const config = {
-  api: {
-    bodyParser: false, // receive raw body so we can pipe it unmodified
-  },
-};
+export const config = { api: { bodyParser: false } };
 
-const BACKEND_URL     = (process.env.BACKEND_URL ?? '').replace(/\/$/, '');
-const SPARKY_KEY      = process.env.SPARKY_KEY ?? '';
-const ALLOWED_ORIGIN  = process.env.SPARKY_ALLOWED_ORIGIN ?? 'https://sparky-tau.vercel.app';
+const BACKEND = (process.env.BACKEND_URL ?? '').replace(/\/$/, '');
+const KEY     = process.env.SPARKY_KEY ?? '';
+const ORIGIN  = process.env.SPARKY_ALLOWED_ORIGIN ?? 'https://sparky-tau.vercel.app';
 
-// Reuse agent across requests — skips cert verification for our self-signed backend
 const tlsAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: true });
 
-// Headers the proxy must not forward upstream or downstream
-const HOP_BY_HOP = new Set([
-  'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
-  'te', 'trailers', 'transfer-encoding', 'upgrade', 'host',
+const HOP  = new Set([
+  'connection','keep-alive','transfer-encoding','upgrade','host',
+  'proxy-authenticate','proxy-authorization','te','trailers',
 ]);
-// CORS headers from the backend — the browser sees sparky-tau.vercel.app as
-// the origin so we must not forward the backend's own CORS declarations.
-const STRIP_DOWNSTREAM = new Set([
-  'access-control-allow-origin', 'access-control-allow-methods',
-  'access-control-allow-headers', 'access-control-max-age',
-  'access-control-expose-headers', 'access-control-allow-credentials',
+const CORS = new Set([
+  'access-control-allow-origin','access-control-allow-methods',
+  'access-control-allow-headers','access-control-max-age',
+  'access-control-expose-headers','access-control-allow-credentials',
 ]);
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (!BACKEND_URL) {
-    return res.status(503).json({ error: 'Backend not configured' });
+function err(res: ServerResponse, status: number, msg: string) {
+  if (!res.headersSent) {
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: msg }));
   }
+}
 
-  // req.url is the full path, e.g. /api/auth/login?foo=bar
-  const targetUrl = new URL(req.url ?? '/', BACKEND_URL);
+export default function handler(req: IncomingMessage & { url?: string }, res: ServerResponse) {
+  if (!BACKEND) return err(res, 503, 'Backend not configured');
 
-  // Build forwarded headers
-  const fwdHeaders: Record<string, string> = {};
+  const fwdHeaders: Record<string, string> = { origin: ORIGIN };
   for (const [k, v] of Object.entries(req.headers)) {
-    if (HOP_BY_HOP.has(k.toLowerCase())) continue;
-    fwdHeaders[k] = Array.isArray(v) ? v[0] : (v ?? '');
+    if (!HOP.has(k.toLowerCase()))
+      fwdHeaders[k] = Array.isArray(v) ? v[0] : (v ?? '');
   }
-  if (SPARKY_KEY) fwdHeaders['x-sparky-key'] = SPARKY_KEY;
+  if (KEY) fwdHeaders['x-sparky-key'] = KEY;
 
-  // Always set Origin so the backend's origin check passes for all methods
-  // (browsers omit Origin on GET/HEAD; the proxy always knows the true origin).
-  fwdHeaders['origin'] = ALLOWED_ORIGIN;
+  const chunks: Buffer[] = [];
+  req.on('data', (c: Buffer) => chunks.push(c));
+  req.on('error', () => err(res, 400, 'Bad request'));
+  req.on('end', () => {
+    const body   = Buffer.concat(chunks);
+    const target = new URL(req.url ?? '/', BACKEND);
+    const isHttps = target.protocol === 'https:';
 
-  // Read raw request body
-  const body = await new Promise<Buffer>((resolve) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (c: Buffer) => chunks.push(c));
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', () => resolve(Buffer.alloc(0)));
-  });
-
-  return new Promise<void>((resolve) => {
-    const isHttps = targetUrl.protocol === 'https:';
-    const port    = targetUrl.port
-      ? Number(targetUrl.port)
-      : isHttps ? 443 : 80;
-
-    const opts: https.RequestOptions = {
-      hostname : targetUrl.hostname,
-      port,
-      path     : targetUrl.pathname + targetUrl.search,
+    const opts: http.RequestOptions = {
+      hostname : target.hostname,
+      port     : target.port ? Number(target.port) : (isHttps ? 443 : 80),
+      path     : target.pathname + target.search,
       method   : req.method ?? 'GET',
       headers  : fwdHeaders,
       agent    : isHttps ? tlsAgent : undefined,
-      timeout  : 10000, // 10 s — fail fast rather than hanging
+      timeout  : 10_000,
     };
 
-    const mod = isHttps ? https : http;
-    const proxyReq = mod.request(opts, (proxyRes) => {
-      res.status(proxyRes.statusCode ?? 200);
-
-      for (const [k, v] of Object.entries(proxyRes.headers)) {
-        if (HOP_BY_HOP.has(k.toLowerCase())) continue;
-        if (STRIP_DOWNSTREAM.has(k.toLowerCase())) continue;
-        if (v !== undefined) res.setHeader(k, v as string | string[]);
+    const pr = (isHttps ? https : http).request(opts, (upstream) => {
+      const outHeaders: Record<string, string | string[]> = {};
+      for (const [k, v] of Object.entries(upstream.headers)) {
+        if (!HOP.has(k) && !CORS.has(k) && v !== undefined)
+          outHeaders[k] = v as string | string[];
       }
-
-      proxyRes.pipe(res, { end: true });
-      proxyRes.on('end', resolve);
+      res.writeHead(upstream.statusCode ?? 200, outHeaders);
+      upstream.pipe(res, { end: true });
     });
 
-    proxyReq.on('timeout', () => proxyReq.destroy());
-    proxyReq.on('error', () => {
-      if (!res.headersSent) res.status(502).json({ error: 'Backend connection failed' });
-      resolve();
-    });
+    pr.on('timeout', () => pr.destroy());
+    pr.on('error',   () => err(res, 502, 'Backend connection failed'));
 
-    if (body.length > 0) proxyReq.write(body);
-    proxyReq.end();
+    if (body.length) pr.write(body);
+    pr.end();
   });
 }
