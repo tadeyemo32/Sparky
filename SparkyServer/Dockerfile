@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         cmake \
         libssl-dev \
         libpq-dev \
+        openssl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the whole Sparky repo root so both SparkyServer/ and SparkyLoader/ are
@@ -29,8 +30,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /src
 COPY . .
 
-# Ensure placeholder SSL files exist so COPY never fails in stage 2
-RUN touch SparkyServer/sparky.crt SparkyServer/sparky.key
+# If CI injected real cert/key via secrets, use them.
+# Otherwise generate a self-signed fallback so the server always starts.
+# (The loader skips cert verification; Cloud Run gen2 forwards raw TCP.)
+RUN if [ ! -s SparkyServer/sparky.crt ] || [ ! -s SparkyServer/sparky.key ]; then \
+        openssl req -x509 -newkey rsa:4096 \
+            -keyout SparkyServer/sparky.key \
+            -out    SparkyServer/sparky.crt \
+            -days 3650 -nodes -subj "/CN=sparky" 2>/dev/null; \
+    fi
 
 # CMAKE_SOURCE_DIR will be /src/SparkyServer, so the binary lands in
 # /src/SparkyServer/bin/SparkyServer (set by CMAKE_RUNTIME_OUTPUT_DIRECTORY).
