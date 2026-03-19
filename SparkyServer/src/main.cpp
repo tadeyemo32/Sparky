@@ -41,6 +41,7 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
+#include <openssl/hmac.h>
 
 // OpenSSL import libs are linked via CMake (OpenSSL::SSL, OpenSSL::Crypto)
 
@@ -118,6 +119,13 @@ static std::string g_allowedOrigin;
 // Set RESEND_FROM_EMAIL to your verified sender address (e.g. "Sparky <noreply@yourdomain.com>").
 static std::string g_resendKey;
 static std::string g_resendFrom;
+
+// Loader attestation key — 32 raw bytes loaded from SPARKY_ATTEST_KEY (64 hex chars).
+// When set, the loader sends HMAC-SHA256(SHA-256(binary), attest_key) instead of the
+// raw binary hash.  The server verifies the HMAC against every entry in trusted_hashes.
+// Without this key an attacker cannot compute a valid HMAC for any binary they control.
+static uint8_t g_attestKey[32]{};
+static bool    g_attestKeySet = false;
 
 // Proxy secret — shared secret between Vercel serverless proxy and this server.
 // The proxy injects it as X-Proxy-Secret; the server rejects web API requests that
@@ -1689,7 +1697,45 @@ AUTH_LOGIC_START:
 
     // Raw HWID hex from the loader
     s.hwid       = HexStr(hello.HwidHash,   32);
-    s.loaderHash = HexStr(hello.LoaderHash, 32);
+    // ---- 1b. Loader attestation ----
+    // When SPARKY_ATTEST_KEY is set the loader sends HMAC-SHA256(raw_binary_hash, attest_key)
+    // rather than the raw hash.  We verify by computing the expected HMAC for every trusted
+    // hash and comparing — the raw hash is never transmitted, only the keyed HMAC.
+    if (g_attestKeySet)
+    {
+        bool attested = false;
+        std::vector<TrustedHashRow> hashes;
+        { std::lock_guard lk(g_dbMu); hashes = g_db.ListHashes(); }
+
+        for (const auto& th : hashes)
+        {
+            uint8_t rawBytes[32]{};
+            if (!ParseHex(th.hash, rawBytes, 32)) continue;
+
+            uint8_t expected[32]{};
+            unsigned elen = 32;
+            HMAC(EVP_sha256(), g_attestKey, 32, rawBytes, 32, expected, &elen);
+
+            if (memcmp(expected, hello.LoaderHash, 32) == 0)
+            {
+                s.loaderHash = th.hash; // store the canonical raw hash in DB
+                attested     = true;
+                break;
+            }
+        }
+
+        if (!attested)
+        {
+            std::cout << "[S] Reject: loader attestation failed (unknown or modified binary)\n";
+            SendMsg(s, MsgType::AuthFail);
+            cleanup(); return;
+        }
+    }
+    else
+    {
+        // Attest key not configured — accept raw hash (dev/legacy mode)
+        s.loaderHash = HexStr(hello.LoaderHash, 32);
+    }
 
     // Apply server-side pepper before any DB lookup or storage
     if (g_pepperSet) s.hwid = PepperHwid(s.hwid);
@@ -2277,6 +2323,23 @@ int main(int argc, char** argv)
     {
         g_sparkyKey = k;
         std::cout << "[S] Loaded SPARKY_KEY from environment.\n";
+    }
+
+    if (const char* ak = std::getenv("SPARKY_ATTEST_KEY"))
+    {
+        if (std::strlen(ak) == 64 && ParseHex(std::string(ak), g_attestKey, 32))
+        {
+            g_attestKeySet = true;
+            std::cout << "[S] Loader attestation: HMAC-SHA256 enabled\n";
+        }
+        else
+        {
+            std::cerr << "[S] SPARKY_ATTEST_KEY must be exactly 64 hex chars — ignored\n";
+        }
+    }
+    else
+    {
+        std::cout << "[S] Loader attestation: disabled (set SPARKY_ATTEST_KEY in production)\n";
     }
 
     if (const char* ps = std::getenv("SPARKY_PROXY_SECRET"))

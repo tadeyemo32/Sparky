@@ -16,6 +16,8 @@
 // before connecting (or the SSL_connect will fail and connection will abort).
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include <openssl/hmac.h>
+#include <openssl/evp.h>
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "crypt32.lib")
@@ -112,6 +114,36 @@ static bool GetLoaderHash(uint8_t out[32])
     if (hProv) CryptReleaseContext(hProv, 0);
     CloseHandle(hFile);
     return ok;
+}
+
+// ---------------------------------------------------------------------------
+// AttestLoaderHash — computes HMAC-SHA256(raw_loader_hash, attest_key).
+//
+// The attest key is embedded at compile time via XS() (XOR-obfuscated in the
+// binary), so a static analysis of the binary reveals no plaintext key.
+// The server verifies by computing the same HMAC over every trusted hash it
+// knows — the raw binary hash is never transmitted over the network.
+// ---------------------------------------------------------------------------
+static void AttestLoaderHash(const uint8_t rawHash[32], uint8_t out[32])
+{
+    // Attest key — must match SPARKY_ATTEST_KEY on the server.
+    // Stored XOR-obfuscated so a binary scan won't find it as a plaintext hex string.
+    uint8_t key[32]{};
+    bool    haveKey = ParseHex(
+        XS("00718e2a9bfc04d6588eb4f5dd817e271f3ff78c6aabe760083a25640c54c166"),
+        key, 32);
+
+    if (haveKey)
+    {
+        unsigned len = 32;
+        HMAC(EVP_sha256(), key, 32, rawHash, 32, out, &len);
+        SecureZeroMemory(key, sizeof(key));
+    }
+    else
+    {
+        // Fallback: send raw hash (server must have attest key disabled too)
+        memcpy(out, rawHash, 32);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -771,9 +803,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     if (!GetHwidHash(hwidHash))
         state.AddLog("[WRN] HWID hash failed");
 
+    // Compute attested loader hash: HMAC-SHA256(SHA-256(binary), attest_key).
+    // The HMAC — not the raw hash — is what gets sent to the server.
+    uint8_t rawBinaryHash[32]{};
     uint8_t loaderHash[32]{};
-    if (!GetLoaderHash(loaderHash))
+    if (!GetLoaderHash(rawBinaryHash))
         state.AddLog("[WRN] Loader hash failed — integrity check will reject");
+    AttestLoaderHash(rawBinaryHash, loaderHash);
+    SecureZeroMemory(rawBinaryHash, sizeof(rawBinaryHash));
 
     std::vector<uint8_t> dllInRam;
 
