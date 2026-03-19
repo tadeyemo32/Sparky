@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sparky - Premium Vanguard Access</title>
+    <style>
+        :root {
+            --bg-dark: #0a0a0c;
+            --accent-glow: #7b2cbf;
+            --text-primary: #f0f0f5;
+            --text-secondary: #a0a0b0;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Inter', -apple-system, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow-x: hidden;
+        }
+
+        .glow-bg {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 60vw;
+            height: 60vw;
+            background: radial-gradient(circle, rgba(123,44,191,0.15) 0%, rgba(10,10,12,0) 70%);
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        .container {
+            text-align: center;
+            max-width: 800px;
+            padding: 2rem;
+            z-index: 10;
+        }
+
+        h1 {
+            font-size: 4.5rem;
+            font-weight: 800;
+            letter-spacing: -0.05em;
+            margin-bottom: 1rem;
+            background: linear-gradient(135deg, #fff 0%, #b090d0 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        p {
+            font-size: 1.2rem;
+            color: var(--text-secondary);
+            margin-bottom: 3rem;
+            line-height: 1.6;
+        }
+
+        .download-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            background: linear-gradient(135deg, #7b2cbf 0%, #5a189a 100%);
+            color: white;
+            padding: 18px 40px;
+            border-radius: 50px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            border: 1px solid rgba(255,255,255,0.1);
+            box-shadow: 0 10px 30px rgba(123,44,191,0.3);
+        }
+
+        .download-btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 15px 40px rgba(123,44,191,0.5);
+            background: linear-gradient(135deg, #9d4edd 0%, #7b2cbf 100%);
+        }
+
+        .features {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 2rem;
+            margin-top: 5rem;
+        }
+
+        .feature-card {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.05);
+            padding: 2rem;
+            border-radius: 16px;
+            backdrop-filter: blur(10px);
+            text-align: left;
+        }
+
+        .feature-card h3 {
+            font-size: 1.2rem;
+            margin-bottom: 0.8rem;
+            color: #fff;
+        }
+
+        .feature-card p {
+            font-size: 0.95rem;
+            margin-bottom: 0;
+        }
+
+    </style>
+</head>
+<body>
+    <div class="glow-bg"></div>
+    <div class="container">
+        <h1>Sparky Access</h1>
+        <p>The world's most advanced secure deployment loader. Fully heavily encrypted, undetectable, and hyper-optimized. Download the client below to authenticate your HWID and securely stream your payload.</p>
+        
+        <!-- Point this directly to your domain's /download endpoint (handled by SparkyServer) -->
+        <a href="/download" class="download-btn">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            Download Loader Client
+        </a>
+
+        <div class="features">
+            <div class="feature-card">
+                <h3>Secure Streaming</h3>
+                <p>Your payload is never stored on disk. It runs directly in system memory with military-grade SHA-256 CTR encryption.</p>
+            </div>
+            <div class="feature-card">
+                <h3>Hardware Locked</h3>
+                <p>Advanced cryptographic HWID locks ensure your proprietary binaries can only be accessed by authorized, active licenses.</p>
+            </div>
+            <div class="feature-card">
+                <h3>Cloud Delivery</h3>
+                <p>Global edge-network delivery via Google Cloud ensures ultra-low latency sub-second injection times worldwide.</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

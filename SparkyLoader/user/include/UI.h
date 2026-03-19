@@ -25,8 +25,8 @@
 struct UIState
 {
     // ── Editable in UI ──────────────────────────────────────────────────
-    char serverHost[128]  = "127.0.0.1";
-    int  serverPort       = 7777;
+    char serverHost[128]  = {0};
+    int  serverPort       = 443;
     bool useTls           = true;
 
     char processName[128] = "game.exe";

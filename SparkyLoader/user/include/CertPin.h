@@ -30,5 +30,5 @@
 // ---------------------------------------------------------------------------
 
 // TODO: paste the 64-char SHA-256 fingerprint of sparky.crt here.
-static constexpr const char* SPARKY_CERT_PIN =
-    "";  // e.g. "a1b2c3d4e5f6...64chars"
+static const char* SPARKY_CERT_PIN =
+    "e10cdf1bfaeb7c214a97337251494d537224eb8b92a1f6b983d03df867149c74";
