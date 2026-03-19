@@ -1351,10 +1351,20 @@ int main(int argc, char** argv)
             setsockopt(cs, SOL_SOCKET,  SO_KEEPALIVE, (char*)&flag, sizeof(flag));
         }
 
-        // Perform TLS handshake before spawning the client thread.
-        // The thread takes full ownership of cs and ssl (may be nullptr).
+        // Protocol Sniffing: Peek at the first byte to decide between TLS and Plaintext.
+        // This allows HTTPS Load Balancer health checks (which often send plain HTTP internally)
+        // to succeed while still supporting TLS for the actual loader connection.
+        unsigned char firstByte = 0;
+#ifdef _WIN32
+        int peeked = recv(cs, (char*)&firstByte, 1, MSG_PEEK);
+#else
+        int peeked = recv(cs, &firstByte, 1, MSG_PEEK | MSG_DONTWAIT);
+#endif
+
         SSL* ssl = nullptr;
-        if (g_sslCtx)
+        bool useTls = (peeked > 0 && firstByte == 0x16); // 0x16 is TLS Handshake record
+
+        if (g_sslCtx && useTls)
         {
             ssl = SSL_new(g_sslCtx);
             SSL_set_fd(ssl, (int)cs);
@@ -1373,7 +1383,7 @@ int main(int argc, char** argv)
         }
 
         std::cout << std::format("[S] Connection from {}{}\n",
-                                  ip, ssl ? " (TLS)" : "");
+                                  ip, ssl ? " (TLS)" : (useTls ? " (Broken TLS)" : " (Plain)"));
         std::thread(HandleClient, cs, ssl).detach();
     }
 
