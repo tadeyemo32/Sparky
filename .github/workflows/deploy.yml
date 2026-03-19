@@ -29,7 +29,8 @@ jobs:
       - name: Build Server Binary
         run: |
           cd SparkyServer
-          mkdir build && cd build
+          mkdir -p build
+          cd build
           cmake ..
           make -j2
       - name: Execute Test Suite
