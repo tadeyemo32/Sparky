@@ -1218,14 +1218,20 @@ static void HandleClient(int csock, SSL* ssl)
                 "Access-Control-Allow-Origin: " + corsOrigin + "\r\n" +
                 "Vary: Origin\r\n"
                 "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                "Access-Control-Allow-Headers: Content-Type, Authorization, x-sparky-key\r\n"
+                "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
                 "Access-Control-Max-Age: 86400\r\n"
                 "Content-Length: 0\r\n\r\n";
             NetSend(s.sock, s.ssl, cors.c_str(), (int)cors.size());
             cleanup(); return;
         }
 
-        bool authorized = g_sparkyKey.empty();
+        // /api/* routes authenticate via Bearer token inside HandleWebApi —
+        // they never need the loader SPARKY_KEY, so we skip that check entirely.
+        // This means the key is never transmitted from the browser.
+        const bool isWebApiPath = (httpPath.size() >= 5 &&
+                                   httpPath.compare(0, 5, "/api/") == 0);
+
+        bool authorized = g_sparkyKey.empty() || isWebApiPath;
         std::string authHex;
 
         if (true) // always parse headers if it's HTTP
@@ -1233,8 +1239,8 @@ static void HandleClient(int csock, SSL* ssl)
             std::string lowerReq = req;
             for (auto& ch : lowerReq) ch = (char)std::tolower((unsigned char)ch);
 
-            // 1. Check Cloud Armor / Secret Key
-            if (!g_sparkyKey.empty())
+            // 1. Check Cloud Armor / Secret Key (loader only — skipped for /api/*)
+            if (!g_sparkyKey.empty() && !isWebApiPath)
             {
                 size_t pos = lowerReq.find(XS("x-sparky-key:"));
                 if (pos != std::string::npos)

@@ -1,8 +1,7 @@
-// XOR-obfuscated API base — key cycles over encoded bytes at runtime
+// XOR-obfuscated API base — decoded at runtime, never a plain string in the bundle
 const _k = [0xAB,0xCD,0xEF,0x12,0x34];
 const _e = [0xC3,0xB9,0x9B,0x62,0x47,0x91,0xE2,0xC0,0x21,0x01,0x85,0xFF,0xDF,0x24,0x1A,0x9A,0xF5,0xDE,0x3C,0x07,0x9D];
 const API_BASE = _e.map((b,i)=>String.fromCharCode(b^_k[i%_k.length])).join('');
-const SPARKY_KEY = 'VhPuLNayUPLTtOkOMoChbnaKHexOCetJaa4iXkLDF2s=';
 
 export interface RequestOptions {
   method?: string;
@@ -27,9 +26,7 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const { method = 'GET', body, token, responseType = 'json' } = options;
 
-  const headers: Record<string, string> = {
-    'x-sparky-key': SPARKY_KEY,
-  };
+  const headers: Record<string, string> = {};
 
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json';

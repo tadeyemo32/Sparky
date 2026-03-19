@@ -18,11 +18,11 @@ afterEach(() => {
 });
 
 describe('apiFetch', () => {
-  it('includes x-sparky-key header on every request', async () => {
+  it('does NOT include x-sparky-key header (key is loader-only)', async () => {
     vi.stubGlobal('fetch', makeFetchMock({ ok: true }, 200));
-    await apiFetch('/test');
+    await apiFetch('/api/test');
     const [, init] = vi.mocked(fetch).mock.calls[0];
-    expect((init as RequestInit).headers).toMatchObject({ 'x-sparky-key': expect.any(String) });
+    expect((init as RequestInit).headers).not.toHaveProperty('x-sparky-key');
   });
 
   it('adds Authorization header when token provided', async () => {
