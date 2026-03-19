@@ -9,9 +9,8 @@
  * because the backend uses a self-signed certificate (we own both ends).
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import https from 'node:https';
-import http from 'node:http';
-import { URL } from 'node:url';
+import * as https from 'node:https';
+import * as http from 'node:http';
 
 export const config = {
   api: {
