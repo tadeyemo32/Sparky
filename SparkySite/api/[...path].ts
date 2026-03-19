@@ -19,8 +19,9 @@ export const config = {
   },
 };
 
-const BACKEND_URL = (process.env.BACKEND_URL ?? '').replace(/\/$/, '');
-const SPARKY_KEY  = process.env.SPARKY_KEY ?? '';
+const BACKEND_URL     = (process.env.BACKEND_URL ?? '').replace(/\/$/, '');
+const SPARKY_KEY      = process.env.SPARKY_KEY ?? '';
+const ALLOWED_ORIGIN  = process.env.SPARKY_ALLOWED_ORIGIN ?? 'https://sparky-tau.vercel.app';
 
 // Reuse agent across requests — skips cert verification for our self-signed backend
 const tlsAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: true });
@@ -54,6 +55,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   if (SPARKY_KEY) fwdHeaders['x-sparky-key'] = SPARKY_KEY;
 
+  // Always set Origin so the backend's origin check passes for all methods
+  // (browsers omit Origin on GET/HEAD; the proxy always knows the true origin).
+  fwdHeaders['origin'] = ALLOWED_ORIGIN;
+
   // Read raw request body
   const body = await new Promise<Buffer>((resolve) => {
     const chunks: Buffer[] = [];
@@ -75,6 +80,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       method   : req.method ?? 'GET',
       headers  : fwdHeaders,
       agent    : isHttps ? tlsAgent : undefined,
+      timeout  : 10000, // 10 s — fail fast rather than hanging
     };
 
     const mod = isHttps ? https : http;
@@ -91,6 +97,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       proxyRes.on('end', resolve);
     });
 
+    proxyReq.on('timeout', () => proxyReq.destroy());
     proxyReq.on('error', () => {
       if (!res.headersSent) res.status(502).json({ error: 'Backend connection failed' });
       resolve();
