@@ -10,26 +10,19 @@ jobs:
   loader-build-and-tests:
     name: Loader Build & Tests
     runs-on: windows-latest
-    env:
-      VCPKG_DEFAULT_TRIPLET: x64-windows
     steps:
       - name: Checkout Code (with submodules)
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Setup vcpkg & Install OpenSSL
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: 'a42af01b72c28a8e1d7b48107b33e4f286a55ef6'
-
-      - name: Install OpenSSL via vcpkg
-        run: vcpkg install openssl:x64-windows
+      - name: Install OpenSSL via Chocolatey
+        run: choco install openssl -y --no-progress
 
       - name: Configure CMake (Release)
         run: |
           cd SparkyLoader/user
-          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DOPENSSL_ROOT_DIR="C:/Program Files/OpenSSL-Win64"
 
       - name: Build SparkyLoader
         run: |
