@@ -85,9 +85,12 @@ target_compile_definitions(SparkyLoader PRIVATE
 
 if(MSVC)
     target_compile_options(SparkyLoader PRIVATE /W3 /utf-8)
+    # Static CRT: bake the C/C++ runtime into the .exe (no vcruntime140.dll needed)
+    set_property(TARGET SparkyLoader PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
     target_compile_options(SparkyLoader PRIVATE -Wall -Wextra)
-    target_link_options(SparkyLoader PRIVATE -municode -mwindows)
+    # Static link everything: no libstdc++-6.dll / libgcc_s_seh-1.dll / libwinpthread-1.dll needed
+    target_link_options(SparkyLoader PRIVATE -municode -mwindows -static -static-libgcc -static-libstdc++)
 endif()
 
 target_compile_options(SparkyLoader PRIVATE
