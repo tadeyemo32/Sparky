@@ -386,10 +386,24 @@ def cmd_watch(con, _args):
 # ---------------------------------------------------------------------------
 # Admin Authentication (3-Tier System)
 # ---------------------------------------------------------------------------
-def hash_password(password: str, salt: bytes = b'sparky_salt') -> str:
-    # Use PBKDF2 HMAC SHA256 for secure password hashing
-    key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100000)
-    return key.hex()
+def hash_password(password: str, salt: str = '') -> str:
+    """Hash a password with a random per-user salt using PBKDF2-HMAC-SHA256.
+    Returns 'salt:hash' so the salt can be recovered for verification."""
+    import secrets as _secrets
+    if not salt:
+        salt = _secrets.token_hex(16)
+    key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 260_000)
+    return f"{salt}:{key.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    """Verify a password against a stored 'salt:hash' or legacy bare-hash."""
+    if ':' in stored:
+        salt, _ = stored.split(':', 1)
+        return hash_password(password, salt) == stored
+    # Legacy: old entries hashed without a salt — allow login, rehash on next write
+    key = hashlib.pbkdf2_hmac('sha256', password.encode(), b'sparky_salt', 100000)
+    return key.hex() == stored
 
 def authenticate_admin(con) -> str:
     """Prompts for Username and Password. Returns the authenticated role ('admin' or 'owner')."""
@@ -425,8 +439,13 @@ def authenticate_admin(con) -> str:
     
     cur.execute("SELECT password_hash, role FROM admins WHERE username=%s", (username,))
     row = cur.fetchone()
-    
-    if row and row['password_hash'] == hash_password(password):
+
+    if row and verify_password(password, row['password_hash']):
+        # Silently upgrade legacy bare-hash to salted format on first login
+        if ':' not in row['password_hash']:
+            cur.execute("UPDATE admins SET password_hash=%s WHERE username=%s",
+                        (hash_password(password), username))
+            con.commit()
         print(f"\n[+] Welcome, {username} ({row['role']})!")
         return row['role']
     else:
@@ -501,7 +520,7 @@ def send_resend_email(to_email: str, subject: str, html_body: str) -> bool:
     import urllib.request
     import urllib.error
 
-    api_key = os.environ.get("RESEND_API_KEY", "re_SYszAty4_BgRCVJEAa8hEcMLFBRpjWzEk")
+    api_key = os.environ.get("RESEND_API_KEY", "")
     url = "https://api.resend.com/emails"
     
     def attempt_send(from_email):
@@ -589,7 +608,8 @@ def cmd_reset_password(con, args, _role):
         print("  [-] ERROR: Passwords do not match. Reset aborted.")
         sys.exit(1)
         
-    cur.execute("UPDATE admins SET password_hash=%s WHERE username=%s", (hash_password(new_password), username))
+    cur.execute("UPDATE admins SET password_hash=%s WHERE username=%s",
+                (hash_password(new_password), username))
     con.commit()
     print(f"\n  [+] Password for '{username}' was successfully reset! You can now log in.")
 
