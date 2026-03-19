@@ -1,0 +1,53 @@
+name: Build SparkyLoader (Windows)
+
+on:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+
+jobs:
+  build-loader:
+    name: Compile SparkyLoader.exe
+    runs-on: windows-latest
+
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+
+    steps:
+      - name: Checkout Code (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup vcpkg & Install OpenSSL
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 'a42af01b72c28a8e1d7b48107b33e4f286a55ef6'
+
+      - name: Install OpenSSL via vcpkg
+        run: vcpkg install openssl:x64-windows
+
+      - name: Configure CMake (Release)
+        run: |
+          cd SparkyLoader/user
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+
+      - name: Build SparkyLoader
+        run: |
+          cd SparkyLoader/user
+          cmake --build build --config Release --target SparkyLoader -j 2
+
+      - name: Upload SparkyLoader.exe Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SparkyLoader
+          path: SparkyLoader/user/bin/Release/SparkyLoader.exe
+          if-no-files-found: warn
+
+      - name: Upload to Release (if tagged)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: SparkyLoader/user/bin/Release/SparkyLoader.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
