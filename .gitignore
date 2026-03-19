@@ -2,9 +2,14 @@
 SparkyLoader/build/
 SparkyLoader/build-win/
 SparkyLoader/build-*/
+SparkyLoader/user/build/
 
-# ─── Binary output (top-level bin/ is tracked) ─────────────────────────────
-# SparkyLoader/bin/ is intentionally NOT ignored so compiled binaries are kept
+# ─── Binary output (compiled files are not committed — use CI artifacts) ────
+SparkyLoader/user/bin/*.exe
+SparkyLoader/user/bin/*.dll
+SparkyLoader/user/bin/*.pdb
+# keep .gitkeep so the directory exists in the repo
+!SparkyLoader/user/bin/.gitkeep
 
 # ─── CMake generated files ─────────────────────────────────────────────────
 CMakeFiles/
@@ -14,6 +19,7 @@ CPackConfig.cmake
 CPackSourceConfig.cmake
 _deps/
 *.cmake
+!SparkyLoader/user/CMakeLists.txt
 !SparkyLoader/toolchain-windows-mingw.cmake
 !SparkyLoader/CMakeLists.txt
 
