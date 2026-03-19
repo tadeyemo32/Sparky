@@ -62,18 +62,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libssl-dev libpq-dev cmake
 
-      - name: Build Server Binary
+      - name: Build Server Binary & Tests
         run: |
           cd SparkyServer
           mkdir -p build
           cd build
           cmake ..
-          make -j2
+          make -j2 SparkyServer
+          make -j2 SparkyTests
 
       - name: Execute Test Suite
         run: |
-          cd SparkyServer/build
-          if [ -f "SparkyTests" ]; then ./SparkyTests; else echo "No test binary found, skipping."; fi
+          cd SparkyServer/bin
+          ./SparkyTests
 
   # ── Module 3: Production Deployment (gated by Module 1 & 2) ───────────
   deploy:
