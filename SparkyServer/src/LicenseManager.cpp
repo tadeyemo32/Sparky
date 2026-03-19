@@ -1,13 +1,14 @@
 // LicenseManager.cpp
 #include "../include/LicenseManager.h"
 #include "../include/Database.h"
-#include <Windows.h>
-#include <wincrypt.h>
+#ifdef _WIN32
+#  include <Windows.h>
+#  include <wincrypt.h>
+#endif
+#include <openssl/rand.h>
 #include <cstring>
 #include <ctime>
 #include <stdexcept>
-
-#pragma comment(lib, "advapi32.lib")
 
 // ---------------------------------------------------------------------------
 // Key charset: uppercase A-Z plus digits 2-9 (excludes O/I/0/1 for clarity)
@@ -46,6 +47,7 @@ std::string LicenseManager::GenerateKey()
 {
     uint8_t raw[10]{};
 
+#ifdef _WIN32
     // Prefer CryptGenRandom
     HCRYPTPROV hProv{};
     if (CryptAcquireContextW(&hProv, nullptr, nullptr,
@@ -66,6 +68,9 @@ std::string LicenseManager::GenerateKey()
             raw[i] = (uint8_t)(seed & 0xFF);
         }
     }
+#else
+    RAND_bytes(raw, sizeof(raw));
+#endif
 
     return FormatKey(raw);
 }

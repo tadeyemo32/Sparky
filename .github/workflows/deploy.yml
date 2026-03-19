@@ -1,0 +1,50 @@
+name: Deploy SparkyServer to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and Deploy to Cloud Run
+        run: |
+          # Securely inject SSL secrets during the CI run
+          if [ -n "${{ secrets.SPARKY_CERT_PEM }}" ]; then
+            echo "${{ secrets.SPARKY_CERT_PEM }}" > SparkyServer/sparky.crt
+            echo "${{ secrets.SPARKY_PRIVATE_KEY }}" > SparkyServer/sparky.key
+          fi
+          
+          echo "Checking if Cloud Storage bucket exists..."
+          if ! gcloud storage buckets describe "gs://${{ secrets.GCP_BUCKET_NAME }}" >/dev/null 2>&1; then
+            echo "Bucket does not exist. Creating gs://${{ secrets.GCP_BUCKET_NAME }} in europe-west1..."
+            gcloud storage buckets create "gs://${{ secrets.GCP_BUCKET_NAME }}" --location=europe-west1
+          fi
+
+          echo "Moving Dockerfile to root to capture full context"
+          cp SparkyServer/Dockerfile .
+          
+          gcloud run deploy sparky-server \
+            --source . \
+            --region europe-west1 \
+            --allow-unauthenticated \
+            --execution-environment gen2 \
+            --add-volume=name=sparky-data,type=cloud-storage,bucket=${{ secrets.GCP_BUCKET_NAME }} \
+            --add-volume-mount=volume=sparky-data,mount-path=/app/data \
+            --add-volume=name=sparky-payloads,type=cloud-storage,bucket=sparky-payloads-490704 \
+            --add-volume-mount=volume=sparky-payloads,mount-path=/app/payloads \
+            --set-env-vars SPARKY_KEY="${{ secrets.SPARKY_KEY }}",SPARKY_PG_CONNSTR="${{ secrets.SPARKY_PG_CONNSTR }}",SPARKY_HWID_PEPPER="${{ secrets.SPARKY_HWID_PEPPER }}"

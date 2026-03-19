@@ -7,10 +7,35 @@
 static PGconn* PG(void* p) { return reinterpret_cast<PGconn*>(p); }
 
 // ---------------------------------------------------------------------------
+// NULL-safe column accessors.
+// PQgetvalue() returns "" for NULL columns; stoi/stoll would throw on "".
+// These helpers return a safe default (0 / "") instead.
+// ---------------------------------------------------------------------------
+static int PgInt(PGresult* r, int row, int col)
+{
+    if (PQgetisnull(r, row, col)) return 0;
+    const char* v = PQgetvalue(r, row, col);
+    if (!v || !*v) return 0;
+    try { return std::stoi(v); } catch (...) { return 0; }
+}
+
+static int64_t PgInt64(PGresult* r, int row, int col)
+{
+    if (PQgetisnull(r, row, col)) return 0;
+    const char* v = PQgetvalue(r, row, col);
+    if (!v || !*v) return 0;
+    try { return std::stoll(v); } catch (...) { return 0; }
+}
+
+// ---------------------------------------------------------------------------
 // Internal helper — execute a parameterized query (text protocol).
 // All integer parameters must be pre-converted to std::string by callers.
 // Returns a valid PGresult* (PGRES_COMMAND_OK or PGRES_TUPLES_OK) that the
 // caller MUST PQclear(), or nullptr on failure (already logged).
+//
+// If the connection is found to be broken after a failure, PQreset() is
+// attempted once and the query retried — this makes the server resilient to
+// transient DB restarts without needing a full process restart.
 // ---------------------------------------------------------------------------
 static PGresult* PgExec(PGconn* conn, const char* sql,
                          const std::vector<std::string>& args = {})
@@ -19,17 +44,42 @@ static PGresult* PgExec(PGconn* conn, const char* sql,
     pv.reserve(args.size());
     for (auto& s : args) pv.push_back(s.c_str());
 
-    PGresult* res = PQexecParams(conn, sql,
-                                  (int)pv.size(), nullptr,
-                                  pv.empty() ? nullptr : pv.data(),
-                                  nullptr, nullptr, 0);
+    auto exec = [&]() -> PGresult* {
+        return PQexecParams(conn, sql,
+                            (int)pv.size(), nullptr,
+                            pv.empty() ? nullptr : pv.data(),
+                            nullptr, nullptr, 0);
+    };
 
+    PGresult* res = exec();
     ExecStatusType st = PQresultStatus(res);
+
     if (st != PGRES_COMMAND_OK && st != PGRES_TUPLES_OK)
     {
         std::cerr << "[DB] " << PQresultErrorMessage(res)
                   << " — query: " << sql << "\n";
         PQclear(res);
+
+        // If the connection is broken, attempt a single reconnect + retry.
+        if (PQstatus(conn) == CONNECTION_BAD)
+        {
+            std::cerr << "[DB] Connection lost — attempting PQreset()...\n";
+            PQreset(conn);
+            if (PQstatus(conn) == CONNECTION_OK)
+            {
+                std::cerr << "[DB] Reconnected — retrying query...\n";
+                res = exec();
+                st  = PQresultStatus(res);
+                if (st == PGRES_COMMAND_OK || st == PGRES_TUPLES_OK)
+                    return res;
+                std::cerr << "[DB] Retry failed: " << PQresultErrorMessage(res) << "\n";
+                PQclear(res);
+            }
+            else
+            {
+                std::cerr << "[DB] PQreset() failed — DB still unreachable\n";
+            }
+        }
         return nullptr;
     }
     return res;
@@ -96,6 +146,18 @@ bool Database::CreateSchema()
             note        TEXT   NOT NULL DEFAULT '',
             added_at    BIGINT NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS admins (
+            username      TEXT PRIMARY KEY,
+            email         TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            role          TEXT NOT NULL DEFAULT 'admin',
+            created_at    BIGINT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS ip_bans (
+            ip          TEXT PRIMARY KEY,
+            reason      TEXT   NOT NULL DEFAULT '',
+            banned_at   BIGINT NOT NULL DEFAULT 0
+        );
         CREATE INDEX IF NOT EXISTS idx_sessions_hwid  ON sessions(hwid_hash);
         CREATE INDEX IF NOT EXISTS idx_purchases_hwid ON purchases(hwid_hash);
         CREATE INDEX IF NOT EXISTS idx_licenses_hwid  ON licenses(hwid_hash);
@@ -138,9 +200,9 @@ std::optional<LicenseRow> Database::GetLicense(const std::string& key) const
     {
         LicenseRow r;
         r.key        = PQgetvalue(res, 0, 0);
-        r.tier       = std::stoi(PQgetvalue(res, 0, 1));
-        r.issued_at  = std::stoll(PQgetvalue(res, 0, 2));
-        r.expires_at = std::stoll(PQgetvalue(res, 0, 3));
+        r.tier       = PgInt  (res, 0, 1);
+        r.issued_at  = PgInt64(res, 0, 2);
+        r.expires_at = PgInt64(res, 0, 3);
         r.hwid_hash  = PQgetvalue(res, 0, 4);
         r.note       = PQgetvalue(res, 0, 5);
         result = r;
@@ -158,6 +220,58 @@ bool Database::BindLicense(const std::string& key, const std::string& hwid_hash)
     bool changed = std::atoi(PQcmdTuples(res)) > 0;
     PQclear(res);
     return changed;
+}
+
+bool Database::ExtendLicense(const std::string& key, int64_t extra_seconds)
+{
+    // Fetch current expires_at so we can add to it.
+    auto lic = GetLicense(key);
+    if (!lic) return false;
+
+    int64_t base = lic->expires_at;
+    if (base == 0)
+    {
+        // Lifetime license: treat current time as the base so the extension
+        // creates a meaningful future expiry rather than 1970 + extra_seconds.
+        base = (int64_t)time(nullptr);
+    }
+    else if (base < (int64_t)time(nullptr))
+    {
+        // Already expired: extend from now, not from the past expiry.
+        base = (int64_t)time(nullptr);
+    }
+
+    const int64_t new_expiry = base + extra_seconds;
+    auto* res = PgExec(PG(m_db),
+        "UPDATE licenses SET expires_at=$1 WHERE key=$2",
+        { std::to_string(new_expiry), key });
+    if (!res) return false;
+    bool changed = std::atoi(PQcmdTuples(res)) > 0;
+    PQclear(res);
+    return changed;
+}
+
+int Database::PruneExpiredLicenses(int64_t now)
+{
+    // Remove sessions whose owner's license has expired so those connections
+    // are dropped at the next heartbeat / reconnect attempt.
+    // IsAuthorised already blocks re-auth, but this cleans up lingering rows.
+    auto* res = PgExec(PG(m_db),
+        "DELETE FROM sessions WHERE hwid_hash IN ("
+        "  SELECT u.hwid_hash FROM users u"
+        "  JOIN licenses l ON l.key = u.license_key"
+        "  WHERE l.expires_at != 0 AND l.expires_at < $1"
+        ")",
+        { std::to_string(now) });
+    if (res) PQclear(res);
+
+    // Return count of expired (non-lifetime) licenses for logging.
+    auto* cnt = PgExec(PG(m_db),
+        "SELECT COUNT(*) FROM licenses WHERE expires_at != 0 AND expires_at < $1",
+        { std::to_string(now) });
+    int expired = 0;
+    if (cnt) { expired = std::atoi(PQgetvalue(cnt, 0, 0)); PQclear(cnt); }
+    return expired;
 }
 
 bool Database::RevokeExpiry(const std::string& key)
@@ -185,9 +299,9 @@ std::vector<LicenseRow> Database::ListLicenses() const
     {
         LicenseRow r;
         r.key        = PQgetvalue(res, i, 0);
-        r.tier       = std::stoi(PQgetvalue(res, i, 1));
-        r.issued_at  = std::stoll(PQgetvalue(res, i, 2));
-        r.expires_at = std::stoll(PQgetvalue(res, i, 3));
+        r.tier       = PgInt  (res, i, 1);
+        r.issued_at  = PgInt64(res, i, 2);
+        r.expires_at = PgInt64(res, i, 3);
         r.hwid_hash  = PQgetvalue(res, i, 4);
         r.note       = PQgetvalue(res, i, 5);
         rows.push_back(r);
@@ -249,9 +363,9 @@ std::optional<UserRow> Database::GetUser(const std::string& hwid_hash) const
         UserRow r;
         r.hwid_hash   = PQgetvalue(res, 0, 0);
         r.license_key = PQgetvalue(res, 0, 1);
-        r.created_at  = std::stoll(PQgetvalue(res, 0, 2));
-        r.last_seen   = std::stoll(PQgetvalue(res, 0, 3));
-        r.is_banned   = std::atoi(PQgetvalue(res, 0, 4)) != 0;
+        r.created_at  = PgInt64(res, 0, 2);
+        r.last_seen   = PgInt64(res, 0, 3);
+        r.is_banned   = PgInt  (res, 0, 4) != 0;
         r.ban_reason  = PQgetvalue(res, 0, 5);
         r.loader_hash = PQgetvalue(res, 0, 6);
         result = r;
@@ -275,9 +389,9 @@ std::vector<UserRow> Database::ListUsers() const
         UserRow r;
         r.hwid_hash   = PQgetvalue(res, i, 0);
         r.license_key = PQgetvalue(res, i, 1);
-        r.created_at  = std::stoll(PQgetvalue(res, i, 2));
-        r.last_seen   = std::stoll(PQgetvalue(res, i, 3));
-        r.is_banned   = std::atoi(PQgetvalue(res, i, 4)) != 0;
+        r.created_at  = PgInt64(res, i, 2);
+        r.last_seen   = PgInt64(res, i, 3);
+        r.is_banned   = PgInt  (res, i, 4) != 0;
         r.ban_reason  = PQgetvalue(res, i, 5);
         r.loader_hash = PQgetvalue(res, i, 6);
         rows.push_back(r);
@@ -360,8 +474,8 @@ std::optional<SessionRow> Database::GetSession(const std::string& token_hex) con
         SessionRow r;
         r.token_hex      = PQgetvalue(res, 0, 0);
         r.hwid_hash      = PQgetvalue(res, 0, 1);
-        r.created_at     = std::stoll(PQgetvalue(res, 0, 2));
-        r.last_heartbeat = std::stoll(PQgetvalue(res, 0, 3));
+        r.created_at     = PgInt64(res, 0, 2);
+        r.last_heartbeat = PgInt64(res, 0, 3);
         result = r;
     }
     PQclear(res);
@@ -410,11 +524,11 @@ std::vector<PurchaseRow> Database::GetPurchases(const std::string& hwid_hash) co
     for (int i = 0; i < n; ++i)
     {
         PurchaseRow r;
-        r.id           = std::stoll(PQgetvalue(res, i, 0));
+        r.id           = PgInt64(res, i, 0);
         r.hwid_hash    = PQgetvalue(res, i, 1);
         r.license_key  = PQgetvalue(res, i, 2);
-        r.amount_cents = std::stoi(PQgetvalue(res, i, 3));
-        r.purchased_at = std::stoll(PQgetvalue(res, i, 4));
+        r.amount_cents = PgInt  (res, i, 3);
+        r.purchased_at = PgInt64(res, i, 4);
         r.note         = PQgetvalue(res, i, 5);
         rows.push_back(r);
     }
@@ -465,6 +579,72 @@ bool Database::TrustedHashesEnabled() const
     bool enabled = std::atoi(PQgetvalue(res, 0, 0)) > 0;
     PQclear(res);
     return enabled;
+}
+
+std::vector<TrustedHashRow> Database::ListHashes() const
+{
+    auto* res = PgExec(PG(m_db),
+        "SELECT hash,note,added_at FROM trusted_hashes ORDER BY added_at DESC");
+    std::vector<TrustedHashRow> rows;
+    if (!res) return rows;
+
+    int n = PQntuples(res);
+    rows.reserve(n);
+    for (int i = 0; i < n; ++i)
+    {
+        TrustedHashRow r;
+        r.hash     = PQgetvalue(res, i, 0);
+        r.note     = PQgetvalue(res, i, 1);
+        r.added_at = PgInt64(res, i, 2);
+        rows.push_back(r);
+    }
+    PQclear(res);
+    return rows;
+}
+
+// ---------------------------------------------------------------------------
+// IP ban list — persistent across restarts
+// ---------------------------------------------------------------------------
+bool Database::BanIp(const std::string& ip, const std::string& reason)
+{
+    auto* res = PgExec(PG(m_db),
+        "INSERT INTO ip_bans(ip,reason,banned_at) VALUES($1,$2,$3)"
+        " ON CONFLICT(ip) DO UPDATE SET reason=EXCLUDED.reason, banned_at=EXCLUDED.banned_at",
+        { ip, reason, std::to_string((int64_t)time(nullptr)) });
+    if (!res) return false;
+    PQclear(res);
+    return true;
+}
+
+bool Database::UnbanIp(const std::string& ip)
+{
+    auto* res = PgExec(PG(m_db), "DELETE FROM ip_bans WHERE ip=$1", { ip });
+    if (!res) return false;
+    PQclear(res);
+    return true;
+}
+
+bool Database::IsIpBanned(const std::string& ip) const
+{
+    auto* res = PgExec(PG(m_db), "SELECT 1 FROM ip_bans WHERE ip=$1 LIMIT 1", { ip });
+    if (!res) return false;
+    bool found = PQntuples(res) > 0;
+    PQclear(res);
+    return found;
+}
+
+std::vector<std::pair<std::string,std::string>> Database::ListIpBans() const
+{
+    auto* res = PgExec(PG(m_db),
+        "SELECT ip, reason FROM ip_bans ORDER BY banned_at DESC");
+    std::vector<std::pair<std::string,std::string>> rows;
+    if (!res) return rows;
+    int n = PQntuples(res);
+    rows.reserve(n);
+    for (int i = 0; i < n; ++i)
+        rows.emplace_back(PQgetvalue(res, i, 0), PQgetvalue(res, i, 1));
+    PQclear(res);
+    return rows;
 }
 
 // ---------------------------------------------------------------------------

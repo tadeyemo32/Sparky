@@ -26,6 +26,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <iostream>
+#include "XorStr.h"
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -43,19 +44,19 @@ public:
         std::string connstr;
 
         // 1. Env var — full connection string
-        if (const char* env = std::getenv("SPARKY_PG_CONNSTR"))
+        if (const char* env = std::getenv(XS("SPARKY_PG_CONNSTR")))
         {
             connstr = env;
         }
         // 2. Env var — path to file containing the connection string
-        else if (const char* kf = std::getenv("SPARKY_PG_CONNFILE"))
+        else if (const char* kf = std::getenv(XS("SPARKY_PG_CONNFILE")))
         {
             connstr = ReadFile(kf);
         }
         // 3. Default file next to binary
         else
         {
-            try { connstr = ReadFile("sparky.connstr"); }
+            try { connstr = ReadFile(XS("sparky.connstr")); }
             catch (...) {}
         }
 
@@ -91,10 +92,10 @@ public:
         }
         CryptReleaseContext(hp, 0);
 #else
-        std::ifstream f("/dev/urandom", std::ios::binary);
-        if (!f.is_open()) { std::cerr << "Cannot open /dev/urandom\n"; return; }
+        std::ifstream f(XS("/dev/urandom"), std::ios::binary);
+        if (!f.is_open()) { std::cerr << XS("Cannot open /dev/urandom\n"); return; }
         f.read(reinterpret_cast<char*>(raw), 32);
-        if (!f) { std::cerr << "/dev/urandom read failed\n"; return; }
+        if (!f) { std::cerr << XS("/dev/urandom read failed\n"); return; }
 #endif
 
         static const char h[] = "0123456789abcdef";

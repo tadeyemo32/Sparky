@@ -38,6 +38,8 @@ import os
 import time
 import random
 import argparse
+import hashlib
+import getpass
 from datetime import datetime, timezone
 
 try:
@@ -380,6 +382,195 @@ def cmd_watch(con, _args):
 
 
 # ---------------------------------------------------------------------------
+# Admin Authentication (3-Tier System)
+# ---------------------------------------------------------------------------
+def hash_password(password: str, salt: bytes = b'sparky_salt') -> str:
+    # Use PBKDF2 HMAC SHA256 for secure password hashing
+    key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100000)
+    return key.hex()
+
+def authenticate_admin(con) -> str:
+    """Prompts for Username and Password. Returns the authenticated role ('admin' or 'owner')."""
+    cur = cursor(con)
+    # Check if admins table exists before querying to avoid crashes on fresh DB
+    try:
+        cur.execute("SELECT COUNT(*) AS c FROM admins")
+        count = cur.fetchone()['c']
+    except psycopg2.errors.UndefinedTable:
+        con.rollback()
+        print("\n[!] The 'admins' table does not exist. Please start SparkyServer C++ first to auto-create the schema.")
+        sys.exit(1)
+
+    if count == 0:
+        print("\n[!] No administrators found. Initializing Owner account.")
+        print("    The Founder email is permanently locked to tadeyemo32@gmail.com.\n")
+        username = input("Enter Owner Username: ").strip()
+        while not username:
+            username = input("Enter Owner Username: ").strip()
+        password = getpass.getpass("Enter Owner Password: ")
+        
+        cur.execute(
+            "INSERT INTO admins(username, email, password_hash, role, created_at) VALUES(%s, %s, %s, %s, %s)",
+            (username, "tadeyemo32@gmail.com", hash_password(password), "owner", int(time.time()))
+        )
+        con.commit()
+        print(f"\n[+] Owner account '{username}' created successfully!\n")
+        return "owner"
+
+    print("\n--- Sparky Admin Authentication ---")
+    username = input("Username: ").strip()
+    password = getpass.getpass("Password: ")
+    
+    cur.execute("SELECT password_hash, role FROM admins WHERE username=%s", (username,))
+    row = cur.fetchone()
+    
+    if row and row['password_hash'] == hash_password(password):
+        print(f"\n[+] Welcome, {username} ({row['role']})!")
+        return row['role']
+    else:
+        print("\n[-] Invalid username or password.")
+        sys.exit(1)
+
+def cmd_add_admin(con, args, role):
+    if role != "owner":
+        print("ERROR: Only the Owner can create new administrators.")
+        return
+    username = args.username.strip()
+    email = args.email.strip()
+    password = getpass.getpass(f"Enter password for new admin '{username}': ")
+    cur = cursor(con)
+    try:
+        cur.execute(
+            "INSERT INTO admins(username, email, password_hash, role, created_at) VALUES(%s, %s, %s, %s, %s)",
+            (username, email, hash_password(password), "admin", int(time.time()))
+        )
+        con.commit()
+        print(f"  Admin '{username}' added successfully.")
+    except psycopg2.errors.UniqueViolation:
+        con.rollback()
+        print(f"ERROR: Username '{username}' already exists.")
+
+def cmd_rm_admin(con, args, role):
+    if role != "owner":
+        print("ERROR: Only the Owner can remove administrators.")
+        return
+    username = args.username.strip()
+    cur = cursor(con)
+    cur.execute("SELECT role FROM admins WHERE username=%s", (username,))
+    row = cur.fetchone()
+    if not row:
+        print(f"ERROR: Admin '{username}' not found.")
+        return
+    if row['role'] == 'owner':
+        print("ERROR: The Owner account cannot be deleted.")
+        return
+    cur.execute("DELETE FROM admins WHERE username=%s", (username,))
+    con.commit()
+    print(f"  Admin '{username}' removed.")
+
+
+# ---------------------------------------------------------------------------
+# Password Reset Integration (Resend API)
+# ---------------------------------------------------------------------------
+def send_resend_email(to_email: str, subject: str, html_body: str) -> bool:
+    import json
+    import urllib.request
+    import urllib.error
+
+    api_key = os.environ.get("RESEND_API_KEY", "re_SYszAty4_BgRCVJEAa8hEcMLFBRpjWzEk")
+    url = "https://api.resend.com/emails"
+    
+    def attempt_send(from_email):
+        data = json.dumps({
+            "from": from_email,
+            "to": [to_email],
+            "subject": subject,
+            "html": html_body
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        })
+        try:
+            with urllib.request.urlopen(req) as response:
+                return response.status == 200
+        except urllib.error.HTTPError:
+            return False
+
+    # Try custom domain first
+    if attempt_send("Sparky Admin <admin@theturingproject.com>"):
+        return True
+    # Fallback to Resend default generic domain if custom domain is unverified
+    if attempt_send("Sparky Admin <onboarding@resend.dev>"):
+        return True
+        
+    return False
+
+def cmd_reset_password(con, args, _role):
+    username = args.username.strip()
+    cur = cursor(con)
+    try:
+        cur.execute("SELECT COUNT(*) AS c FROM admins")
+    except psycopg2.errors.UndefinedTable:
+        con.rollback()
+        print("ERROR: Admins table does not exist.")
+        sys.exit(1)
+
+    cur.execute("SELECT email FROM admins WHERE username=%s", (username,))
+    row = cur.fetchone()
+    if not row:
+        print(f"ERROR: Username '{username}' not found.")
+        sys.exit(1)
+        
+    email = row["email"]
+    code = str(random.SystemRandom().randint(100000, 999999))
+    
+    html = f"""
+    <div style="font-family: sans-serif; padding: 20px; max-width: 500px; margin: auto;">
+        <h2 style="color: #333;">Sparky Admin Recovery</h2>
+        <p>A password reset was requested for the admin account: <strong>{username}</strong></p>
+        <p>Your 6-digit cryptographic reset code is:</p>
+        <div style="background-color: #f4f4f5; padding: 15px; border-radius: 8px; text-align: center;">
+            <h1 style="color: #7b2cbf; letter-spacing: 5px; margin: 0;">{code}</h1>
+        </div>
+        <p style="color: #666; font-size: 0.9em; margin-top: 30px;">If you did not request this, please ignore this email.</p>
+    </div>
+    """
+    
+    print(f"\n  [~] Sending reset code to {email[:3]}***@{email.split('@')[1]}...")
+    if not send_resend_email(email, "Sparky Admin - Password Reset", html):
+        print("  [-] ERROR: Failed to send email via Resend API.")
+        print("      Check if RESEND_API_KEY is properly configured or if the domains are verified.")
+        sys.exit(1)
+        
+    print("  [+] Email sent successfully!\n")
+    attempts = 3
+    while attempts > 0:
+        entered = input("  Enter the 6-digit code from your email: ").strip()
+        if entered == code:
+            break
+        attempts -= 1
+        if attempts > 0:
+            print(f"  [-] Incorrect code. {attempts} attempts remaining.")
+    
+    if attempts == 0:
+        print("\n  [-] ERROR: Too many incorrect attempts. Reset aborted.")
+        sys.exit(1)
+        
+    print("\n  [+] Code verified securely.")
+    new_password = getpass.getpass("  Enter your NEW password: ")
+    confirm_password = getpass.getpass("  Confirm your NEW password: ")
+    
+    if new_password != confirm_password:
+        print("  [-] ERROR: Passwords do not match. Reset aborted.")
+        sys.exit(1)
+        
+    cur.execute("UPDATE admins SET password_hash=%s WHERE username=%s", (hash_password(new_password), username))
+    con.commit()
+    print(f"\n  [+] Password for '{username}' was successfully reset! You can now log in.")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 def main():
@@ -406,6 +597,19 @@ def main():
         sys.exit(1)
 
     sub = argparse.ArgumentParser()
+
+    # Pre-auth commands (accessible without logging in)
+    if cmd == "reset-password":
+        sub.add_argument("username")
+        cmd_reset_password(con, sub.parse_args(rest), None)
+        con.close()
+        return
+
+    # ---------------------------------------------------------
+    # AUTHENTICATION HOOK
+    # Intercepts every secure command to demand login credentials
+    # ---------------------------------------------------------
+    role = authenticate_admin(con)
 
     if cmd == "status":
         cmd_status(con, None)
@@ -455,10 +659,18 @@ def main():
     elif cmd == "watch":
         cmd_watch(con, None)
 
+    elif cmd == "add-admin":
+        sub.add_argument("username"); sub.add_argument("email")
+        cmd_add_admin(con, sub.parse_args(rest), role)
+
+    elif cmd == "rm-admin":
+        sub.add_argument("username")
+        cmd_rm_admin(con, sub.parse_args(rest), role)
+
     else:
         print(f"Unknown command: {cmd}")
         print("Commands: status issue activate ban unban list-licenses list-users"
-              " purchases add-hash rm-hash list-hashes prune watch")
+              " purchases add-hash rm-hash list-hashes prune watch add-admin rm-admin reset-password")
         sys.exit(1)
 
     con.close()

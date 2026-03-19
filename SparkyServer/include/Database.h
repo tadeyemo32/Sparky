@@ -1,6 +1,6 @@
 #pragma once
 // ---------------------------------------------------------------------------
-// Database — SQLite3-backed persistence layer for SparkyServer
+// Database — PostgreSQL (libpq) persistence layer for SparkyServer
 //
 // Schema:
 //   licenses  (key TEXT PK, tier INT, issued_at INT, expires_at INT,
@@ -71,6 +71,13 @@ struct PurchaseRow
     std::string note;
 };
 
+struct TrustedHashRow
+{
+    std::string hash;
+    std::string note;
+    int64_t     added_at;
+};
+
 // ---------------------------------------------------------------------------
 // Database
 // ---------------------------------------------------------------------------
@@ -89,6 +96,13 @@ public:
     std::optional<LicenseRow> GetLicense(const std::string& key) const;
     bool BindLicense(const std::string& key, const std::string& hwid_hash);
     bool RevokeExpiry(const std::string& key); // sets expires_at=1 (epoch) to expire immediately
+    // Extends an active license by extra_seconds from its current expires_at.
+    // For lifetime licenses (expires_at=0) this sets an explicit future expiry.
+    // Returns false if the key doesn't exist.
+    bool ExtendLicense(const std::string& key, int64_t extra_seconds);
+    // Deletes lingering sessions for users whose license has expired, and returns
+    // the count of expired (non-lifetime) licenses found. Call every 12 hours.
+    int PruneExpiredLicenses(int64_t now);
     std::vector<LicenseRow> ListLicenses() const;
 
     // ---------- User management ----------
@@ -119,6 +133,15 @@ public:
     bool RemoveTrustedHash(const std::string& hash);
     bool IsHashTrusted(const std::string& hash) const;
     bool TrustedHashesEnabled() const; // false if table is empty
+    std::vector<TrustedHashRow> ListHashes() const;
+
+    // ---------- IP ban list (persistent across restarts) ----------
+    // Hard-banned IPs are stored in the DB so they survive server restarts and
+    // can be managed via admin.py / admin console without touching iptables.
+    bool BanIp(const std::string& ip, const std::string& reason = "rate-limit");
+    bool UnbanIp(const std::string& ip);
+    bool IsIpBanned(const std::string& ip) const;
+    std::vector<std::pair<std::string,std::string>> ListIpBans() const; // {ip, reason}
 
     // ---------- Auth helper ----------
     // Full authorisation check: not banned, has valid unexpired license,

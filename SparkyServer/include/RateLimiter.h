@@ -93,6 +93,13 @@ public:
         m_buckets.erase(ip);
     }
 
+    // Inject a hard ban directly (used on startup to restore DB-persisted bans).
+    void HardBanIp(const std::string& ip)
+    {
+        std::lock_guard lk(m_mu);
+        m_hardBan.insert(ip);
+    }
+
     // Dump currently hard-banned IPs (for scripting into iptables on startup).
     std::vector<std::string> HardBanned() const
     {

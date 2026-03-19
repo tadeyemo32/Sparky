@@ -1,0 +1,31 @@
+version: "3.8"
+
+services:
+  sparky-server:
+    build: .
+    restart: always
+    environment:
+      - PORT=7777
+      # These must be sourced from your .env file
+      - SPARKY_KEY=${SPARKY_KEY}
+      - SPARKY_PG_CONNSTR=${SPARKY_PG_CONNSTR}
+      - SPARKY_HWID_PEPPER=${SPARKY_HWID_PEPPER}
+    volumes:
+      - ./data:/app/data
+    networks:
+      - sparky-net
+
+  nginx:
+    image: nginx:alpine
+    restart: always
+    ports:
+      - "7777:7777"   # Expose the TCP loader port
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - sparky-server
+    networks:
+      - sparky-net
+
+networks:
+  sparky-net:

@@ -1,0 +1,13 @@
+SparkyCore/
+Amalgam/
+deps/glfw/
+deps/imgui/
+SparkyLoader/kernel/
+*.dll
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.lib
+build/
+.git/

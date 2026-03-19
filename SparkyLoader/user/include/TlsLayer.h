@@ -10,7 +10,18 @@
 // Used by both SparkyServer and SparkyLoader.
 // Link: OpenSSL::SSL  OpenSSL::Crypto  (CMake), or libssl / libcrypto.
 // ---------------------------------------------------------------------------
-#include <WinSock2.h>
+#ifdef _WIN32
+#  include <WinSock2.h>
+#else
+#  include <sys/socket.h>
+#  include <netinet/in.h>
+#  include <arpa/inet.h>
+#  include <unistd.h>
+   using SOCKET = int;
+   static constexpr SOCKET INVALID_SOCKET = -1;
+   inline int closesocket(SOCKET s) { return ::close(s); }
+#endif
+
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <string>
@@ -32,11 +43,22 @@ inline bool NetSend(SOCKET sock, SSL* ssl, const void* data, int len)
 
 // Receive exactly `len` bytes with a socket-level timeout (`ms`, 0 = leave unchanged).
 // Returns false on timeout or any error.
+#ifdef _WIN32
 inline bool NetRecv(SOCKET sock, SSL* ssl, void* data, int len, DWORD ms = 10000)
 {
     if (ms)
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
                    reinterpret_cast<const char*>(&ms), sizeof(ms));
+#else
+inline bool NetRecv(SOCKET sock, SSL* ssl, void* data, int len, unsigned int ms = 10000)
+{
+    if (ms)
+    {
+        struct timeval tv{ (time_t)(ms / 1000), (suseconds_t)((ms % 1000) * 1000) };
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+                   reinterpret_cast<const char*>(&tv), sizeof(tv));
+    }
+#endif
     char* p = static_cast<char*>(data);
     int got = 0;
     while (got < len)

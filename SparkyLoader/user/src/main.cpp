@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <atomic>
+#include <ctime>
 
 // OpenSSL TLS — connects to SparkyServer with TLS when the server has a cert.
 // If the server is running in plaintext mode, set useTls = false in UIState
@@ -368,6 +369,7 @@ static std::vector<uint8_t> ConnectAndFetchDll(
     memcpy(hello.HwidHash,   hwidHash,   32);
     memcpy(hello.LoaderHash, loaderHash, 32);
     hello.BuildId = 0x0001'0000;
+    hello.Timestamp = (uint64_t)time(nullptr);
 
     if (!SendMsg(ss, MsgType::Hello, &hello, sizeof(hello)))
     {

@@ -56,6 +56,7 @@ struct HelloPayload
     uint8_t  HwidHash[32];   // SHA-256(MachineGuid)
     uint32_t BuildId;        // must match server's CURRENT_BUILD
     uint8_t  LoaderHash[32]; // SHA-256 of loader binary on disk
+    uint64_t Timestamp;      // Unix timestamp (anti-replay)
 };
 
 // Server → Loader (ALWAYS SENT PLAIN — before session keys are set)
@@ -93,14 +94,31 @@ static constexpr uint32_t HEARTBEAT_DEADLINE_MS = 30000; // 30 s
 // Crypto helpers — all inline, no external deps
 // ---------------------------------------------------------------------------
 
-// XOR stream cipher.
-// key is a 64-bit seed; the key rotates left by 1 bit after each byte.
+namespace detail {
+    inline void sha256_block(const uint8_t* data, size_t len, uint8_t out[32]);
+}
+
+// SHA-256 Counter Mode (CTR) stream cipher.
+// Key is a 64-bit seed; we use SHA-256 to generate cryptographically secure keystreams.
 inline void XorStream(uint8_t* data, uint32_t len, uint64_t key)
 {
+    uint8_t input[24] = {0};
+    for (int i=0; i<8; ++i) input[i] = (uint8_t)(key >> (i*8));
+
+    uint64_t counter = 0;
+    uint8_t keystream[32];
+    uint32_t blockPos = 32;
+
     for (uint32_t i = 0; i < len; ++i)
     {
-        data[i] ^= static_cast<uint8_t>(key >> ((i % 8) * 8));
-        key = (key << 1) | (key >> 63);
+        if (blockPos == 32)
+        {
+            for (int k=0; k<8; ++k) input[8+k] = (uint8_t)(counter >> (k*8));
+            detail::sha256_block(input, 16, keystream);
+            blockPos = 0;
+            counter++;
+        }
+        data[i] ^= keystream[blockPos++];
     }
 }
 

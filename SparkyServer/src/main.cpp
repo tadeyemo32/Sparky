@@ -1,12 +1,26 @@
 // SparkyServer — auth + license DB + heartbeat-gated DLL streaming
-#define _WINSOCK_DEPRECATED_NO_WARNINGS
-#include <WinSock2.h>
-#include <WS2tcpip.h>
-#include <Windows.h>
-#include <wincrypt.h>
+#ifdef _WIN32
+#  define _WINSOCK_DEPRECATED_NO_WARNINGS
+#  include <WinSock2.h>
+#  include <WS2tcpip.h>
+#  include <Windows.h>
+#  include <wincrypt.h>
+#else
+#  include <sys/socket.h>
+#  include <netinet/in.h>
+#  include <netinet/tcp.h>   // TCP_NODELAY
+#  include <arpa/inet.h>
+#  include <unistd.h>
+#  include <sys/stat.h>
+#  include <sys/wait.h>      // waitpid, fork
+#  include <dirent.h>        // opendir/readdir for backup rotation
+#  include <signal.h>
+#  include <openssl/rand.h>
+#endif
 #include <cstdint>
 #include <cstring>
 #include <ctime>
+#include <chrono>
 #include <string>
 #include <vector>
 #include <thread>
@@ -16,31 +30,36 @@
 #include <iostream>
 #include <sstream>
 #include <format>
+#include <algorithm>         // std::sort for backup rotation
+#include <unordered_set>     // g_activeHwids
 
 // OpenSSL TLS — optional at runtime.
 // Place sparky.crt + sparky.key next to the binary to enable TLS.
 // If absent the server runs in plaintext mode (dev mode).
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
 
-#pragma comment(lib, "ws2_32.lib")
-#pragma comment(lib, "advapi32.lib")
-#pragma comment(lib, "crypt32.lib")
 // OpenSSL import libs are linked via CMake (OpenSSL::SSL, OpenSSL::Crypto)
 
 #include "../include/Database.h"
 #include "../include/LicenseManager.h"
 #include "../include/RateLimiter.h"
 #include "../include/KeyVault.h"
-#include "../../SparkyLoader/include/Protocol.h"
-#include "../../SparkyLoader/include/TlsLayer.h"
+#include "../include/XorStr.h"
+#include "../../SparkyLoader/user/include/Protocol.h"
+#include "../../SparkyLoader/user/include/TlsLayer.h"
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-static constexpr uint16_t LISTEN_PORT   = 7777;
-static constexpr uint32_t CURRENT_BUILD = 0x0001'0000;
-static constexpr uint32_t CHUNK_SIZE    = 4096;
+static constexpr uint16_t DEFAULT_LISTEN_PORT    = 7777;
+static uint16_t           LISTEN_PORT            = DEFAULT_LISTEN_PORT;
+static constexpr uint32_t CURRENT_BUILD          = 0x0001'0000;
+static constexpr uint32_t CHUNK_SIZE             = 4096;
+static constexpr int      MAX_CONCURRENT_SESSIONS = 500;  // hard cap on auth'd sessions
+static constexpr int      BACKUP_KEEP_COUNT       = 7;    // keep last N backup files
 
 // How many DLL chunks to send between mandatory client heartbeats.
 // At 4 KB/chunk, 8 chunks = 32 KB per heartbeat interval.
@@ -48,10 +67,10 @@ static constexpr uint32_t CHUNK_SIZE    = 4096;
 // the server drops the connection mid-stream.
 static constexpr uint32_t CHUNKS_PER_HEARTBEAT = 8;
 
-static constexpr const char* DLL_FILE    = "SparkyCore.dll";
-static constexpr const char* CONFIG_FILE = "config.bin";
-static constexpr const char* CERT_FILE   = "sparky.crt";
-static constexpr const char* KEY_FILE    = "sparky.key";
+static const char* DLL_FILE    = XS("SparkyCore.dll");
+static const char* CONFIG_FILE = XS("config.bin");
+static const char* CERT_FILE   = XS("sparky.crt");
+static const char* KEY_FILE    = XS("sparky.key");
 static constexpr bool ENABLE_ADMIN_CONSOLE = true;
 
 // ---------------------------------------------------------------------------
@@ -66,6 +85,7 @@ static std::mutex      g_dbMu;
 static RateLimiter g_rl(10, 30, 60);
 
 static std::vector<uint8_t> g_dllBytes;
+static std::vector<uint8_t> g_cfgBytes;    // config.bin loaded once at startup
 static std::atomic<int>     g_activeSessions{0};
 static std::atomic<bool>    g_running{true};
 
@@ -78,20 +98,50 @@ static SSL_CTX* g_sslCtx = nullptr;
 // Generate one: openssl rand -hex 32
 static uint8_t g_hwidPepper[32]{};
 static bool    g_pepperSet = false;
+static std::string g_sparkyKey;
 
 // Connection string stored globally for RunBackup()
 static std::string g_connstr;
 
+// Per-HWID concurrent session guard.
+// Prevents one user from opening multiple simultaneous sessions.
+// Protected by g_hwidMu (separate from g_dbMu to avoid deadlocks).
+static std::unordered_set<std::string> g_activeHwids;
+static std::mutex                       g_hwidMu;
+
+#ifdef _WIN32
 static BOOL WINAPI CtrlHandler(DWORD)
 {
     std::cout << "[S] Shutdown signal received — stopping accept loop...\n";
     g_running = false;
     return TRUE;
 }
+#else
+static void PosixSignalHandler(int)
+{
+    std::cout << "[S] Shutdown signal received — stopping accept loop...\n";
+    g_running = false;
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+#include <random>
+
+static std::string GenerateRandomString(size_t length)
+{
+    const std::string chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    std::random_device rd;
+    std::mt19937 generator(rd());
+    std::uniform_int_distribution<> distribution(0, (int)chars.size() - 1);
+    std::string result;
+    for (size_t i = 0; i < length; ++i) {
+        result += chars[distribution(generator)];
+    }
+    return result;
+}
+
 static std::string HexStr(const uint8_t* d, size_t n)
 {
     static const char h[] = "0123456789abcdef";
@@ -137,12 +187,14 @@ static std::string PepperHwid(const std::string& hwid)
         raw[i] = (h2(hwid[i*2]) << 4) | h2(hwid[i*2+1]);
 
     // SHA-256(raw_hwid || pepper)
+    uint8_t digest[32]{};
+    bool ok = false;
+
+#ifdef _WIN32
     HCRYPTPROV hProv{};
     if (!CryptAcquireContextW(&hProv, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
         return hwid; // fallback to unpepered on CryptAPI failure
 
-    uint8_t digest[32]{};
-    bool ok = false;
     HCRYPTHASH hHash{};
     if (CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash))
     {
@@ -155,7 +207,57 @@ static std::string PepperHwid(const std::string& hwid)
         CryptDestroyHash(hHash);
     }
     CryptReleaseContext(hProv, 0);
+#else
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    ok = ctx
+        && EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr)
+        && EVP_DigestUpdate(ctx, raw, 32)
+        && EVP_DigestUpdate(ctx, g_hwidPepper, 32);
+    if (ok) { unsigned int dl = 32; ok = EVP_DigestFinal_ex(ctx, digest, &dl); }
+    if (ctx) EVP_MD_CTX_free(ctx);
+#endif
+
     return ok ? HexStr(digest, 32) : hwid;
+}
+
+// ---------------------------------------------------------------------------
+// RotateBackups — keep only the BACKUP_KEEP_COUNT most recent .sql files
+// in the backups/ directory.  Called after each successful pg_dump.
+// ---------------------------------------------------------------------------
+static void RotateBackups()
+{
+#ifdef _WIN32
+    WIN32_FIND_DATAA fd{};
+    HANDLE hFind = FindFirstFileA(XS("backups\\*.sql"), &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return;
+    std::vector<std::string> files;
+    do { files.push_back(fd.cFileName); } while (FindNextFileA(hFind, &fd));
+    FindClose(hFind);
+    std::sort(files.begin(), files.end());
+    while ((int)files.size() > BACKUP_KEEP_COUNT)
+    {
+        DeleteFileA((std::string(XS("backups\\")) + files.front()).c_str());
+        files.erase(files.begin());
+    }
+#else
+    DIR* dir = opendir(XS("backups"));
+    if (!dir) return;
+    std::vector<std::string> files;
+    struct dirent* ent;
+    while ((ent = readdir(dir)) != nullptr)
+    {
+        std::string n = ent->d_name;
+        if (n.size() > 4 && n.compare(n.size() - 4, 4, XS(".sql")) == 0)
+            files.push_back(n);
+    }
+    closedir(dir);
+    std::sort(files.begin(), files.end());
+    while ((int)files.size() > BACKUP_KEEP_COUNT)
+    {
+        ::remove((std::string(XS("backups/")) + files.front()).c_str());
+        files.erase(files.begin());
+    }
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -163,26 +265,39 @@ static std::string PepperHwid(const std::string& hwid)
 // Writes to backups/sparky_YYYYMMDD_HHMMSS.sql next to the binary.
 // pg_dump must be in PATH (it ships with the PostgreSQL client tools).
 // Called from MaintenanceThread every 6 hours.
+//
+// On Linux: uses fork()+execvp() to avoid shell injection through the
+// connection string.  On Windows: uses CreateProcessA (already safe).
 // ---------------------------------------------------------------------------
 static void RunBackup()
 {
     if (g_connstr.empty()) return;
 
     // Ensure backups/ directory exists (no-op if already there)
-    CreateDirectoryA("backups", nullptr);
+#ifdef _WIN32
+    CreateDirectoryA(XS("backups"), nullptr);
+#else
+    mkdir(XS("backups"), 0755);
+#endif
 
     // Build timestamp filename
     time_t now = time(nullptr);
-    tm* t = localtime(&now);
+    tm tbuf{};
+#ifdef _WIN32
+    localtime_s(&tbuf, &now);
+#else
+    localtime_r(&now, &tbuf);
+#endif
+    tm* t = &tbuf;
     char fname[80]{};
     snprintf(fname, sizeof(fname),
-             "backups/sparky_%04d%02d%02d_%02d%02d%02d.sql",
+             XS("backups/sparky_%04d%02d%02d_%02d%02d%02d.sql"),
              t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
              t->tm_hour, t->tm_min, t->tm_sec);
 
-    // Build command: pg_dump -d "<connstr>" -f "<fname>"
-    // Quotes around the connstr handle spaces in password / host values.
-    std::string cmd = std::string("pg_dump -d \"") + g_connstr + "\" -f \"" + fname + "\"";
+#ifdef _WIN32
+    // Build command for CreateProcessA (no shell involved — safe)
+    std::string cmd = std::string(XS("pg_dump -d \"")) + g_connstr + XS("\" -f \"") + fname + XS("\"");
 
     STARTUPINFOA si{};
     si.cb = sizeof(si);
@@ -202,9 +317,53 @@ static void RunBackup()
     CloseHandle(pi.hThread);
 
     if (exitCode == 0)
+    {
         std::cout << std::format("[S] DB backup → {}\n", fname);
+        RotateBackups();
+    }
     else
         std::cout << std::format("[S] pg_dump exited {} — check PATH / credentials\n", exitCode);
+#else
+    // Use fork()+execvp() — the connection string is passed as a direct argv
+    // element (no shell), so special characters cannot cause injection.
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        std::cout << "[S] RunBackup: fork() failed\n";
+        return;
+    }
+    if (pid == 0)
+    {
+        // Child: exec pg_dump directly — no shell, no injection
+        const char* args[] = { "pg_dump", "-d", g_connstr.c_str(), "-f", fname, nullptr };
+        execvp("pg_dump", const_cast<char* const*>(args));
+        _exit(127); // exec failed
+    }
+
+    // Parent: poll waitpid up to 120 seconds
+    int wstatus = 0;
+    for (int i = 0; i < 120; ++i)
+    {
+        pid_t w = waitpid(pid, &wstatus, WNOHANG);
+        if (w == pid)
+        {
+            int ec = WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : -1;
+            if (ec == 0)
+            {
+                std::cout << std::format("[S] DB backup → {}\n", fname);
+                RotateBackups();
+            }
+            else
+                std::cout << std::format("[S] pg_dump exited {} — check PATH / credentials\n", ec);
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    // Timeout: kill the child
+    kill(pid, SIGKILL);
+    waitpid(pid, nullptr, 0);
+    std::cout << "[S] RunBackup: pg_dump timed out (120 s) — killed\n";
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +371,11 @@ static void RunBackup()
 // ---------------------------------------------------------------------------
 struct ClientSession
 {
+#ifdef _WIN32
     SOCKET      sock;
+#else
+    int         sock;
+#endif
     SSL*        ssl      = nullptr;  // nullptr = plaintext dev mode
     uint64_t    hdrKey   = 0;
     uint64_t    dllKey   = 0;
@@ -237,7 +400,7 @@ static bool SendMsg(ClientSession& s, MsgType t,
 }
 
 static bool RecvMsg(ClientSession& s, MsgType& t,
-                    std::vector<uint8_t>& pay, DWORD ms = 10000)
+                    std::vector<uint8_t>& pay, unsigned int ms = 10000)
 {
     MsgHeader h{};
     if (!NetRecv(s.sock, s.ssl, &h, sizeof(h), ms)) return false;
@@ -323,24 +486,145 @@ static bool StreamEncryptedDll(ClientSession& s)
 // ---------------------------------------------------------------------------
 // HandleClient
 // ---------------------------------------------------------------------------
+#ifdef _WIN32
 static void HandleClient(SOCKET csock, SSL* ssl)
+#else
+static void HandleClient(int csock, SSL* ssl)
+#endif
 {
     ClientSession s{};
     s.sock = csock;
     s.ssl  = ssl;
     const int64_t now = (int64_t)time(nullptr);
 
-    // Shared cleanup: TLS teardown then socket close.
+    // Track whether this HWID has been registered in g_activeHwids.
+    // Must be cleared on every exit path after registration.
+    bool hwidRegistered = false;
+
+    // Shared cleanup: HWID deregistration + TLS teardown + socket close.
     // Called at every early return and at the end of the function.
     auto cleanup = [&]() {
+        if (hwidRegistered)
+        {
+            std::lock_guard lk(g_hwidMu);
+            g_activeHwids.erase(s.hwid);
+            hwidRegistered = false;
+        }
         if (s.ssl) { SSL_shutdown(s.ssl); SSL_free(s.ssl); s.ssl = nullptr; }
+#ifdef _WIN32
         closesocket(csock);
+#else
+        ::close(csock);
+#endif
     };
 
-    // ---- 1. Receive Hello ----
+    // ---- 1. Receive Hello (or HTTP Health Check) ----
     MsgHeader h{};
-    if (!NetRecv(s.sock, s.ssl, &h, sizeof(h), 10000)
-        || h.Magic   != PROTO_MAGIC
+    if (!NetRecv(s.sock, s.ssl, &h, sizeof(h), 10000))
+    {
+        cleanup(); return;
+    }
+
+    // Check if it's an HTTP request (Load Balancer Health Check or curl)
+    if (memcmp(&h.Magic, "GET ", 4) == 0 || memcmp(&h.Magic, "HEAD", 4) == 0)
+    {
+        std::string req;
+        req.append((const char*)&h, sizeof(h));
+        char c;
+        // Read until \r\n\r\n or max 4KB
+        while (req.size() < 4096 && NetRecv(s.sock, s.ssl, &c, 1, 5000))
+        {
+            req += c;
+            if (req.size() >= 4 && req.compare(req.size() - 4, 4, "\r\n\r\n") == 0)
+                break;
+        }
+
+        bool authorized = g_sparkyKey.empty();
+        if (!g_sparkyKey.empty())
+        {
+            std::string lowerReq = req;
+            for (auto& ch : lowerReq) ch = (char)std::tolower((unsigned char)ch);
+
+            size_t pos = lowerReq.find(XS("x-sparky-key:"));
+            if (pos != std::string::npos)
+            {
+                size_t start = pos + 13;
+                while (start < req.size() && (req[start] == ' ' || req[start] == '\t')) start++;
+                size_t end = start;
+                while (end < req.size() && req[end] != '\r' && req[end] != '\n') end++;
+
+                std::string submittedKey = req.substr(start, end - start);
+                bool match = (submittedKey.size() == g_sparkyKey.size());
+                if (match) {
+                    volatile uint8_t diff = 0;
+                    for (size_t i = 0; i < submittedKey.size(); ++i) {
+                        diff |= (uint8_t)(submittedKey[i] ^ g_sparkyKey[i]);
+                    }
+                    if (diff == 0) authorized = true;
+                }
+            }
+        }
+
+        if (authorized)
+        {
+            if (req.find("GET /download") != std::string::npos || req.find("GET /loader") != std::string::npos)
+            {
+                // Serve polymorphic loader binary
+                std::vector<uint8_t> loaderBytes = ReadFileFull(XS("/app/payloads/SparkyLoader.exe"));
+                if (loaderBytes.empty()) loaderBytes = ReadFileFull(XS("SparkyLoader.exe")); // local fallback
+
+                if (!loaderBytes.empty())
+                {
+                    // 1. Mutate (append 16-64 random bytes to alter hash dynamically)
+                    std::random_device rd;
+                    std::mt19937 gen(rd());
+                    std::uniform_int_distribution<> distLen(16, 64);
+                    std::uniform_int_distribution<uint8_t> distByte(0, 255);
+                    int appendLen = distLen(gen);
+                    for (int i = 0; i < appendLen; ++i) {
+                        loaderBytes.push_back(distByte(gen));
+                    }
+
+                    // 2. Random Filename
+                    std::string random_name = GenerateRandomString(8) + XS(".exe");
+
+                    // 3. Construct HTTP Response
+                    std::string headers =
+                        std::string(XS("HTTP/1.1 200 OK\r\n")) +
+                        XS("Content-Disposition: attachment; filename=\"") + random_name + XS("\"\r\n") +
+                        XS("X-Sparky-Payload-Name: ") + random_name + XS("\r\n") +
+                        XS("Content-Type: application/x-msdownload\r\n") +
+                        XS("Content-Length: ") + std::to_string(loaderBytes.size()) + XS("\r\n\r\n");
+
+                    NetSend(s.sock, s.ssl, headers.c_str(), (int)headers.size());
+                    NetSend(s.sock, s.ssl, loaderBytes.data(), (int)loaderBytes.size());
+                    std::cout << "[S] Served Polymorphic Loader (" << random_name << ", " << loaderBytes.size() << " bytes)\n";
+                }
+                else
+                {
+                    const char* resp = XS("HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found");
+                    NetSend(s.sock, s.ssl, resp, (int)strlen(resp));
+                }
+            }
+            else
+            {
+                const char* resp = XS("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+                NetSend(s.sock, s.ssl, resp, (int)strlen(resp));
+                std::cout << "[S] HTTP Health check / Auth OK\n";
+            }
+        }
+        else
+        {
+            const char* resp = XS("HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\n\r\nForbidden");
+            NetSend(s.sock, s.ssl, resp, (int)strlen(resp));
+            std::cout << "[S] HTTP Health check / Auth Failed (missing or bad x-sparky-key)\n";
+        }
+
+        cleanup();
+        return;
+    }
+
+    if (h.Magic   != PROTO_MAGIC
         || h.Version != PROTO_VERSION
         || h.Type    != MsgType::Hello)
     {
@@ -375,10 +659,19 @@ static void HandleClient(SOCKET csock, SSL* ssl)
     std::cout << std::format("[S] Hello HWID={:.16}... build={:08X} loader={:.16}...\n",
                               s.hwid, hello.BuildId, s.loaderHash);
 
-    // ---- 2. Build ID check ----
+    // ---- 2. Build ID check & Anti-Replay ----
     if (hello.BuildId != CURRENT_BUILD)
     {
         std::cout << "[S] Reject: stale build\n";
+        SendMsg(s, MsgType::AuthFail);
+        cleanup(); return;
+    }
+
+    long long timeDiff = (long long)now - (long long)hello.Timestamp;
+    if (timeDiff < -30 || timeDiff > 30)
+    {
+        std::cout << std::format("[S] Reject: Replay Attack protection (timestamp {} vs server {})\n",
+                                  hello.Timestamp, now);
         SendMsg(s, MsgType::AuthFail);
         cleanup(); return;
     }
@@ -407,18 +700,42 @@ static void HandleClient(SOCKET csock, SSL* ssl)
         }
     }
 
-    // ---- 4. Generate session token via CryptGenRandom ----
+    // ---- 3.5. Session cap & per-HWID duplicate session guard ----
+    // Check cap first (cheap atomic load) before taking the HWID lock.
+    if (g_activeSessions.load() >= MAX_CONCURRENT_SESSIONS)
     {
-        HCRYPTPROV hp{};
+        std::cout << "[S] Reject: concurrent session cap reached\n";
+        SendMsg(s, MsgType::AuthFail);
+        cleanup(); return;
+    }
+    {
+        std::lock_guard lk(g_hwidMu);
+        if (g_activeHwids.count(s.hwid))
+        {
+            std::cout << std::format("[S] Reject: duplicate session for {:.16}...\n", s.hwid);
+            SendMsg(s, MsgType::AuthFail);
+            cleanup(); return;
+        }
+        g_activeHwids.insert(s.hwid);
+        hwidRegistered = true;
+    }
+
+    // ---- 4. Generate session token ----
+    {
         bool tokenOk = false;
+#ifdef _WIN32
+        HCRYPTPROV hp{};
         if (CryptAcquireContextW(&hp, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
         {
             tokenOk = CryptGenRandom(hp, sizeof(s.token), s.token) == TRUE;
             CryptReleaseContext(hp, 0);
         }
+#else
+        tokenOk = RAND_bytes(s.token, sizeof(s.token)) == 1;
+#endif
         if (!tokenOk)
         {
-            std::cout << "[S] FATAL: CryptGenRandom failed — refusing connection\n";
+            std::cout << "[S] FATAL: token generation failed — refusing connection\n";
             SendMsg(s, MsgType::AuthFail);
             cleanup(); return;
         }
@@ -452,14 +769,13 @@ static void HandleClient(SOCKET csock, SSL* ssl)
         g_db.InsertSession(sr);
     }
 
-    // ---- 8. Push config blob (optional) ----
-    auto cfg = ReadFileFull(CONFIG_FILE);
-    if (!cfg.empty())
+    // ---- 8. Push config blob (from memory cache, loaded once at startup) ----
+    if (!g_cfgBytes.empty())
     {
-        if (cfg.size() > 0xFFFF)
+        if (g_cfgBytes.size() > 0xFFFF)
             std::cout << "[S] WARNING: config.bin exceeds 65535 bytes — skipping\n";
         else
-            SendMsg(s, MsgType::Config, cfg.data(), (uint16_t)cfg.size());
+            SendMsg(s, MsgType::Config, g_cfgBytes.data(), (uint16_t)g_cfgBytes.size());
     }
 
     // ---- 9. Heartbeat-gated DLL stream ----
@@ -523,6 +839,7 @@ static void AdminConsole()
 [Admin] Ready. Commands:
   issue <tier 1-4> <days>      Generate new license (days=0 = lifetime)
   activate <KEY> <hwid_hex>    Bind license to HWID
+  extend <KEY> <days>          Extend license expiry by N days
   ban <hwid_hex> [reason]      Ban user (instant eviction on next auth)
   unban <hwid_hex>             Remove ban
   list-licenses                Dump all licenses
@@ -533,6 +850,9 @@ static void AdminConsole()
   add-hash <sha256_hex> [note] Add a trusted loader hash
   rm-hash <sha256_hex>         Remove a trusted loader hash
   list-hashes                  Show all trusted loader hashes
+  ban-ip <ip> [reason]         Permanently ban an IP (persisted to DB)
+  unban-ip <ip>                Remove a persistent IP ban
+  list-ip-bans                 Show all banned IPs
   help                         This message
 )";
 
@@ -564,6 +884,27 @@ static void AdminConsole()
                 std::cout << "[Admin] Activated " << key << " -> " << hwid << "\n";
             else
                 std::cout << "[Admin] Error: " << err << "\n";
+        }
+        else if (cmd == "extend")
+        {
+            // extend <KEY> <days>
+            // Adds <days> days to the license's current expiry.
+            // For lifetime licenses, this creates an explicit future expiry.
+            std::string key; int days = 0;
+            ss >> key >> days;
+            if (key.empty() || days <= 0)
+            {
+                std::cout << "[Admin] Usage: extend <KEY> <days>\n";
+            }
+            else
+            {
+                int64_t extra = (int64_t)days * 86400LL;
+                std::lock_guard lk(g_dbMu);
+                if (g_db.ExtendLicense(key, extra))
+                    std::cout << "[Admin] Extended " << key << " by " << days << " day(s)\n";
+                else
+                    std::cout << "[Admin] extend failed — key not found?\n";
+            }
         }
         else if (cmd == "ban")
         {
@@ -644,12 +985,44 @@ static void AdminConsole()
         }
         else if (cmd == "list-hashes")
         {
-            std::cout << "[Admin] (use admin.py or add ListHashes() to Database)\n";
+            std::lock_guard lk(g_dbMu);
+            auto hashes = g_db.ListHashes();
+            std::cout << "[Admin] " << hashes.size() << " trusted hash(es):\n";
+            for (auto& r : hashes)
+                std::cout << std::format("  {} | note={} | added={}\n",
+                    r.hash, r.note, r.added_at);
+        }
+        else if (cmd == "ban-ip")
+        {
+            std::string ip, reason;
+            ss >> ip;
+            std::getline(ss >> std::ws, reason);
+            g_rl.HardBanIp(ip);
+            std::lock_guard lk(g_dbMu);
+            g_db.BanIp(ip, reason.empty() ? "manual ban" : reason);
+            std::cout << "[Admin] IP banned (in-memory + DB): " << ip << "\n";
+        }
+        else if (cmd == "unban-ip")
+        {
+            std::string ip; ss >> ip;
+            g_rl.Unban(ip);
+            std::lock_guard lk(g_dbMu);
+            g_db.UnbanIp(ip);
+            std::cout << "[Admin] IP unbanned: " << ip << "\n";
+        }
+        else if (cmd == "list-ip-bans")
+        {
+            std::lock_guard lk(g_dbMu);
+            auto bans = g_db.ListIpBans();
+            std::cout << "[Admin] " << bans.size() << " banned IP(s):\n";
+            for (auto& [ip, reason] : bans)
+                std::cout << "  " << ip << " — " << reason << "\n";
         }
         else if (cmd == "help")
         {
-            std::cout << "Commands: issue activate ban unban list-licenses list-users"
-                         " purchases sessions prune add-hash rm-hash list-hashes\n";
+            std::cout << "Commands: issue activate extend ban unban list-licenses list-users"
+                         " purchases sessions prune add-hash rm-hash list-hashes"
+                         " ban-ip unban-ip list-ip-bans\n";
         }
         else
         {
@@ -666,12 +1039,14 @@ static void MaintenanceThread()
 {
     int pruneTicks  = 0;   // fires every 300 ticks (5 min)
     int backupTicks = 0;   // fires every 21600 ticks (6 h)
+    int expireTicks = 0;   // fires every 43200 ticks (12 h)
 
     while (g_running.load())
     {
-        Sleep(1000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
         ++pruneTicks;
         ++backupTicks;
+        ++expireTicks;
 
         if (pruneTicks >= 300)
         {
@@ -686,6 +1061,19 @@ static void MaintenanceThread()
         {
             backupTicks = 0;
             RunBackup();
+        }
+
+        if (expireTicks >= 43200)
+        {
+            expireTicks = 0;
+            std::lock_guard lk(g_dbMu);
+            int expired = g_db.PruneExpiredLicenses((int64_t)time(nullptr));
+            if (expired > 0)
+                std::cout << std::format(
+                    "[S] License sweep: {} expired license(s) — sessions cleared\n",
+                    expired);
+            else
+                std::cout << "[S] License sweep: all licenses valid\n";
         }
     }
 }
@@ -703,7 +1091,25 @@ int main(int argc, char** argv)
         return 0;
     }
 
-    std::cout << "[SparkyServer] v3.1 (PostgreSQL + TLS + HWID pepper + DB backup)\n";
+    std::cout << "[SparkyServer] v3.2 (PostgreSQL + TLS + HWID pepper + DB backup)\n";
+
+    if (const char* k = std::getenv(XS("SPARKY_KEY")))
+    {
+        g_sparkyKey = k;
+        std::cout << "[S] Loaded SPARKY_KEY from environment.\n";
+    }
+
+    // ---- GCP Cloud Run: honour $PORT env var (default 8080 on Cloud Run) ----
+    // If PORT is set (e.g. by Cloud Run), listen on that port instead of 7777.
+    if (const char* portEnv = std::getenv(XS("PORT")))
+    {
+        int p = std::atoi(portEnv);
+        if (p > 0 && p <= 65535)
+        {
+            LISTEN_PORT = static_cast<uint16_t>(p);
+            std::cout << std::format("[S] PORT env override: listening on {}\n", LISTEN_PORT);
+        }
+    }
 
     // ---- Load PostgreSQL connection string ----
     try { g_connstr = KeyVault::LoadConnStr(); }
@@ -714,7 +1120,7 @@ int main(int argc, char** argv)
     }
 
     // ---- Load HWID pepper (optional) ----
-    if (const char* p = std::getenv("SPARKY_HWID_PEPPER"))
+    if (const char* p = std::getenv(XS("SPARKY_HWID_PEPPER")))
     {
         std::string ps(p);
         if (ps.size() == 64)
@@ -748,6 +1154,16 @@ int main(int argc, char** argv)
             std::cout << "[S] Loader integrity check: ENABLED\n";
         else
             std::cout << "[S] Loader integrity check: disabled (add-hash to enable)\n";
+
+        // Restore persistent IP bans into the in-memory rate limiter so they
+        // survive server restarts without needing iptables.
+        auto ipBans = g_db.ListIpBans();
+        for (auto& [ip, reason] : ipBans)
+        {
+            g_rl.HardBanIp(ip);
+        }
+        if (!ipBans.empty())
+            std::cout << "[S] Restored " << ipBans.size() << " persistent IP ban(s)\n";
     }
 
     LicenseManager lm(g_db);
@@ -758,6 +1174,10 @@ int main(int argc, char** argv)
         std::cout << "[S] WARNING: " << DLL_FILE << " not found\n";
     else
         std::cout << std::format("[S] DLL loaded ({} bytes)\n", g_dllBytes.size());
+
+    g_cfgBytes = ReadFileFull(CONFIG_FILE);
+    if (!g_cfgBytes.empty())
+        std::cout << std::format("[S] Config loaded ({} bytes)\n", g_cfgBytes.size());
 
     // ---- TLS init (optional) ----
     // Place sparky.crt + sparky.key next to the binary to enable TLS.
@@ -792,7 +1212,9 @@ int main(int argc, char** argv)
                              "-days 365 -nodes -subj /CN=sparky\n"
                           << "[S]        Set SPARKY_ALLOW_PLAINTEXT=1 only for "
                              "local dev/testing.\n";
+#ifdef _WIN32
                 WSACleanup();
+#endif
                 return 1;
             }
             std::cout << "[S] TLS: cert/key not found — plaintext dev mode "
@@ -800,15 +1222,27 @@ int main(int argc, char** argv)
         }
     }
 
+#ifdef _WIN32
     SetConsoleCtrlHandler(CtrlHandler, TRUE);
+#else
+    signal(SIGINT,  PosixSignalHandler);
+    signal(SIGTERM, PosixSignalHandler);
+    signal(SIGPIPE, SIG_IGN);  // Prevent crash when writing to a closed socket
+#endif
 
     std::thread(MaintenanceThread).detach();
     if (ENABLE_ADMIN_CONSOLE)
         std::thread(AdminConsole).detach();
 
+#ifdef _WIN32
     WSADATA wsa{}; WSAStartup(MAKEWORD(2,2), &wsa);
+#endif
 
+#ifdef _WIN32
     SOCKET ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+#else
+    int ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+#endif
     sockaddr_in a{}; a.sin_family=AF_INET; a.sin_port=htons(LISTEN_PORT);
     a.sin_addr.s_addr=INADDR_ANY;
     int opt=1; setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
@@ -824,19 +1258,47 @@ int main(int argc, char** argv)
         FD_ZERO(&readfds);
         FD_SET(ls, &readfds);
         timeval tv{1, 0};
+#ifdef _WIN32
         if (select(0, &readfds, nullptr, nullptr, &tv) <= 0)
+#else
+        if (select(ls + 1, &readfds, nullptr, nullptr, &tv) <= 0)
+#endif
             continue;
 
-        sockaddr_in ca{}; int cl = sizeof(ca);
-        SOCKET cs = accept(ls, (sockaddr*)&ca, &cl);
+        sockaddr_in ca{}; socklen_t cl = sizeof(ca);
+#ifdef _WIN32
+        SOCKET cs = accept(ls, (sockaddr*)&ca, (int*)&cl);
         if (cs == INVALID_SOCKET) continue;
+#else
+        int cs = accept(ls, (sockaddr*)&ca, &cl);
+        if (cs < 0) continue;
+#endif
 
         char ip[INET_ADDRSTRLEN]{}; inet_ntop(AF_INET, &ca.sin_addr, ip, sizeof(ip));
 
         if (!g_rl.Allow(ip))
         {
+            // If the rate limiter just triggered a new hard-ban, persist it so it
+            // survives restarts (HardBanned() includes both old and new bans).
+            {
+                std::lock_guard lk(g_dbMu);
+                g_db.BanIp(ip, "rate-limit auto-ban");
+            }
+#ifdef _WIN32
             closesocket(cs);
+#else
+            ::close(cs);
+#endif
             continue;
+        }
+
+        // Set TCP options:
+        //   TCP_NODELAY — disable Nagle; heartbeat acks are tiny and latency-sensitive.
+        //   SO_KEEPALIVE — detect dead clients at the TCP level (zombie cleanup).
+        {
+            int flag = 1;
+            setsockopt(cs, IPPROTO_TCP, TCP_NODELAY,  (char*)&flag, sizeof(flag));
+            setsockopt(cs, SOL_SOCKET,  SO_KEEPALIVE, (char*)&flag, sizeof(flag));
         }
 
         // Perform TLS handshake before spawning the client thread.
@@ -851,7 +1313,11 @@ int main(int argc, char** argv)
                 std::cout << std::format("[S] TLS handshake failed from {} — {}\n",
                                           ip, TlsLastError());
                 SSL_free(ssl);
+#ifdef _WIN32
                 closesocket(cs);
+#else
+                ::close(cs);
+#endif
                 continue;
             }
         }
@@ -862,13 +1328,19 @@ int main(int argc, char** argv)
     }
 
     std::cout << "[S] Shutting down...\n";
+#ifdef _WIN32
     closesocket(ls);
+#else
+    ::close(ls);
+#endif
     {
         std::lock_guard lk(g_dbMu);
         g_db.Close();
     }
     if (g_sslCtx) { SSL_CTX_free(g_sslCtx); g_sslCtx = nullptr; }
+#ifdef _WIN32
     WSACleanup();
+#endif
     std::cout << "[S] Clean shutdown complete.\n";
     return 0;
 }

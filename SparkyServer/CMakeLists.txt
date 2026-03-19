@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20...3.28)
-project(SparkyServer VERSION 3.1 LANGUAGES CXX)
+project(SparkyServer VERSION 3.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
 # Example connection string:
 #   host=localhost port=5432 dbname=sparky user=sparky password=s3cr3t sslmode=require
 # ---------------------------------------------------------------------------
+find_package(Threads REQUIRED)
 find_package(PostgreSQL REQUIRED)
 message(STATUS "SparkyServer: PostgreSQL ${PostgreSQL_VERSION_STRING} found")
 
@@ -47,7 +48,7 @@ add_executable(SparkyServer
 
 target_include_directories(SparkyServer PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/../SparkyLoader/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../SparkyLoader/user/include
     ${PostgreSQL_INCLUDE_DIRS}
 )
 
@@ -55,10 +56,12 @@ target_link_libraries(SparkyServer PRIVATE
     PostgreSQL::PostgreSQL
     OpenSSL::SSL
     OpenSSL::Crypto
-    ws2_32
-    advapi32
-    crypt32
+    Threads::Threads
 )
+
+if(WIN32)
+    target_link_libraries(SparkyServer PRIVATE ws2_32 advapi32 crypt32)
+endif()
 
 target_compile_definitions(SparkyServer PRIVATE
     WIN32_LEAN_AND_MEAN
@@ -70,4 +73,55 @@ if(MSVC)
     target_compile_options(SparkyServer PRIVATE /W3 /utf-8)
 else()
     target_compile_options(SparkyServer PRIVATE -Wall -Wextra)
+endif()
+
+# ---------------------------------------------------------------------------
+# Tests — no external framework; pure C++20 with socket-pair integration tests.
+# Build: cmake --build . --target SparkyTests
+# Run:   ./bin/SparkyTests
+# ---------------------------------------------------------------------------
+add_executable(SparkyTests test/test_main.cpp)
+target_include_directories(SparkyTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../SparkyLoader/user/include
+)
+target_link_libraries(SparkyTests PRIVATE
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    Threads::Threads
+)
+if(WIN32)
+    target_link_libraries(SparkyTests PRIVATE ws2_32)
+endif()
+if(MSVC)
+    target_compile_options(SparkyTests PRIVATE /W3 /utf-8)
+else()
+    target_compile_options(SparkyTests PRIVATE -Wall -Wextra)
+endif()
+
+enable_testing()
+add_test(NAME SparkyTests COMMAND SparkyTests)
+
+# ---------------------------------------------------------------------------
+# Benchmarks — run standalone; accepts optional filter args.
+# Build: cmake --build . --target SparkyBench
+# Run:   ./bin/SparkyBench [xorstream|crc32|crypto|protocol|streaming|connrate|all]
+# ---------------------------------------------------------------------------
+add_executable(SparkyBench test/bench_main.cpp)
+target_include_directories(SparkyBench PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../SparkyLoader/user/include
+)
+target_link_libraries(SparkyBench PRIVATE
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    Threads::Threads
+)
+if(WIN32)
+    target_link_libraries(SparkyBench PRIVATE ws2_32)
+endif()
+if(MSVC)
+    target_compile_options(SparkyBench PRIVATE /W3 /utf-8)
+else()
+    target_compile_options(SparkyBench PRIVATE -Wall -Wextra -O3)
 endif()

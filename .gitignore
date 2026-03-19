@@ -39,3 +39,15 @@ Thumbs.db
 
 # ─── Logs produced at runtime ──────────────────────────────────────────────
 *.log
+
+# ─── Secrets & credentials (NEVER commit these) ────────────────────────────
+.env
+*.env
+SparkyServer/sparky.crt
+SparkyServer/sparky.key
+SparkyServer/sparky.connstr
+sparky-cert.pem
+sparky-private.key
+
+# ─── Database backup dumps ───────────────────────────────────────────────────
+SparkyServer/backups/
