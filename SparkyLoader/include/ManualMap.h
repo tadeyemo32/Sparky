@@ -33,16 +33,28 @@ struct MappingData
 {
     uintptr_t ImageBase;
     uint32_t  ImageSize;
+    uint32_t  EraseSeed;     // random 32-bit value for PRNG header fill (RtlGenRandom)
+    uint8_t   CallDllMain;   // 1 = invoke DllMain; 0 = skip but still signal success
+    uint8_t   ErasePEHeader; // 1 = overwrite headers with PRNG noise; 0 = skip (dev)
+    uint8_t   _pad[6];       // align to 8 bytes before function pointers
 
     using fnLdrLoadDll       = NTSTATUS(NTAPI*)(PWSTR, PULONG, PUNICODE_STRING, PHANDLE);
     using fnLdrGetProcAddr   = NTSTATUS(NTAPI*)(HMODULE, PANSI_STRING, ULONG, PVOID*);
     using fnRtlInitUniStr    = VOID(NTAPI*)(PUNICODE_STRING, PCWSTR);
     using fnRtlInitAnsiStr   = VOID(NTAPI*)(PANSI_STRING, PCSZ);
+    // RtlAddFunctionTable registers the injected module's x64 unwind data with
+    // the Windows exception dispatcher. Without this, any C++ exception thrown
+    // inside the injected DLL cannot unwind through injected frames and will
+    // terminate the host process. Resolved from ntdll; nullptr = skip SEH step.
+    using fnRtlAddFuncTable  = BOOL(NTAPI*)(PVOID FunctionTable,
+                                             DWORD EntryCount,
+                                             DWORD64 BaseAddress);
 
-    fnLdrLoadDll     LdrLoadDll;
-    fnLdrGetProcAddr LdrGetProcedureAddress;
-    fnRtlInitUniStr  RtlInitUnicodeString;
-    fnRtlInitAnsiStr RtlInitAnsiString;
+    fnLdrLoadDll       LdrLoadDll;
+    fnLdrGetProcAddr   LdrGetProcedureAddress;
+    fnRtlInitUniStr    RtlInitUnicodeString;
+    fnRtlInitAnsiStr   RtlInitAnsiString;
+    fnRtlAddFuncTable  RtlAddFunctionTable; // nullptr = SEH skipped
 
     HINSTANCE hModule; // written back by shellcode on success
 };
@@ -51,9 +63,14 @@ struct MappingData
 // Inject a DLL into hProcess without calling the hooked LoadLibrary export.
 // Pipeline:
 //   NtAllocateVirtualMemory -> NtWriteVirtualMemory
-//   -> relocation + IAT fix via LdrLoadDll/LdrGetProcedureAddress
+//   -> relocations
+//   -> IAT fix via LdrLoadDll/LdrGetProcedureAddress (bypasses hooked exports)
+//   -> import name string erasure (strips DLL/function names from memory)
+//   -> TLS callbacks
+//   -> RtlAddFunctionTable (registers x64 SEH unwind data — enables C++ exceptions)
 //   -> DllMain via APC (no CreateRemoteThread)
-//   -> PE header erasure
+//   -> export name + debug directory erasure
+//   -> PE header PRNG overwrite (random noise, not zeros)
 // ---------------------------------------------------------------------------
 bool ManualMapDll(HANDLE hProcess,
                   const std::vector<uint8_t>& dllBytes,

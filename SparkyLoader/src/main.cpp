@@ -27,6 +27,7 @@
 #include "UI.h"
 #include "Protocol.h"
 #include "TlsLayer.h"
+#include "CertPin.h"
 
 // ---------------------------------------------------------------------------
 // Client-side SSL_CTX — one context shared across all connections.
@@ -296,6 +297,63 @@ static std::vector<uint8_t> ConnectAndFetchDll(
             state.AddLog("[ERR] TLS handshake failed: " + TlsLastError());
             cleanup(); return {};
         }
+
+        // ------------------------------------------------------------------
+        // Certificate pinning — verify the server cert fingerprint matches
+        // the value compiled into SPARKY_CERT_PIN (CertPin.h).
+        //
+        // Prevents MITM attacks via Fiddler / Charles / mitmproxy / rogue CA:
+        // even if the attacker installs a trusted root on the victim machine,
+        // they cannot forge a certificate that matches our specific pin.
+        // ------------------------------------------------------------------
+        if (SPARKY_CERT_PIN && *SPARKY_CERT_PIN)
+        {
+            X509* cert = SSL_get_peer_certificate(ss.ssl);
+            if (!cert)
+            {
+                state.AddLog("[ERR] Server presented no certificate");
+                cleanup(); return {};
+            }
+
+            // SHA-256 of the DER-encoded certificate (same as
+            // `openssl x509 -fingerprint -sha256`)
+            uint8_t digest[32]{};
+            unsigned int digestLen = 32;
+            const int digestOk =
+                X509_digest(cert, EVP_sha256(), digest, &digestLen);
+            X509_free(cert);
+
+            if (!digestOk)
+            {
+                state.AddLog("[ERR] Certificate digest computation failed");
+                cleanup(); return {};
+            }
+
+            // Convert digest to lowercase hex for string comparison
+            static const char h[] = "0123456789abcdef";
+            char fingerprint[65]{};
+            for (int i = 0; i < 32; ++i)
+            {
+                fingerprint[i*2]   = h[digest[i] >> 4];
+                fingerprint[i*2+1] = h[digest[i] & 0xF];
+            }
+
+            if (strncmp(fingerprint, SPARKY_CERT_PIN, 64) != 0)
+            {
+                state.AddLog("[ERR] Certificate pin mismatch — possible MITM!");
+                state.AddLog(std::string("[ERR] Expected: ") + SPARKY_CERT_PIN);
+                state.AddLog(std::string("[ERR] Got:      ") + fingerprint);
+                cleanup(); return {};
+            }
+            state.AddLog("[INF] Certificate pin OK");
+        }
+        else
+        {
+            // No pin configured — TLS encrypts traffic but does not
+            // authenticate the server. Update CertPin.h before shipping.
+            state.AddLog("[WRN] No certificate pin set — MITM not prevented");
+        }
+
         state.AddLog("[INF] TLS established");
     }
     else

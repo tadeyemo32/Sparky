@@ -216,6 +216,45 @@ static void __stdcall MappingShellcode(MappingData* d)
         }
     }
 
+    // ---- 2.5. Erase import identification strings ---------------------
+    // The IAT (FirstThunk entries, now holding resolved function addresses)
+    // is preserved — only the metadata that names DLLs and functions is zeroed.
+    // After IAT resolution these strings serve no runtime purpose and are
+    // a trivial way for a scanner to read "kernel32.dll","VirtualAlloc",etc.
+    if (opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size)
+    {
+        auto imp2 = reinterpret_cast<PIMAGE_IMPORT_DESCRIPTOR>(
+            base + opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
+
+        while (imp2->Name)
+        {
+            // Zero the DLL name string (e.g. "kernel32.dll")
+            auto szDll = reinterpret_cast<char*>(base + imp2->Name);
+            for (int i = 0; szDll[i]; ++i) szDll[i] = '\0';
+
+            // Zero each function hint-name string in the Original First Thunk
+            if (imp2->OriginalFirstThunk)
+            {
+                auto pOrig = reinterpret_cast<PIMAGE_THUNK_DATA>(
+                    base + imp2->OriginalFirstThunk);
+                while (pOrig->u1.AddressOfData)
+                {
+                    if (!IMAGE_SNAP_BY_ORDINAL(pOrig->u1.Ordinal))
+                    {
+                        auto ibn = reinterpret_cast<PIMAGE_IMPORT_BY_NAME>(
+                            base + (DWORD)pOrig->u1.AddressOfData);
+                        auto szFunc = reinterpret_cast<char*>(ibn->Name);
+                        for (int i = 0; szFunc[i]; ++i) szFunc[i] = '\0';
+                    }
+                    ++pOrig;
+                }
+                imp2->OriginalFirstThunk = 0; // wipe OFT RVA from descriptor
+            }
+            imp2->Name = 0; // wipe DLL-name RVA from descriptor
+            ++imp2;
+        }
+    }
+
     // ---- 3. TLS callbacks ---------------------------------------------
     if (opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].Size)
     {
@@ -225,23 +264,101 @@ static void __stdcall MappingShellcode(MappingData* d)
         while (ppCB && *ppCB) { (*ppCB)(base, DLL_PROCESS_ATTACH, nullptr); ++ppCB; }
     }
 
+    // ---- 3.5. Register x64 SEH unwind table ----------------------------
+    // On x64, Windows locates exception handlers through the module's
+    // RUNTIME_FUNCTION table (IMAGE_DIRECTORY_ENTRY_EXCEPTION).  Because the
+    // injected module was never registered with the loader, the exception
+    // dispatcher doesn't know it exists.  RtlAddFunctionTable fixes this:
+    // without it, any C++ throw / __try inside the injected DLL will fail to
+    // unwind through injected frames and crash the host process.
+    // Credit: this gap was identified by reviewing thetobysiu/ManualMapInjection.
+    if (d->RtlAddFunctionTable
+        && opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size)
+    {
+        auto pFuncTable = reinterpret_cast<PRUNTIME_FUNCTION>(
+            base + opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].VirtualAddress);
+        DWORD entryCount =
+            opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size
+            / sizeof(RUNTIME_FUNCTION);
+        d->RtlAddFunctionTable(pFuncTable, entryCount, d->ImageBase);
+    }
+
     // ---- 4. DllMain ---------------------------------------------------
-    if (opt.AddressOfEntryPoint)
+    if (d->CallDllMain && opt.AddressOfEntryPoint)
     {
         using DllEntry = BOOL(WINAPI*)(HINSTANCE, DWORD, LPVOID);
         auto entry = reinterpret_cast<DllEntry>(base + opt.AddressOfEntryPoint);
         if (entry((HINSTANCE)base, DLL_PROCESS_ATTACH, nullptr))
             d->hModule = (HINSTANCE)base;
     }
+    else if (!d->CallDllMain)
+    {
+        d->hModule = (HINSTANCE)base; // signal success without calling entry
+    }
+
+    // ---- 4.5. Erase export directory and debug directory strings ------
+    // The export directory contains the DLL's internal name and every
+    // exported symbol name ("GameHook", "Init", etc.). A scanner reading
+    // process memory can use these to fingerprint the injected module by
+    // name — zero them now that DllMain has returned.
+    if (opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size)
+    {
+        auto pExp = reinterpret_cast<PIMAGE_EXPORT_DIRECTORY>(
+            base + opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
+
+        // Zero the embedded DLL name (e.g. "SparkyCore.dll")
+        if (pExp->Name)
+        {
+            auto szMod = reinterpret_cast<char*>(base + pExp->Name);
+            for (int i = 0; szMod[i]; ++i) szMod[i] = '\0';
+        }
+
+        // Zero every exported function name
+        if (pExp->AddressOfNames && pExp->NumberOfNames)
+        {
+            auto pNames = reinterpret_cast<DWORD*>(base + pExp->AddressOfNames);
+            for (DWORD i = 0; i < pExp->NumberOfNames; ++i)
+            {
+                if (pNames[i])
+                {
+                    auto szFunc = reinterpret_cast<char*>(base + pNames[i]);
+                    for (int j = 0; szFunc[j]; ++j) szFunc[j] = '\0';
+                }
+            }
+        }
+    }
+
+    // The debug directory entry contains the full PDB path
+    // (e.g. "C:\dev\Sparky\SparkyCore.pdb") — a unique identifier
+    // that survives the PE header erasure unless explicitly zeroed here.
+    if (opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size)
+    {
+        auto dbg  = base + opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress;
+        auto dSz  = opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size;
+        for (uint32_t i = 0; i < dSz; ++i) dbg[i] = 0;
+    }
 
     // ---- 5. Overwrite PE headers with pseudo-random noise -------------
-    // Zeroing is detectable (all-zeros page). Use a PRNG seeded with the
-    // image base so the pattern is unique per injection.
-    uint32_t rng = (uint32_t)(uintptr_t)base ^ 0xDEADBEEF;
-    for (uint32_t i = 0; i < 0x1000 && i < d->ImageSize; ++i)
+    // All-zeros are detectable (page stands out in a scan). Use xorshift32
+    // seeded with both the ASLR image base AND d->EraseSeed (generated by
+    // RtlGenRandom in the loader) so the pattern is unpredictable and unique
+    // to this run. The hardcoded 0xDEADBEEF constant has been removed —
+    // it would appear literally in every loader binary and could be used as
+    // a YARA signature to identify the injector.
+    if (d->ErasePEHeader)
     {
-        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; // xorshift32
-        base[i] = (uint8_t)rng;
+        // Read SizeOfHeaders before the loop overwrites it (opt lives in base).
+        uint32_t hdrSize = opt.SizeOfHeaders;
+        if (!hdrSize || hdrSize > d->ImageSize) hdrSize = 0x1000; // sanity cap
+
+        uint32_t rng = d->EraseSeed ^ (uint32_t)(uintptr_t)base;
+        if (!rng) rng = 0x1; // xorshift32 is stuck at 0 — any non-zero seed works
+
+        for (uint32_t i = 0; i < hdrSize; ++i)
+        {
+            rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+            base[i] = (uint8_t)rng;
+        }
     }
 }
 static void MappingShellcodeEnd() {}
@@ -255,10 +372,13 @@ static bool ResolveNtdllThunks(MappingData& d)
     HMODULE hNt = GetModuleHandleW(L"ntdll.dll");
     if (!hNt) return false;
 
-    d.LdrLoadDll             = (MappingData::fnLdrLoadDll)    GetProcAddress(hNt, "LdrLoadDll");
-    d.LdrGetProcedureAddress = (MappingData::fnLdrGetProcAddr)GetProcAddress(hNt, "LdrGetProcedureAddress");
-    d.RtlInitUnicodeString   = (MappingData::fnRtlInitUniStr) GetProcAddress(hNt, "RtlInitUnicodeString");
-    d.RtlInitAnsiString      = (MappingData::fnRtlInitAnsiStr)GetProcAddress(hNt, "RtlInitAnsiString");
+    d.LdrLoadDll             = (MappingData::fnLdrLoadDll)     GetProcAddress(hNt, "LdrLoadDll");
+    d.LdrGetProcedureAddress = (MappingData::fnLdrGetProcAddr) GetProcAddress(hNt, "LdrGetProcedureAddress");
+    d.RtlInitUnicodeString   = (MappingData::fnRtlInitUniStr)  GetProcAddress(hNt, "RtlInitUnicodeString");
+    d.RtlInitAnsiString      = (MappingData::fnRtlInitAnsiStr) GetProcAddress(hNt, "RtlInitAnsiString");
+    // Optional — present on all supported Windows versions (Win10+).
+    // Failure here is non-fatal: the shellcode checks for nullptr before calling.
+    d.RtlAddFunctionTable    = (MappingData::fnRtlAddFuncTable)GetProcAddress(hNt, "RtlAddFunctionTable");
 
     return d.LdrLoadDll && d.LdrGetProcedureAddress
         && d.RtlInitUnicodeString && d.RtlInitAnsiString;
@@ -594,8 +714,8 @@ static bool ExecuteShellcode(HANDLE hProcess, uintptr_t imageBase,
 bool ManualMapDll(HANDLE hProcess,
                   const std::vector<uint8_t>& dllBytes,
                   const std::wstring& /*dllPathForLogging*/,
-                  bool /*erasePEHeader*/,
-                  bool /*callDllMain*/)
+                  bool erasePEHeader,
+                  bool callDllMain)
 {
     if (dllBytes.empty())               { Logger::Log(LogLevel::Error, "ManualMap: empty buffer"); return false; }
 
@@ -645,8 +765,26 @@ bool ManualMapDll(HANDLE hProcess,
     ApplySectionProtections(hProcess, imageBase, dllBytes);
 
     MappingData md{};
-    md.ImageBase = imageBase;
-    md.ImageSize = opt.SizeOfImage;
+    md.ImageBase     = imageBase;
+    md.ImageSize     = opt.SizeOfImage;
+    md.CallDllMain   = callDllMain   ? 1 : 0;
+    md.ErasePEHeader = erasePEHeader ? 1 : 0;
+
+    // Generate an unpredictable PRNG seed for the PE header noise fill.
+    // RtlGenRandom (advapi32!SystemFunction036) is always loaded in-process.
+    md.EraseSeed = 0;
+    {
+        static auto rtlGen = reinterpret_cast<BOOLEAN(NTAPI*)(PVOID, ULONG)>(
+            GetProcAddress(GetModuleHandleW(L"advapi32.dll"), "SystemFunction036"));
+        if (rtlGen) rtlGen(&md.EraseSeed, sizeof(md.EraseSeed));
+        if (!md.EraseSeed)
+        {
+            // Fallback: QPC mix — still better than a hardcoded constant
+            LARGE_INTEGER pc{}; QueryPerformanceCounter(&pc);
+            md.EraseSeed = (uint32_t)pc.LowPart ^ (uint32_t)(imageBase >> 12);
+        }
+    }
+
     if (!ResolveNtdllThunks(md))
     {
         Logger::Log(LogLevel::Error, "ManualMap: ntdll thunk resolve failed");
