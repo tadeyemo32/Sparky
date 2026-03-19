@@ -921,7 +921,10 @@ void RunUI(UIState& state,
 
     while (!glfwWindowShouldClose(win))
     {
-        glfwPollEvents();
+        // Sleep until an event arrives or 33 ms elapse (≈30 fps cap).
+        // This lets the GPU idle when the UI is static instead of spinning at
+        // vsync rate. Animations still update via the periodic timeout.
+        glfwWaitEventsTimeout(1.0 / 30.0);
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
