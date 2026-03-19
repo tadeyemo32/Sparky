@@ -161,6 +161,8 @@ bool Database::CreateSchema()
         CREATE INDEX IF NOT EXISTS idx_sessions_hwid  ON sessions(hwid_hash);
         CREATE INDEX IF NOT EXISTS idx_purchases_hwid ON purchases(hwid_hash);
         CREATE INDEX IF NOT EXISTS idx_licenses_hwid  ON licenses(hwid_hash);
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS username      TEXT NOT NULL DEFAULT '';
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT NOT NULL DEFAULT '';
     )sql";
 
     PGresult* res = PQexec(PG(m_db), ddl);
@@ -352,7 +354,8 @@ bool Database::SetUserLicense(const std::string& hwid_hash, const std::string& k
 std::optional<UserRow> Database::GetUser(const std::string& hwid_hash) const
 {
     auto* res = PgExec(PG(m_db),
-        "SELECT hwid_hash,license_key,created_at,last_seen,is_banned,ban_reason,loader_hash"
+        "SELECT hwid_hash,license_key,created_at,last_seen,is_banned,ban_reason,"
+        "       loader_hash,username,password_hash"
         " FROM users WHERE hwid_hash=$1",
         { hwid_hash });
     if (!res) return std::nullopt;
@@ -361,13 +364,15 @@ std::optional<UserRow> Database::GetUser(const std::string& hwid_hash) const
     if (PQntuples(res) == 1)
     {
         UserRow r;
-        r.hwid_hash   = PQgetvalue(res, 0, 0);
-        r.license_key = PQgetvalue(res, 0, 1);
-        r.created_at  = PgInt64(res, 0, 2);
-        r.last_seen   = PgInt64(res, 0, 3);
-        r.is_banned   = PgInt  (res, 0, 4) != 0;
-        r.ban_reason  = PQgetvalue(res, 0, 5);
-        r.loader_hash = PQgetvalue(res, 0, 6);
+        r.hwid_hash     = PQgetvalue(res, 0, 0);
+        r.license_key   = PQgetvalue(res, 0, 1);
+        r.created_at    = PgInt64(res, 0, 2);
+        r.last_seen     = PgInt64(res, 0, 3);
+        r.is_banned     = PgInt  (res, 0, 4) != 0;
+        r.ban_reason    = PQgetvalue(res, 0, 5);
+        r.loader_hash   = PQgetvalue(res, 0, 6);
+        r.username      = PQgetvalue(res, 0, 7);
+        r.password_hash = PQgetvalue(res, 0, 8);
         result = r;
     }
     PQclear(res);
@@ -377,7 +382,8 @@ std::optional<UserRow> Database::GetUser(const std::string& hwid_hash) const
 std::vector<UserRow> Database::ListUsers() const
 {
     auto* res = PgExec(PG(m_db),
-        "SELECT hwid_hash,license_key,created_at,last_seen,is_banned,ban_reason,loader_hash"
+        "SELECT hwid_hash,license_key,created_at,last_seen,is_banned,ban_reason,"
+        "       loader_hash,username,password_hash"
         " FROM users ORDER BY last_seen DESC");
     std::vector<UserRow> rows;
     if (!res) return rows;
@@ -387,13 +393,15 @@ std::vector<UserRow> Database::ListUsers() const
     for (int i = 0; i < n; ++i)
     {
         UserRow r;
-        r.hwid_hash   = PQgetvalue(res, i, 0);
-        r.license_key = PQgetvalue(res, i, 1);
-        r.created_at  = PgInt64(res, i, 2);
-        r.last_seen   = PgInt64(res, i, 3);
-        r.is_banned   = PgInt  (res, i, 4) != 0;
-        r.ban_reason  = PQgetvalue(res, i, 5);
-        r.loader_hash = PQgetvalue(res, i, 6);
+        r.hwid_hash     = PQgetvalue(res, i, 0);
+        r.license_key   = PQgetvalue(res, i, 1);
+        r.created_at    = PgInt64(res, i, 2);
+        r.last_seen     = PgInt64(res, i, 3);
+        r.is_banned     = PgInt  (res, i, 4) != 0;
+        r.ban_reason    = PQgetvalue(res, i, 5);
+        r.loader_hash   = PQgetvalue(res, i, 6);
+        r.username      = PQgetvalue(res, i, 7);
+        r.password_hash = PQgetvalue(res, i, 8);
         rows.push_back(r);
     }
     PQclear(res);
@@ -418,6 +426,31 @@ bool Database::UnbanUser(const std::string& hwid_hash)
     if (!res) return false;
     PQclear(res);
     return true;
+}
+
+int Database::CheckOrStoreCredentials(const std::string& hwid_hash,
+                                       const std::string& username_in,
+                                       const std::string& password_hash_in)
+{
+    auto user = GetUser(hwid_hash);
+    if (!user) return -1;
+
+    if (user->username.empty() && user->password_hash.empty())
+    {
+        // First login from this hardware: store the credentials.
+        auto* res = PgExec(PG(m_db),
+            "UPDATE users SET username=$1, password_hash=$2 WHERE hwid_hash=$3",
+            { username_in, password_hash_in, hwid_hash });
+        if (!res) return -1;
+        PQclear(res);
+        return 0;
+    }
+
+    // Verify submitted credentials match what is stored.
+    if (user->username != username_in || user->password_hash != password_hash_in)
+        return 1; // auth failed
+
+    return 0;
 }
 
 // ---------------------------------------------------------------------------

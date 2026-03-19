@@ -50,7 +50,9 @@ struct UserRow
     int64_t     last_seen;
     bool        is_banned    = false;
     std::string ban_reason;
-    std::string loader_hash; // SHA-256 hex of loader binary last seen from this HWID
+    std::string loader_hash;   // SHA-256 hex of loader binary last seen from this HWID
+    std::string username;      // supplied at first login; verified on subsequent logins
+    std::string password_hash; // SHA-256 hex of the user's password
 };
 
 struct SessionRow
@@ -114,6 +116,11 @@ public:
     std::vector<UserRow> ListUsers() const;
     bool BanUser(const std::string& hwid_hash, const std::string& reason);
     bool UnbanUser(const std::string& hwid_hash);
+    // Credential management: on first call stores username+password_hash;
+    // on subsequent calls verifies them. Returns 0=ok, 1=auth_failed, -1=db_error.
+    int CheckOrStoreCredentials(const std::string& hwid_hash,
+                                const std::string& username,
+                                const std::string& password_hash_hex);
 
     // ---------- Session management ----------
     bool InsertSession(const SessionRow& row);

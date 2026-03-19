@@ -681,6 +681,56 @@ static void HandleClient(int csock, SSL* ssl)
         std::lock_guard lk(g_dbMu);
         g_db.TouchUser(s.hwid, now, s.loaderHash);
 
+        // Validate the license key supplied by the loader and bind it to this HWID.
+        std::string licenseKey(hello.LicenseKey,
+                               strnlen(hello.LicenseKey, sizeof(hello.LicenseKey)));
+        if (licenseKey.empty())
+        {
+            std::cout << std::format("[S] Reject: missing license key — {:.16}...\n", s.hwid);
+            SendMsg(s, MsgType::AuthFail);
+            cleanup(); return;
+        }
+        {
+            auto lic = g_db.GetLicense(licenseKey);
+            if (!lic)
+            {
+                std::cout << std::format("[S] Reject: unknown license key — {:.16}...\n", s.hwid);
+                SendMsg(s, MsgType::AuthFail);
+                cleanup(); return;
+            }
+            if (lic->hwid_hash.empty())
+            {
+                // Unbound license: bind it to this HWID on first use.
+                g_db.BindLicense(licenseKey, s.hwid);
+                g_db.SetUserLicense(s.hwid, licenseKey);
+            }
+            else if (lic->hwid_hash != s.hwid)
+            {
+                std::cout << std::format("[S] Reject: license already bound to different HWID\n");
+                SendMsg(s, MsgType::AuthFail);
+                cleanup(); return;
+            }
+            else
+            {
+                // Already bound to this HWID — ensure the user row reflects it.
+                g_db.SetUserLicense(s.hwid, licenseKey);
+            }
+        }
+
+        // Validate username + password hash (stores on first login).
+        {
+            std::string usernameIn(hello.Username,
+                                   strnlen(hello.Username, sizeof(hello.Username)));
+            std::string pwHashHex = HexStr(hello.PasswordHash, 32);
+            int cred = g_db.CheckOrStoreCredentials(s.hwid, usernameIn, pwHashHex);
+            if (cred != 0)
+            {
+                std::cout << std::format("[S] Reject: bad credentials for {:.16}...\n", s.hwid);
+                SendMsg(s, MsgType::AuthFail);
+                cleanup(); return;
+            }
+        }
+
         if (!g_db.IsAuthorised(s.hwid, s.loaderHash, now))
         {
             auto user = g_db.GetUser(s.hwid);
