@@ -164,6 +164,8 @@ bool Database::CreateSchema()
         ALTER TABLE users ADD COLUMN IF NOT EXISTS username      TEXT NOT NULL DEFAULT '';
         ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT NOT NULL DEFAULT '';
         ALTER TABLE users ADD COLUMN IF NOT EXISTS role          TEXT NOT NULL DEFAULT 'user';
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username
+            ON users(username) WHERE username != '';
         CREATE TABLE IF NOT EXISTS web_sessions (
             token      TEXT PRIMARY KEY,
             username   TEXT   NOT NULL,

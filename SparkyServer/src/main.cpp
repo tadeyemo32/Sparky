@@ -1760,79 +1760,151 @@ AUTH_LOGIC_START:
         cleanup(); return;
     }
 
-    // ---- 3. DB authorisation (ban + license + integrity check) ----
+    // ---- 3. DB authorisation -----------------------------------------------
+    //
+    // Two distinct flows determined by whether LicenseKey is present:
+    //
+    //   Sign Up  (LicenseKey non-empty):
+    //     1. Validate license exists and is not bound to a different HWID.
+    //     2. Bind license → HWID (first use) or confirm existing binding.
+    //     3. Check username is not taken by a different HWID (unique index).
+    //     4. Store username + password hash for this HWID (first time) or
+    //        verify they match (re-registration from same device).
+    //
+    //   Login  (LicenseKey empty):
+    //     1. Look up account by username.
+    //     2. Verify password hash.
+    //     3. Verify HWID matches the device that originally signed up.
+    //        Mismatch → hard reject (HWID lock).
+    //
+    //   Both paths finish with the full IsAuthorised() check
+    //   (ban + license expiry + trusted loader hash).
+    // -----------------------------------------------------------------------
     {
         std::lock_guard lk(g_dbMu);
-        g_db.TouchUser(s.hwid, now, s.loaderHash);
 
-        // Validate the license key supplied by the loader and bind it to this HWID.
-        // Login mode sends an empty key — look it up from the users table by HWID.
+        std::string usernameIn(hello.Username,
+                               strnlen(hello.Username, sizeof(hello.Username)));
+        std::string pwHashHex = HexStr(hello.PasswordHash, 32);
         std::string licenseKey(hello.LicenseKey,
                                strnlen(hello.LicenseKey, sizeof(hello.LicenseKey)));
-        if (licenseKey.empty())
+
+        const bool isSignUp = !licenseKey.empty();
+
+        if (isSignUp)
         {
-            auto user = g_db.GetUser(s.hwid);
-            if (!user || user->license_key.empty())
+            // ── Sign Up ──────────────────────────────────────────────────────
+            if (usernameIn.empty() || usernameIn.size() > 31)
             {
-                std::cout << std::format("[S] Reject: no license bound for {:.16}...\n", s.hwid);
+                std::cout << "[S] Reject sign-up: missing or oversized username\n";
                 SendMsg(s, MsgType::AuthFail);
                 cleanup(); return;
             }
-            licenseKey = user->license_key;
-        }
-        {
+
+            // Username uniqueness: reject if another HWID already owns this name.
+            auto existingOwner = g_db.GetUserByUsername(usernameIn);
+            if (existingOwner && existingOwner->hwid_hash != s.hwid)
+            {
+                std::cout << std::format("[S] Reject sign-up: username '{}' taken\n", usernameIn);
+                SendMsg(s, MsgType::AuthFail);
+                cleanup(); return;
+            }
+
+            // Create / refresh the user row before license ops.
+            g_db.TouchUser(s.hwid, now, s.loaderHash);
+
+            // License validation and HWID binding.
             auto lic = g_db.GetLicense(licenseKey);
             if (!lic)
             {
-                std::cout << std::format("[S] Reject: unknown license key — {:.16}...\n", s.hwid);
+                std::cout << std::format("[S] Reject sign-up: unknown license — {:.16}...\n",
+                                          s.hwid);
                 SendMsg(s, MsgType::AuthFail);
                 cleanup(); return;
             }
             if (lic->hwid_hash.empty())
             {
-                // Unbound license: bind it to this HWID on first use.
+                // Unbound license — bind it to this HWID now.
                 g_db.BindLicense(licenseKey, s.hwid);
                 g_db.SetUserLicense(s.hwid, licenseKey);
+                std::cout << std::format("[S] License bound to HWID {:.16}...\n", s.hwid);
             }
             else if (lic->hwid_hash != s.hwid)
             {
-                std::cout << std::format("[S] Reject: license already bound to different HWID\n");
+                std::cout << "[S] Reject sign-up: license already bound to a different device\n";
                 SendMsg(s, MsgType::AuthFail);
                 cleanup(); return;
             }
             else
             {
-                // Already bound to this HWID — ensure the user row reflects it.
+                // Already bound to this HWID (re-registration).
                 g_db.SetUserLicense(s.hwid, licenseKey);
             }
-        }
 
-        // Validate username + password hash (stores on first login).
-        {
-            std::string usernameIn(hello.Username,
-                                   strnlen(hello.Username, sizeof(hello.Username)));
-            std::string pwHashHex = HexStr(hello.PasswordHash, 32);
+            // Store credentials first time; verify on re-registration.
             int cred = g_db.CheckOrStoreCredentials(s.hwid, usernameIn, pwHashHex);
             if (cred != 0)
             {
-                std::cout << std::format("[S] Reject: bad credentials for {:.16}...\n", s.hwid);
+                std::cout << std::format("[S] Reject sign-up: credential conflict for {:.16}...\n",
+                                          s.hwid);
                 SendMsg(s, MsgType::AuthFail);
                 cleanup(); return;
             }
         }
+        else
+        {
+            // ── Login ─────────────────────────────────────────────────────────
+            if (usernameIn.empty())
+            {
+                std::cout << "[S] Reject login: empty username\n";
+                SendMsg(s, MsgType::AuthFail);
+                cleanup(); return;
+            }
 
+            // Look up account by username.
+            auto acct = g_db.GetUserByUsername(usernameIn);
+            if (!acct)
+            {
+                std::cout << std::format("[S] Reject login: unknown username '{}'\n", usernameIn);
+                SendMsg(s, MsgType::AuthFail);
+                cleanup(); return;
+            }
+
+            // Verify password.
+            if (acct->password_hash != pwHashHex)
+            {
+                std::cout << std::format("[S] Reject login: wrong password for '{}'\n", usernameIn);
+                SendMsg(s, MsgType::AuthFail);
+                cleanup(); return;
+            }
+
+            // HWID lock — must connect from the registered device.
+            if (acct->hwid_hash != s.hwid)
+            {
+                std::cout << std::format(
+                    "[S] Reject login: HWID mismatch for '{}' "
+                    "(registered={:.16}... actual={:.16}...)\n",
+                    usernameIn, acct->hwid_hash, s.hwid);
+                SendMsg(s, MsgType::AuthFail);
+                cleanup(); return;
+            }
+
+            // Credentials verified — update last_seen and loader hash.
+            g_db.TouchUser(s.hwid, now, s.loaderHash);
+        }
+
+        // ── Final check: ban + license expiry + trusted loader hash ──────────
         if (!g_db.IsAuthorised(s.hwid, s.loaderHash, now))
         {
             auto user = g_db.GetUser(s.hwid);
             if (user && user->is_banned)
                 std::cout << std::format("[S] Reject: banned ({}) — {:.16}...\n",
                                           user->ban_reason, s.hwid);
-            else if (g_db.TrustedHashesEnabled()
-                     && !g_db.IsHashTrusted(s.loaderHash))
+            else if (g_db.TrustedHashesEnabled() && !g_db.IsHashTrusted(s.loaderHash))
                 std::cout << std::format("[S] Reject: untrusted loader hash {:.16}...\n",
                                           s.loaderHash);
             else
-                std::cout << std::format("[S] Reject: no valid license — {:.16}...\n",
+                std::cout << std::format("[S] Reject: license expired or missing — {:.16}...\n",
                                           s.hwid);
 
             SendMsg(s, MsgType::AuthFail);
