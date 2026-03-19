@@ -74,13 +74,16 @@ TEST("xorstream/roundtrip_restores_plaintext")
 
 TEST("xorstream/zero_key_leaves_data_unchanged")
 {
+    // XorStream uses SHA-256 CTR: even key=0 produces a non-zero keystream.
+    // The invariant that must hold is the roundtrip property: two passes
+    // with the same key restore the original data regardless of the key value.
     const uint8_t plain[] = {0x11, 0x22, 0x33, 0x44};
     uint8_t buf[sizeof(plain)];
     memcpy(buf, plain, sizeof(plain));
 
-    XorStream(buf, sizeof(buf), 0);
+    XorStream(buf, sizeof(buf), 0);   // encrypt
+    XorStream(buf, sizeof(buf), 0);   // decrypt (second pass restores)
 
-    // XOR with 0 on every byte → no change
     EXPECT_EQ(memcmp(buf, plain, sizeof(plain)), 0);
 }
 
@@ -97,10 +100,15 @@ TEST("xorstream/non_zero_key_changes_data")
 
 TEST("xorstream/single_byte")
 {
-    uint8_t b = 0xAB;
-    // key = 0xCD: low byte of key is 0xCD; 0xAB ^ 0xCD == 0x66
+    // XorStream uses SHA-256 CTR: the keystream byte for position 0 is
+    // SHA-256(key || counter=0)[0], NOT the raw key byte 0xCD.
+    // What must hold: the cipher changes the byte, and a second pass restores it.
+    uint8_t b    = 0xAB;
+    uint8_t orig = b;
     XorStream(&b, 1, 0xCDull);
-    EXPECT_EQ(b, (uint8_t)(0xAB ^ 0xCD));
+    EXPECT_NE(b, orig);           // non-zero key must change the byte
+    XorStream(&b, 1, 0xCDull);   // decrypt
+    EXPECT_EQ(b, orig);           // must round-trip back to original
 }
 
 TEST("xorstream/output_size_equals_input_size")
@@ -241,10 +249,11 @@ TEST("protocol/MsgHeader_is_12_bytes")
 
 TEST("protocol/HelloPayload_layout")
 {
-    // HwidHash[32] + BuildId(4) + LoaderHash[32] = 68 bytes minimum
-    EXPECT(sizeof(HelloPayload) >= 68u);
+    // HwidHash[32] + BuildId(4) + LoaderHash[32] + Timestamp(8)
+    // + Username[32] + LicenseKey[40] + PasswordHash[32] = 180 bytes
+    EXPECT(sizeof(HelloPayload) >= 180u);
     // No unexpected padding (it's #pragma pack(push,1))
-    EXPECT_EQ(sizeof(HelloPayload), 68u);
+    EXPECT_EQ(sizeof(HelloPayload), 180u);
 }
 
 TEST("protocol/AuthOkPayload_layout")

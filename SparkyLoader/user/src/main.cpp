@@ -114,6 +114,30 @@ static bool GetLoaderHash(uint8_t out[32])
 }
 
 // ---------------------------------------------------------------------------
+// HashBytes — SHA-256 of arbitrary data via CryptAPI.
+// Used to hash the user's password before sending to the server.
+// ---------------------------------------------------------------------------
+static bool HashBytes(const void* data, size_t len, uint8_t out[32])
+{
+    HCRYPTPROV hProv{};
+    if (!CryptAcquireContextW(&hProv, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+        return false;
+    HCRYPTHASH hHash{};
+    bool ok = false;
+    if (CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash))
+    {
+        if (CryptHashData(hHash, static_cast<const BYTE*>(data), static_cast<DWORD>(len), 0))
+        {
+            DWORD hl = 32;
+            ok = CryptGetHashParam(hHash, HP_HASHVAL, out, &hl, 0) == TRUE;
+        }
+        CryptDestroyHash(hHash);
+    }
+    CryptReleaseContext(hProv, 0);
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
 // CryptRandBytes — generate N random bytes via CryptGenRandom.
 // Used for heartbeat nonces.
 // ---------------------------------------------------------------------------
@@ -251,6 +275,7 @@ static std::vector<uint8_t> ConnectAndFetchDll(
     const char* host, int port,
     const uint8_t hwidHash[32],
     const uint8_t loaderHash[32],
+    const uint8_t passwordHash[32],
     UIState& state)
 {
     WSADATA wsa{};
@@ -364,10 +389,13 @@ static std::vector<uint8_t> ConnectAndFetchDll(
     // Step 2: Send Hello  (plain — hdrKey == 0, so SendMsg sends raw)
     // ------------------------------------------------------------------
     HelloPayload hello{};
-    memcpy(hello.HwidHash,   hwidHash,   32);
-    memcpy(hello.LoaderHash, loaderHash, 32);
-    hello.BuildId = 0x0001'0000;
+    memcpy(hello.HwidHash,      hwidHash,     32);
+    memcpy(hello.LoaderHash,    loaderHash,   32);
+    memcpy(hello.PasswordHash,  passwordHash, 32);
+    hello.BuildId   = 0x0001'0000;
     hello.Timestamp = (uint64_t)time(nullptr);
+    strncpy_s(hello.Username,   sizeof(hello.Username),   state.username,   _TRUNCATE);
+    strncpy_s(hello.LicenseKey, sizeof(hello.LicenseKey), state.licenseKey, _TRUNCATE);
 
     if (!SendMsg(ss, MsgType::Hello, &hello, sizeof(hello)))
     {
@@ -389,7 +417,11 @@ static std::vector<uint8_t> ConnectAndFetchDll(
 
         if (t == MsgType::AuthFail)
         {
-            state.AddLog("[ERR] Auth rejected by server (check license / HWID)");
+            state.AddLog("[ERR] Auth rejected by server");
+            strncpy_s(state.loginError, sizeof(state.loginError),
+                      "Authentication failed \xe2\x80\x94 check your credentials or license key.",
+                      _TRUNCATE);
+            state.loggingIn = false;
             cleanup(); return {};
         }
 
@@ -407,6 +439,9 @@ static std::vector<uint8_t> ConnectAndFetchDll(
         ss.dllKey = DeriveKey(ss.token, 1);
 
         state.serverConnected = true;
+        state.loggedIn        = true;
+        state.loggingIn       = false;
+        state.loginError[0]   = '\0';
         state.AddLog("[INF] Authenticated — session keys active");
     }
 
@@ -608,11 +643,21 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     auto onConnect = [&]() {
         if (state.connecting) return;  // already in flight
 
+        // Hash the password now (UI thread), then zero the plaintext field.
+        uint8_t passwordHash[32]{};
+        if (state.password[0] != '\0')
+        {
+            HashBytes(state.password, strlen(state.password), passwordHash);
+            SecureZeroMemory(state.password,     sizeof(state.password));
+            SecureZeroMemory(state.passwordConf, sizeof(state.passwordConf));
+        }
+
         state.serverConnected  = false;
         state.dllReady         = false;
         state.dllSizeBytes     = 0;
         state.downloadProgress = 0.f;
         state.connecting       = true;
+        state.loggingIn        = !state.loggedIn;  // true during first-time login
         dllInRam.clear();
 
         state.AddLog("[INF] Connecting...");
@@ -621,22 +666,25 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
             UIState*              st;
             uint8_t               hwid[32];
             uint8_t               loader[32];
+            uint8_t               pwHash[32];
             std::vector<uint8_t>* dll;
         };
         auto* args = new ConnArgs{};
         args->st  = &state;
         args->dll = &dllInRam;
-        memcpy(args->hwid,   hwidHash,   32);
-        memcpy(args->loader, loaderHash, 32);
+        memcpy(args->hwid,   hwidHash,    32);
+        memcpy(args->loader, loaderHash,  32);
+        memcpy(args->pwHash, passwordHash, 32);
 
         CreateThread(nullptr, 0,
             [](LPVOID p) -> DWORD {
                 auto* a = static_cast<ConnArgs*>(p);
                 *a->dll = ConnectAndFetchDll(
                     a->st->serverHost, a->st->serverPort,
-                    a->hwid, a->loader, *a->st);
+                    a->hwid, a->loader, a->pwHash, *a->st);
 
                 a->st->connecting = false;
+                a->st->loggingIn  = false;
 
                 if (!a->dll->empty())
                 {
@@ -645,6 +693,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
                     a->st->AddLog("[INF] DLL ready in RAM ("
                                   + std::to_string(a->dll->size()) + " bytes)");
                 }
+                else if (!a->st->loggedIn && a->st->loginError[0] == '\0')
+                {
+                    // Connection or TLS failure before auth completed
+                    strncpy_s(a->st->loginError, sizeof(a->st->loginError),
+                              "Could not reach the server \xe2\x80\x94 check your connection.",
+                              _TRUNCATE);
+                }
+                SecureZeroMemory(a->pwHash, 32);
                 delete a;
                 return 0;
             }, args, 0, nullptr);
@@ -652,7 +708,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 
     auto onInject = [&]() {
         if (state.injecting || state.injected) return;
-        if (!state.processFound)
+
+        // Resolve target PID: custom (Tab 2) takes priority over ProcessWatcher.
+        DWORD targetPid = (state.customTargetPid != 0)
+                          ? state.customTargetPid
+                          : state.targetPid;
+
+        if (targetPid == 0)
         { state.AddLog("[ERR] Process not found — is the target running?"); return; }
 
         // Dev mode fallback: read DLL from disk if server hasn't delivered one yet.
@@ -679,10 +741,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 
         state.injecting = true;
         state.AddLog("[INF] Injecting " + std::to_string(dllInRam.size())
-                     + " bytes into PID " + std::to_string(state.targetPid) + "...");
+                     + " bytes into PID " + std::to_string(targetPid) + "...");
 
         struct InjectArgs { UIState* st; DWORD pid; std::vector<uint8_t> dll; };
-        auto* args = new InjectArgs{ &state, state.targetPid, dllInRam };
+        auto* args = new InjectArgs{ &state, targetPid, dllInRam };
 
         CreateThread(nullptr, 0,
             [](LPVOID p) -> DWORD {

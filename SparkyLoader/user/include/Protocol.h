@@ -53,10 +53,13 @@ static_assert(sizeof(MsgHeader) == 12, "MsgHeader must be 12 bytes");
 // Loader → Server (plain, no session key yet)
 struct HelloPayload
 {
-    uint8_t  HwidHash[32];   // SHA-256(MachineGuid)
-    uint32_t BuildId;        // must match server's CURRENT_BUILD
-    uint8_t  LoaderHash[32]; // SHA-256 of loader binary on disk
-    uint64_t Timestamp;      // Unix timestamp (anti-replay)
+    uint8_t  HwidHash[32];     // SHA-256(MachineGuid)
+    uint32_t BuildId;          // must match server's CURRENT_BUILD
+    uint8_t  LoaderHash[32];   // SHA-256 of loader binary on disk
+    uint64_t Timestamp;        // Unix timestamp (anti-replay)
+    char     Username[32];     // null-terminated, max 31 chars
+    char     LicenseKey[40];   // null-terminated license key
+    uint8_t  PasswordHash[32]; // SHA-256 of the user's password
 };
 
 // Server → Loader (ALWAYS SENT PLAIN — before session keys are set)
@@ -229,7 +232,7 @@ inline uint32_t Crc32(const uint8_t* data, uint32_t len)
     {
         crc ^= *data++;
         for (int k = 0; k < 8; ++k)
-            crc = (crc >> 1) ^ (0xEDB88320u & -(crc & 1u));
+            crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1u)));
     }
     return ~crc;
 }
