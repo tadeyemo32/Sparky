@@ -179,7 +179,7 @@ jobs:
             --add-volume-mount=volume=sparky-data,mount-path=/app/data \
             --add-volume=name=sparky-payloads,type=cloud-storage,bucket=sparky-payloads-490704 \
             --add-volume-mount=volume=sparky-payloads,mount-path=/app/payloads \
-            --set-env-vars SPARKY_KEY="${{ secrets.SPARKY_KEY }}",SPARKY_PG_CONNSTR="${{ secrets.SPARKY_PG_CONNSTR }}",SPARKY_HWID_PEPPER="${{ secrets.SPARKY_HWID_PEPPER }}",SPARKY_ALLOWED_ORIGIN="${{ secrets.SPARKY_ALLOWED_ORIGIN }}",SPARKY_WEB_OWNER_USERNAME="${{ secrets.SPARKY_WEB_OWNER_USERNAME }}",RESEND_API_KEY="${{ secrets.RESEND_API_KEY }}",RESEND_FROM_EMAIL="${{ secrets.RESEND_FROM_EMAIL }}" \
+            --set-env-vars SPARKY_KEY="${{ secrets.SPARKY_KEY }}",SPARKY_PG_CONNSTR="${{ secrets.SPARKY_PG_CONNSTR }}",SPARKY_HWID_PEPPER="${{ secrets.SPARKY_HWID_PEPPER }}",SPARKY_ALLOWED_ORIGIN="${{ secrets.SPARKY_ALLOWED_ORIGIN }}",SPARKY_WEB_OWNER_USERNAME="${{ secrets.SPARKY_WEB_OWNER_USERNAME }}",RESEND_API_KEY="${{ secrets.RESEND_API_KEY }}",RESEND_FROM_EMAIL="${{ secrets.RESEND_FROM_EMAIL }}",SPARKY_PROXY_SECRET="${{ secrets.SPARKY_PROXY_SECRET }}" \
             --quiet
 
       - name: Bind public invoker IAM policy

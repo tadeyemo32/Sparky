@@ -15,9 +15,10 @@ import * as http from 'node:http';
 
 export const config = { api: { bodyParser: false } };
 
-const BACKEND = (process.env.BACKEND_URL ?? '').replace(/\/$/, '');
-const KEY     = process.env.SPARKY_KEY ?? '';
-const ORIGIN  = process.env.SPARKY_ALLOWED_ORIGIN ?? 'https://sparky-tau.vercel.app';
+const BACKEND      = (process.env.BACKEND_URL ?? '').replace(/\/$/, '');
+const KEY          = process.env.SPARKY_KEY ?? '';
+const ORIGIN       = process.env.SPARKY_ALLOWED_ORIGIN ?? 'https://sparky-tau.vercel.app';
+const PROXY_SECRET = process.env.SPARKY_PROXY_SECRET ?? '';
 
 const tlsAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: true });
 
@@ -46,7 +47,8 @@ export default function handler(req: IncomingMessage & { url?: string }, res: Se
     if (!HOP.has(k.toLowerCase()))
       fwdHeaders[k] = Array.isArray(v) ? v[0] : (v ?? '');
   }
-  if (KEY) fwdHeaders['x-sparky-key'] = KEY;
+  if (KEY)          fwdHeaders['x-sparky-key']    = KEY;
+  if (PROXY_SECRET) fwdHeaders['x-proxy-secret']  = PROXY_SECRET;
 
   const chunks: Buffer[] = [];
   req.on('data', (c: Buffer) => chunks.push(c));

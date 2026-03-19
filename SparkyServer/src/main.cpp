@@ -119,6 +119,12 @@ static std::string g_allowedOrigin;
 static std::string g_resendKey;
 static std::string g_resendFrom;
 
+// Proxy secret — shared secret between Vercel serverless proxy and this server.
+// The proxy injects it as X-Proxy-Secret; the server rejects web API requests that
+// lack it. Prevents anyone who discovers the backend IP from calling /api/* directly.
+// Set SPARKY_PROXY_SECRET to a 32+ byte random hex string on both sides.
+static std::string g_proxySecret;
+
 // Per-HWID concurrent session guard.
 // Prevents one user from opening multiple simultaneous sessions.
 // Protected by g_hwidMu (separate from g_dbMu to avoid deadlocks).
@@ -774,6 +780,32 @@ static void HandleWebApi(ClientSession& s,
         if (origin != g_allowedOrigin)
         {
             SendApiError(s, 403, "Origin not permitted");
+            return;
+        }
+    }
+
+    // ── Proxy secret check ────────────────────────────────────────────────────
+    // When SPARKY_PROXY_SECRET is set, every /api/* request must carry the
+    // matching X-Proxy-Secret header (injected server-side by the Vercel proxy).
+    // This prevents direct access to the backend even if the IP is discovered.
+    if (!g_proxySecret.empty())
+    {
+        std::string lreq = req;
+        for (auto& c : lreq) c = (char)std::tolower((unsigned char)c);
+        std::string sent;
+        size_t pp = lreq.find("x-proxy-secret:");
+        if (pp != std::string::npos)
+        {
+            size_t vs = pp + 15;
+            while (vs < req.size() && (req[vs] == ' ' || req[vs] == '\t')) ++vs;
+            size_t ve = req.find('\r', vs);
+            if (ve == std::string::npos) ve = req.size();
+            while (ve > vs && (req[ve-1] == ' ' || req[ve-1] == '\t')) --ve;
+            sent = req.substr(vs, ve - vs);
+        }
+        if (sent != g_proxySecret)
+        {
+            SendApiError(s, 403, "Forbidden");
             return;
         }
     }
@@ -2245,6 +2277,16 @@ int main(int argc, char** argv)
     {
         g_sparkyKey = k;
         std::cout << "[S] Loaded SPARKY_KEY from environment.\n";
+    }
+
+    if (const char* ps = std::getenv("SPARKY_PROXY_SECRET"))
+    {
+        g_proxySecret = ps;
+        std::cout << "[S] Proxy secret: set (web API restricted to Vercel proxy)\n";
+    }
+    else
+    {
+        std::cout << "[S] Proxy secret: not set (web API open — set SPARKY_PROXY_SECRET in production)\n";
     }
 
     if (const char* rk = std::getenv("RESEND_API_KEY"))
