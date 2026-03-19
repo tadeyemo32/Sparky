@@ -163,6 +163,15 @@ bool Database::CreateSchema()
         CREATE INDEX IF NOT EXISTS idx_licenses_hwid  ON licenses(hwid_hash);
         ALTER TABLE users ADD COLUMN IF NOT EXISTS username      TEXT NOT NULL DEFAULT '';
         ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT NOT NULL DEFAULT '';
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS role          TEXT NOT NULL DEFAULT 'user';
+        CREATE TABLE IF NOT EXISTS web_sessions (
+            token      TEXT PRIMARY KEY,
+            username   TEXT   NOT NULL,
+            role       TEXT   NOT NULL DEFAULT 'user',
+            created_at BIGINT NOT NULL,
+            expires_at BIGINT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions(username);
     )sql";
 
     PGresult* res = PQexec(PG(m_db), ddl);
@@ -355,7 +364,7 @@ std::optional<UserRow> Database::GetUser(const std::string& hwid_hash) const
 {
     auto* res = PgExec(PG(m_db),
         "SELECT hwid_hash,license_key,created_at,last_seen,is_banned,ban_reason,"
-        "       loader_hash,username,password_hash"
+        "       loader_hash,username,password_hash,role"
         " FROM users WHERE hwid_hash=$1",
         { hwid_hash });
     if (!res) return std::nullopt;
@@ -373,17 +382,89 @@ std::optional<UserRow> Database::GetUser(const std::string& hwid_hash) const
         r.loader_hash   = PQgetvalue(res, 0, 6);
         r.username      = PQgetvalue(res, 0, 7);
         r.password_hash = PQgetvalue(res, 0, 8);
+        r.role          = PQgetvalue(res, 0, 9);
+        if (r.role.empty()) r.role = "user";
         result = r;
     }
     PQclear(res);
     return result;
 }
 
+std::optional<UserRow> Database::GetUserByUsername(const std::string& username) const
+{
+    auto* res = PgExec(PG(m_db),
+        "SELECT hwid_hash,license_key,created_at,last_seen,is_banned,ban_reason,"
+        "       loader_hash,username,password_hash,role"
+        " FROM users WHERE username=$1 LIMIT 1",
+        { username });
+    if (!res) return std::nullopt;
+
+    std::optional<UserRow> result;
+    if (PQntuples(res) == 1)
+    {
+        UserRow r;
+        r.hwid_hash     = PQgetvalue(res, 0, 0);
+        r.license_key   = PQgetvalue(res, 0, 1);
+        r.created_at    = PgInt64(res, 0, 2);
+        r.last_seen     = PgInt64(res, 0, 3);
+        r.is_banned     = PgInt  (res, 0, 4) != 0;
+        r.ban_reason    = PQgetvalue(res, 0, 5);
+        r.loader_hash   = PQgetvalue(res, 0, 6);
+        r.username      = PQgetvalue(res, 0, 7);
+        r.password_hash = PQgetvalue(res, 0, 8);
+        r.role          = PQgetvalue(res, 0, 9);
+        if (r.role.empty()) r.role = "user";
+        result = r;
+    }
+    PQclear(res);
+    return result;
+}
+
+bool Database::SetUserRole(const std::string& hwid_hash, const std::string& role)
+{
+    auto* res = PgExec(PG(m_db),
+        "UPDATE users SET role=$1 WHERE hwid_hash=$2",
+        { role, hwid_hash });
+    if (!res) return false;
+    PQclear(res);
+    return true;
+}
+
+std::vector<UserRow> Database::ListAdminUsers() const
+{
+    auto* res = PgExec(PG(m_db),
+        "SELECT hwid_hash,license_key,created_at,last_seen,is_banned,ban_reason,"
+        "       loader_hash,username,password_hash,role"
+        " FROM users WHERE role IN ('admin','owner') ORDER BY last_seen DESC");
+    std::vector<UserRow> rows;
+    if (!res) return rows;
+    int n = PQntuples(res);
+    rows.reserve(n);
+    for (int i = 0; i < n; ++i)
+    {
+        UserRow r;
+        r.hwid_hash     = PQgetvalue(res, i, 0);
+        r.license_key   = PQgetvalue(res, i, 1);
+        r.created_at    = PgInt64(res, i, 2);
+        r.last_seen     = PgInt64(res, i, 3);
+        r.is_banned     = PgInt  (res, i, 4) != 0;
+        r.ban_reason    = PQgetvalue(res, i, 5);
+        r.loader_hash   = PQgetvalue(res, i, 6);
+        r.username      = PQgetvalue(res, i, 7);
+        r.password_hash = PQgetvalue(res, i, 8);
+        r.role          = PQgetvalue(res, i, 9);
+        if (r.role.empty()) r.role = "user";
+        rows.push_back(r);
+    }
+    PQclear(res);
+    return rows;
+}
+
 std::vector<UserRow> Database::ListUsers() const
 {
     auto* res = PgExec(PG(m_db),
         "SELECT hwid_hash,license_key,created_at,last_seen,is_banned,ban_reason,"
-        "       loader_hash,username,password_hash"
+        "       loader_hash,username,password_hash,role"
         " FROM users ORDER BY last_seen DESC");
     std::vector<UserRow> rows;
     if (!res) return rows;
@@ -402,6 +483,8 @@ std::vector<UserRow> Database::ListUsers() const
         r.loader_hash   = PQgetvalue(res, i, 6);
         r.username      = PQgetvalue(res, i, 7);
         r.password_hash = PQgetvalue(res, i, 8);
+        r.role          = PQgetvalue(res, i, 9);
+        if (r.role.empty()) r.role = "user";
         rows.push_back(r);
     }
     PQclear(res);
@@ -678,6 +761,67 @@ std::vector<std::pair<std::string,std::string>> Database::ListIpBans() const
         rows.emplace_back(PQgetvalue(res, i, 0), PQgetvalue(res, i, 1));
     PQclear(res);
     return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Web sessions (React site)
+// ---------------------------------------------------------------------------
+bool Database::InsertWebSession(const WebSessionRow& row)
+{
+    auto* res = PgExec(PG(m_db),
+        "INSERT INTO web_sessions(token,username,role,created_at,expires_at)"
+        " VALUES($1,$2,$3,$4,$5)"
+        " ON CONFLICT(token) DO UPDATE"
+        " SET username=EXCLUDED.username, role=EXCLUDED.role,"
+        "     created_at=EXCLUDED.created_at, expires_at=EXCLUDED.expires_at",
+        { row.token, row.username, row.role,
+          std::to_string(row.created_at), std::to_string(row.expires_at) });
+    if (!res) return false;
+    PQclear(res);
+    return true;
+}
+
+bool Database::DeleteWebSession(const std::string& token)
+{
+    auto* res = PgExec(PG(m_db),
+        "DELETE FROM web_sessions WHERE token=$1", { token });
+    if (!res) return false;
+    PQclear(res);
+    return true;
+}
+
+std::optional<WebSessionRow> Database::GetWebSession(const std::string& token) const
+{
+    auto* res = PgExec(PG(m_db),
+        "SELECT token,username,role,created_at,expires_at"
+        " FROM web_sessions WHERE token=$1",
+        { token });
+    if (!res) return std::nullopt;
+
+    std::optional<WebSessionRow> result;
+    if (PQntuples(res) == 1)
+    {
+        WebSessionRow r;
+        r.token      = PQgetvalue(res, 0, 0);
+        r.username   = PQgetvalue(res, 0, 1);
+        r.role       = PQgetvalue(res, 0, 2);
+        r.created_at = PgInt64(res, 0, 3);
+        r.expires_at = PgInt64(res, 0, 4);
+        result = r;
+    }
+    PQclear(res);
+    return result;
+}
+
+int Database::PruneWebSessions(int64_t now)
+{
+    auto* res = PgExec(PG(m_db),
+        "DELETE FROM web_sessions WHERE expires_at < $1",
+        { std::to_string(now) });
+    if (!res) return 0;
+    int n = std::atoi(PQcmdTuples(res));
+    PQclear(res);
+    return n;
 }
 
 // ---------------------------------------------------------------------------

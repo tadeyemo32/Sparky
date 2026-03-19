@@ -442,6 +442,540 @@ static bool RecvMsg(ClientSession& s, MsgType& t,
 }
 
 // ---------------------------------------------------------------------------
+// Web API — REST endpoints for the React site (SparkySite)
+//
+// All routes live under /api/. Authentication is via Bearer token stored in
+// web_sessions.  Access control: user < admin < owner.
+//
+// CORS: all responses include Access-Control-Allow-Origin: *  so the site
+// can be served from any origin.  The SPARKY_KEY header still gates access.
+// ---------------------------------------------------------------------------
+
+// ── JSON helpers ─────────────────────────────────────────────────────────────
+
+static std::string JEscape(const std::string& s)
+{
+    std::string out;
+    out.reserve(s.size() + 4);
+    for (unsigned char c : s) {
+        if      (c == '"')  out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else if (c == '\t') out += "\\t";
+        else                out += (char)c;
+    }
+    return out;
+}
+
+// Minimal JSON object key:value builders (value already JSON-encoded)
+static std::string JField(const std::string& k, const std::string& jsonVal)
+{ return "\"" + k + "\":" + jsonVal; }
+static std::string JStr(const std::string& k, const std::string& v)
+{ return JField(k, "\"" + JEscape(v) + "\""); }
+static std::string JNum(const std::string& k, int64_t v)
+{ return JField(k, std::to_string(v)); }
+static std::string JBool(const std::string& k, bool v)
+{ return JField(k, v ? "true" : "false"); }
+
+// Extract a string value from a flat JSON object body.
+// e.g. ParseJsonStr(body, "username") → "alice"
+static std::string ParseJsonStr(const std::string& body, const std::string& key)
+{
+    std::string needle = "\"" + key + "\"";
+    size_t p = body.find(needle);
+    if (p == std::string::npos) return "";
+    p = body.find(':', p + needle.size());
+    if (p == std::string::npos) return "";
+    ++p; // skip ':'
+    while (p < body.size() && (body[p] == ' ' || body[p] == '\t')) ++p;
+    if (p >= body.size() || body[p] != '"') return "";
+    ++p; // skip opening quote
+    std::string out;
+    while (p < body.size() && body[p] != '"') {
+        if (body[p] == '\\' && p + 1 < body.size()) { ++p; out += body[p++]; }
+        else out += body[p++];
+    }
+    return out;
+}
+
+static int ParseJsonInt(const std::string& body, const std::string& key)
+{
+    std::string needle = "\"" + key + "\"";
+    size_t p = body.find(needle);
+    if (p == std::string::npos) return 0;
+    p = body.find(':', p + needle.size());
+    if (p == std::string::npos) return 0;
+    ++p;
+    while (p < body.size() && (body[p] == ' ' || body[p] == '\t')) ++p;
+    if (p >= body.size()) return 0;
+    try { return std::stoi(body.substr(p)); } catch (...) { return 0; }
+}
+
+// ── HTTP response helpers ─────────────────────────────────────────────────────
+
+static void SendHttp(ClientSession& s, int code, const std::string& ct, const std::string& body)
+{
+    const char* statusMsg = "OK";
+    switch (code) {
+        case 201: statusMsg = "Created"; break;
+        case 204: statusMsg = "No Content"; break;
+        case 400: statusMsg = "Bad Request"; break;
+        case 401: statusMsg = "Unauthorized"; break;
+        case 403: statusMsg = "Forbidden"; break;
+        case 404: statusMsg = "Not Found"; break;
+        case 409: statusMsg = "Conflict"; break;
+        case 500: statusMsg = "Internal Server Error"; break;
+        default:  break;
+    }
+    std::string resp =
+        "HTTP/1.1 " + std::to_string(code) + " " + statusMsg + "\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Access-Control-Allow-Headers: Content-Type, Authorization, x-sparky-key\r\n"
+        "Content-Type: " + ct + "\r\n"
+        "Content-Length: " + std::to_string(body.size()) + "\r\n"
+        "\r\n" + body;
+    NetSend(s.sock, s.ssl, resp.c_str(), (int)resp.size());
+}
+
+static void SendJson(ClientSession& s, int code, const std::string& json)
+{ SendHttp(s, code, "application/json", json); }
+
+static void SendApiError(ClientSession& s, int code, const std::string& msg)
+{ SendJson(s, code, "{\"error\":\"" + JEscape(msg) + "\"}"); }
+
+// ── Token generation ──────────────────────────────────────────────────────────
+
+static std::string MakeWebToken()
+{
+    uint8_t raw[32]{};
+#ifdef _WIN32
+    HCRYPTPROV hp{};
+    if (CryptAcquireContextW(&hp, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
+        CryptGenRandom(hp, sizeof(raw), raw);
+        CryptReleaseContext(hp, 0);
+    }
+#else
+    RAND_bytes(raw, sizeof(raw));
+#endif
+    return HexStr(raw, sizeof(raw));
+}
+
+// ── Bearer token extraction ───────────────────────────────────────────────────
+
+static std::string ExtractBearerToken(const std::string& req)
+{
+    // Case-insensitive search for "authorization:" header
+    std::string lr = req;
+    for (auto& c : lr) c = (char)std::tolower((unsigned char)c);
+    size_t p = lr.find("authorization:");
+    if (p == std::string::npos) return "";
+    p += 14;
+    while (p < lr.size() && (lr[p] == ' ' || lr[p] == '\t')) ++p;
+    if (lr.compare(p, 7, "bearer ") != 0) return "";
+    p += 7;
+    size_t end = p;
+    while (end < req.size() && req[end] != '\r' && req[end] != '\n' && req[end] != ' ') ++end;
+    return req.substr(p, end - p);
+}
+
+// ── Web auth info ─────────────────────────────────────────────────────────────
+
+struct WebAuthInfo
+{
+    bool        ok       = false;
+    std::string username;
+    std::string role;    // "user", "admin", "owner"
+    std::string hwid;
+};
+
+// Validates a web Bearer token and returns the authenticated user's info.
+// Caller must NOT hold g_dbMu when calling this.
+static WebAuthInfo ValidateWebToken(const std::string& token)
+{
+    if (token.empty()) return {};
+
+    std::optional<WebSessionRow> ws;
+    {
+        std::lock_guard lk(g_dbMu);
+        ws = g_db.GetWebSession(token);
+        if (!ws) return {};
+        if (ws->expires_at < (int64_t)time(nullptr)) {
+            g_db.DeleteWebSession(token);
+            return {};
+        }
+    }
+
+    // Look up hwid for this username
+    std::string hwid;
+    {
+        std::lock_guard lk(g_dbMu);
+        auto user = g_db.GetUserByUsername(ws->username);
+        if (user) hwid = user->hwid_hash;
+    }
+
+    WebAuthInfo info;
+    info.ok       = true;
+    info.username = ws->username;
+    info.role     = ws->role;
+    info.hwid     = hwid;
+    return info;
+}
+
+// ── Route dispatcher ──────────────────────────────────────────────────────────
+
+static void HandleWebApi(ClientSession& s,
+                          const std::string& method,
+                          const std::string& path,
+                          const std::string& req,       // full headers
+                          const std::string& body)
+{
+    // ── POST /api/auth/login ─────────────────────────────────────────────────
+    if (method == "POST" && path == "/api/auth/login")
+    {
+        std::string username     = ParseJsonStr(body, "username");
+        std::string passwordHash = ParseJsonStr(body, "passwordHash");
+        if (username.empty() || passwordHash.empty())
+        { SendApiError(s, 400, "username and passwordHash required"); return; }
+
+        std::optional<UserRow> user;
+        {
+            std::lock_guard lk(g_dbMu);
+            user = g_db.GetUserByUsername(username);
+        }
+        if (!user)
+        { SendApiError(s, 401, "Invalid username or password"); return; }
+        if (user->password_hash != passwordHash)
+        { SendApiError(s, 401, "Invalid username or password"); return; }
+        if (user->is_banned)
+        { SendApiError(s, 403, "Account banned: " + user->ban_reason); return; }
+
+        std::string role = user->role.empty() ? "user" : user->role;
+
+        WebSessionRow ws{};
+        ws.token      = MakeWebToken();
+        ws.username   = username;
+        ws.role       = role;
+        ws.created_at = (int64_t)time(nullptr);
+        ws.expires_at = ws.created_at + 86400; // 24 h
+
+        { std::lock_guard lk(g_dbMu); g_db.InsertWebSession(ws); }
+
+        std::string expiresAt = std::to_string(ws.expires_at);
+        std::string resp = "{" + JStr("token", ws.token) + ","
+                               + JStr("username", username) + ","
+                               + JStr("role", role) + ","
+                               + JStr("expiresAt", expiresAt) + "}";
+        SendJson(s, 200, resp);
+        return;
+    }
+
+    // ── POST /api/auth/signup ─────────────────────────────────────────────────
+    if (method == "POST" && path == "/api/auth/signup")
+    {
+        std::string username     = ParseJsonStr(body, "username");
+        std::string licenseKey   = ParseJsonStr(body, "licenseKey");
+        std::string passwordHash = ParseJsonStr(body, "passwordHash");
+        if (username.empty() || licenseKey.empty() || passwordHash.empty())
+        { SendApiError(s, 400, "username, licenseKey and passwordHash required"); return; }
+
+        std::optional<LicenseRow> lic;
+        {
+            std::lock_guard lk(g_dbMu);
+            lic = g_db.GetLicense(licenseKey);
+        }
+        if (!lic)
+        { SendApiError(s, 404, "License key not found"); return; }
+        if (lic->hwid_hash.empty())
+        { SendApiError(s, 400, "License not yet activated — please log in via the desktop application first"); return; }
+
+        {
+            std::lock_guard lk(g_dbMu);
+            int cred = g_db.CheckOrStoreCredentials(lic->hwid_hash, username, passwordHash);
+            if (cred == 1)
+            { SendApiError(s, 401, "Invalid credentials for this license"); return; }
+            if (cred == -1)
+            { SendApiError(s, 500, "Database error"); return; }
+        }
+
+        std::optional<UserRow> user;
+        { std::lock_guard lk(g_dbMu); user = g_db.GetUser(lic->hwid_hash); }
+        std::string role = (user && !user->role.empty()) ? user->role : "user";
+
+        WebSessionRow ws{};
+        ws.token      = MakeWebToken();
+        ws.username   = username;
+        ws.role       = role;
+        ws.created_at = (int64_t)time(nullptr);
+        ws.expires_at = ws.created_at + 86400;
+
+        { std::lock_guard lk(g_dbMu); g_db.InsertWebSession(ws); }
+
+        std::string expiresAt = std::to_string(ws.expires_at);
+        std::string resp = "{" + JStr("token", ws.token) + ","
+                               + JStr("username", username) + ","
+                               + JStr("role", role) + ","
+                               + JStr("expiresAt", expiresAt) + "}";
+        SendJson(s, 200, resp);
+        return;
+    }
+
+    // ── POST /api/auth/logout ─────────────────────────────────────────────────
+    if (method == "POST" && path == "/api/auth/logout")
+    {
+        std::string token = ExtractBearerToken(req);
+        if (!token.empty()) {
+            std::lock_guard lk(g_dbMu);
+            g_db.DeleteWebSession(token);
+        }
+        SendJson(s, 200, "{}");
+        return;
+    }
+
+    // ── GET /api/auth/me ──────────────────────────────────────────────────────
+    if (method == "GET" && path == "/api/auth/me")
+    {
+        std::string token = ExtractBearerToken(req);
+        WebAuthInfo auth  = ValidateWebToken(token);
+        if (!auth.ok) { SendApiError(s, 401, "Not authenticated"); return; }
+
+        std::optional<UserRow>    user;
+        std::optional<LicenseRow> lic;
+        {
+            std::lock_guard lk(g_dbMu);
+            if (!auth.hwid.empty()) {
+                user = g_db.GetUser(auth.hwid);
+                if (user && !user->license_key.empty())
+                    lic = g_db.GetLicense(user->license_key);
+            }
+        }
+
+        std::string licKey   = user ? user->license_key : "";
+        std::string expiresAt = lic ? std::to_string(lic->expires_at) : "0";
+
+        std::string resp = "{" + JStr("username", auth.username) + ","
+                               + JStr("role", auth.role) + ","
+                               + JStr("hwid", auth.hwid) + ","
+                               + JStr("licenseKey", licKey) + ","
+                               + JStr("expiresAt", expiresAt) + "}";
+        SendJson(s, 200, resp);
+        return;
+    }
+
+    // ── GET /api/download ────────────────────────────────────────────────────
+    if (method == "GET" && path == "/api/download")
+    {
+        std::string token = ExtractBearerToken(req);
+        WebAuthInfo auth  = ValidateWebToken(token);
+        if (!auth.ok) { SendApiError(s, 401, "Not authenticated"); return; }
+
+        std::vector<uint8_t> loaderBytes = ReadFileFull("/app/payloads/SparkyLoader.exe");
+        if (loaderBytes.empty()) loaderBytes = ReadFileFull("SparkyLoader.exe");
+        if (loaderBytes.empty()) { SendApiError(s, 404, "Loader not available"); return; }
+
+        std::string name = GenerateRandomString(8) + ".exe";
+        std::string hdr  =
+            "HTTP/1.1 200 OK\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Content-Disposition: attachment; filename=\"" + name + "\"\r\n"
+            "Content-Type: application/x-msdownload\r\n"
+            "Content-Length: " + std::to_string(loaderBytes.size()) + "\r\n\r\n";
+        NetSend(s.sock, s.ssl, hdr.c_str(), (int)hdr.size());
+        NetSend(s.sock, s.ssl, loaderBytes.data(), (int)loaderBytes.size());
+        return;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Everything below requires at least admin role.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── GET /api/admin/users ──────────────────────────────────────────────────
+    if (method == "GET" && path == "/api/admin/users")
+    {
+        std::string token = ExtractBearerToken(req);
+        WebAuthInfo auth  = ValidateWebToken(token);
+        if (!auth.ok) { SendApiError(s, 401, "Not authenticated"); return; }
+        if (auth.role != "admin" && auth.role != "owner")
+        { SendApiError(s, 403, "Admin access required"); return; }
+
+        std::vector<UserRow> users;
+        { std::lock_guard lk(g_dbMu); users = g_db.ListUsers(); }
+
+        std::string arr = "[";
+        for (size_t i = 0; i < users.size(); ++i)
+        {
+            auto& u = users[i];
+            if (i) arr += ",";
+            arr += "{" + JStr("id", u.hwid_hash) + ","
+                       + JStr("username", u.username) + ","
+                       + JStr("hwid", u.hwid_hash) + ","
+                       + JStr("licenseKey", u.license_key) + ","
+                       + JBool("isBanned", u.is_banned) + ","
+                       + JStr("lastSeen", std::to_string(u.last_seen)) + "}";
+        }
+        arr += "]";
+        SendJson(s, 200, arr);
+        return;
+    }
+
+    // ── POST /api/admin/users/ban ──────────────────────────────────────────────
+    if (method == "POST" && path == "/api/admin/users/ban")
+    {
+        std::string token = ExtractBearerToken(req);
+        WebAuthInfo auth  = ValidateWebToken(token);
+        if (!auth.ok) { SendApiError(s, 401, "Not authenticated"); return; }
+        if (auth.role != "admin" && auth.role != "owner")
+        { SendApiError(s, 403, "Admin access required"); return; }
+
+        std::string hwid = ParseJsonStr(body, "hwid");
+        if (hwid.empty()) { SendApiError(s, 400, "hwid required"); return; }
+        { std::lock_guard lk(g_dbMu); g_db.BanUser(hwid, "web admin ban"); }
+        SendJson(s, 200, "{}");
+        return;
+    }
+
+    // ── POST /api/admin/users/unban ────────────────────────────────────────────
+    if (method == "POST" && path == "/api/admin/users/unban")
+    {
+        std::string token = ExtractBearerToken(req);
+        WebAuthInfo auth  = ValidateWebToken(token);
+        if (!auth.ok) { SendApiError(s, 401, "Not authenticated"); return; }
+        if (auth.role != "admin" && auth.role != "owner")
+        { SendApiError(s, 403, "Admin access required"); return; }
+
+        std::string hwid = ParseJsonStr(body, "hwid");
+        if (hwid.empty()) { SendApiError(s, 400, "hwid required"); return; }
+        { std::lock_guard lk(g_dbMu); g_db.UnbanUser(hwid); }
+        SendJson(s, 200, "{}");
+        return;
+    }
+
+    // ── GET /api/admin/licenses ────────────────────────────────────────────────
+    if (method == "GET" && path == "/api/admin/licenses")
+    {
+        std::string token = ExtractBearerToken(req);
+        WebAuthInfo auth  = ValidateWebToken(token);
+        if (!auth.ok) { SendApiError(s, 401, "Not authenticated"); return; }
+        if (auth.role != "admin" && auth.role != "owner")
+        { SendApiError(s, 403, "Admin access required"); return; }
+
+        std::vector<LicenseRow> licenses;
+        { std::lock_guard lk(g_dbMu); licenses = g_db.ListLicenses(); }
+
+        std::string arr = "[";
+        for (size_t i = 0; i < licenses.size(); ++i)
+        {
+            auto& l = licenses[i];
+            if (i) arr += ",";
+            arr += "{" + JStr("key", l.key) + ","
+                       + JNum("tier", l.tier) + ","
+                       + JStr("hwid", l.hwid_hash) + ","
+                       + JStr("expiresAt", std::to_string(l.expires_at)) + ","
+                       + JBool("isBound", !l.hwid_hash.empty()) + "}";
+        }
+        arr += "]";
+        SendJson(s, 200, arr);
+        return;
+    }
+
+    // ── POST /api/admin/licenses/issue ────────────────────────────────────────
+    if (method == "POST" && path == "/api/admin/licenses/issue")
+    {
+        std::string token = ExtractBearerToken(req);
+        WebAuthInfo auth  = ValidateWebToken(token);
+        if (!auth.ok) { SendApiError(s, 401, "Not authenticated"); return; }
+        if (auth.role != "admin" && auth.role != "owner")
+        { SendApiError(s, 403, "Admin access required"); return; }
+
+        int tier = ParseJsonInt(body, "tier");
+        int days = ParseJsonInt(body, "days");
+        if (tier < 1 || tier > 4) { SendApiError(s, 400, "tier must be 1-4"); return; }
+
+        std::string key;
+        { std::lock_guard lk(g_dbMu); key = g_lm->IssueLicense(tier, days); }
+        if (key.empty()) { SendApiError(s, 500, "Failed to issue license"); return; }
+
+        SendJson(s, 200, "{" + JStr("key", key) + "}");
+        return;
+    }
+
+    // ── GET /api/admin/sessions ────────────────────────────────────────────────
+    if (method == "GET" && path == "/api/admin/sessions")
+    {
+        std::string token = ExtractBearerToken(req);
+        WebAuthInfo auth  = ValidateWebToken(token);
+        if (!auth.ok) { SendApiError(s, 401, "Not authenticated"); return; }
+        if (auth.role != "admin" && auth.role != "owner")
+        { SendApiError(s, 403, "Admin access required"); return; }
+
+        SendJson(s, 200, "{" + JNum("count", g_activeSessions.load()) + "}");
+        return;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Everything below requires owner role.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── GET /api/owner/admins ─────────────────────────────────────────────────
+    if (method == "GET" && path == "/api/owner/admins")
+    {
+        std::string token = ExtractBearerToken(req);
+        WebAuthInfo auth  = ValidateWebToken(token);
+        if (!auth.ok) { SendApiError(s, 401, "Not authenticated"); return; }
+        if (auth.role != "owner") { SendApiError(s, 403, "Owner access required"); return; }
+
+        std::vector<UserRow> admins;
+        { std::lock_guard lk(g_dbMu); admins = g_db.ListAdminUsers(); }
+
+        std::string arr = "[";
+        for (size_t i = 0; i < admins.size(); ++i)
+        {
+            auto& a = admins[i];
+            if (i) arr += ",";
+            arr += "{" + JStr("username", a.username) + ","
+                       + JStr("hwid", a.hwid_hash) + ","
+                       + JStr("grantedAt", std::to_string(a.last_seen)) + "}";
+        }
+        arr += "]";
+        SendJson(s, 200, arr);
+        return;
+    }
+
+    // ── POST /api/owner/admins/grant ──────────────────────────────────────────
+    if (method == "POST" && path == "/api/owner/admins/grant")
+    {
+        std::string token = ExtractBearerToken(req);
+        WebAuthInfo auth  = ValidateWebToken(token);
+        if (!auth.ok) { SendApiError(s, 401, "Not authenticated"); return; }
+        if (auth.role != "owner") { SendApiError(s, 403, "Owner access required"); return; }
+
+        std::string hwid = ParseJsonStr(body, "hwid");
+        if (hwid.empty()) { SendApiError(s, 400, "hwid required"); return; }
+        { std::lock_guard lk(g_dbMu); g_db.SetUserRole(hwid, "admin"); }
+        SendJson(s, 200, "{}");
+        return;
+    }
+
+    // ── POST /api/owner/admins/revoke ─────────────────────────────────────────
+    if (method == "POST" && path == "/api/owner/admins/revoke")
+    {
+        std::string token = ExtractBearerToken(req);
+        WebAuthInfo auth  = ValidateWebToken(token);
+        if (!auth.ok) { SendApiError(s, 401, "Not authenticated"); return; }
+        if (auth.role != "owner") { SendApiError(s, 403, "Owner access required"); return; }
+
+        std::string hwid = ParseJsonStr(body, "hwid");
+        if (hwid.empty()) { SendApiError(s, 400, "hwid required"); return; }
+        { std::lock_guard lk(g_dbMu); g_db.SetUserRole(hwid, "user"); }
+        SendJson(s, 200, "{}");
+        return;
+    }
+
+    // ── 404 fallthrough ───────────────────────────────────────────────────────
+    SendApiError(s, 404, "Not found");
+}
+
+// ---------------------------------------------------------------------------
 // StreamEncryptedDll — heartbeat-gated, rolling-key chunked DLL delivery.
 // ---------------------------------------------------------------------------
 static bool StreamEncryptedDll(ClientSession& s)
@@ -553,18 +1087,47 @@ static void HandleClient(int csock, SSL* ssl)
         cleanup(); return;
     }
 
-    // Check if it's an HTTP request (Load Balancer Health Check or curl)
-    if (memcmp(&h.Magic, "GET ", 4) == 0 || memcmp(&h.Magic, "HEAD", 4) == 0)
+    // Check if it's an HTTP request (Load Balancer Health Check, React site API, or curl)
+    if (memcmp(&h.Magic, "GET ", 4) == 0 || memcmp(&h.Magic, "HEAD", 4) == 0
+        || memcmp(&h.Magic, "POST", 4) == 0 || memcmp(&h.Magic, "OPTI", 4) == 0)
     {
         std::string req;
         req.append((const char*)&h, sizeof(h));
         char c;
-        // Read until \r\n\r\n or max 4KB
-        while (req.size() < 4096 && NetRecv(s.sock, s.ssl, &c, 1, 5000))
+        // Read until \r\n\r\n or max 8KB
+        while (req.size() < 8192 && NetRecv(s.sock, s.ssl, &c, 1, 5000))
         {
             req += c;
             if (req.size() >= 4 && req.compare(req.size() - 4, 4, "\r\n\r\n") == 0)
                 break;
+        }
+
+        // Extract HTTP method and path from the request line
+        std::string httpMethod, httpPath;
+        {
+            size_t sp1 = req.find(' ');
+            if (sp1 != std::string::npos)
+            {
+                httpMethod = req.substr(0, sp1);
+                size_t sp2 = req.find(' ', sp1 + 1);
+                if (sp2 != std::string::npos)
+                    httpPath = req.substr(sp1 + 1, sp2 - sp1 - 1);
+            }
+        }
+
+        // Answer CORS preflight before the SPARKY_KEY check — the browser
+        // doesn't send custom headers in OPTIONS, so auth is not possible here.
+        if (httpMethod == "OPTIONS")
+        {
+            const char* cors =
+                "HTTP/1.1 204 No Content\r\n"
+                "Access-Control-Allow-Origin: *\r\n"
+                "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+                "Access-Control-Allow-Headers: Content-Type, Authorization, x-sparky-key\r\n"
+                "Access-Control-Max-Age: 86400\r\n"
+                "Content-Length: 0\r\n\r\n";
+            NetSend(s.sock, s.ssl, cors, (int)strlen(cors));
+            cleanup(); return;
         }
 
         bool authorized = g_sparkyKey.empty();
@@ -623,6 +1186,36 @@ static void HandleClient(int csock, SSL* ssl)
 
         if (authorized)
         {
+            // Read POST body based on Content-Length header
+            std::string httpBody;
+            if (httpMethod == "POST")
+            {
+                std::string lr2 = req;
+                for (auto& ch : lr2) ch = (char)std::tolower((unsigned char)ch);
+                size_t cp = lr2.find("content-length:");
+                if (cp != std::string::npos)
+                {
+                    size_t vs = cp + 15;
+                    while (vs < req.size() && (req[vs] == ' ' || req[vs] == '\t')) ++vs;
+                    size_t ve = req.find('\r', vs);
+                    if (ve == std::string::npos) ve = req.size();
+                    try {
+                        int cl = std::stoi(req.substr(vs, ve - vs));
+                        if (cl > 0 && cl <= 65536) {
+                            httpBody.resize((size_t)cl);
+                            NetRecv(s.sock, s.ssl, httpBody.data(), cl, 5000);
+                        }
+                    } catch (...) {}
+                }
+            }
+
+            // Route /api/* to the web API handler
+            if (httpPath.size() >= 5 && httpPath.compare(0, 5, "/api/") == 0)
+            {
+                HandleWebApi(s, httpMethod, httpPath, req, httpBody);
+                cleanup(); return;
+            }
+
             // If the loader sent an auth header, we treat this as the 'Hello' phase.
             if (!authHex.empty())
             {
@@ -1005,6 +1598,9 @@ static void AdminConsole()
   ban-ip <ip> [reason]         Permanently ban an IP (persisted to DB)
   unban-ip <ip>                Remove a persistent IP ban
   list-ip-bans                 Show all banned IPs
+  grant-owner <hwid_hex>       Set user role to owner
+  grant-admin <hwid_hex>       Set user role to admin
+  demote <hwid_hex>            Set user role back to user
   help                         This message
 )";
 
@@ -1170,11 +1766,32 @@ static void AdminConsole()
             for (auto& [ip, reason] : bans)
                 std::cout << "  " << ip << " — " << reason << "\n";
         }
+        else if (cmd == "grant-owner" || cmd == "grant-admin")
+        {
+            std::string hwid; ss >> hwid;
+            if (hwid.empty()) { std::cout << "[Admin] Usage: " << cmd << " <hwid_hex>\n"; }
+            else {
+                std::string role = (cmd == "grant-owner") ? "owner" : "admin";
+                std::lock_guard lk(g_dbMu);
+                g_db.SetUserRole(hwid, role);
+                std::cout << "[Admin] " << hwid << " → role=" << role << "\n";
+            }
+        }
+        else if (cmd == "demote")
+        {
+            std::string hwid; ss >> hwid;
+            if (hwid.empty()) { std::cout << "[Admin] Usage: demote <hwid_hex>\n"; }
+            else {
+                std::lock_guard lk(g_dbMu);
+                g_db.SetUserRole(hwid, "user");
+                std::cout << "[Admin] " << hwid << " → role=user\n";
+            }
+        }
         else if (cmd == "help")
         {
             std::cout << "Commands: issue activate extend ban unban list-licenses list-users"
                          " purchases sessions prune add-hash rm-hash list-hashes"
-                         " ban-ip unban-ip list-ip-bans\n";
+                         " ban-ip unban-ip list-ip-bans grant-owner grant-admin demote\n";
         }
         else
         {
@@ -1206,6 +1823,8 @@ static void MaintenanceThread()
             std::lock_guard lk(g_dbMu);
             int n = g_db.PruneSessions((int64_t)time(nullptr), 7200);
             if (n > 0) std::cout << "[S] Pruned " << n << " stale session(s)\n";
+            int nw = g_db.PruneWebSessions((int64_t)time(nullptr));
+            if (nw > 0) std::cout << "[S] Pruned " << nw << " expired web session(s)\n";
             g_rl.Prune();
         }
 

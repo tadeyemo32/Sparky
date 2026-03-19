@@ -53,6 +53,17 @@ struct UserRow
     std::string loader_hash;   // SHA-256 hex of loader binary last seen from this HWID
     std::string username;      // supplied at first login; verified on subsequent logins
     std::string password_hash; // SHA-256 hex of the user's password
+    std::string role;          // "user", "admin", or "owner"
+};
+
+// Web sessions — separate from binary-protocol sessions; used by the React site.
+struct WebSessionRow
+{
+    std::string token;      // 64-char hex random token
+    std::string username;
+    std::string role;       // "user", "admin", or "owner"
+    int64_t     created_at;
+    int64_t     expires_at;
 };
 
 struct SessionRow
@@ -149,6 +160,17 @@ public:
     bool UnbanIp(const std::string& ip);
     bool IsIpBanned(const std::string& ip) const;
     std::vector<std::pair<std::string,std::string>> ListIpBans() const; // {ip, reason}
+
+    // ---------- User role management (web admin panel) ----------
+    std::optional<UserRow> GetUserByUsername(const std::string& username) const;
+    bool SetUserRole(const std::string& hwid_hash, const std::string& role);
+    std::vector<UserRow> ListAdminUsers() const; // role='admin' or 'owner'
+
+    // ---------- Web sessions (React site) ----------
+    bool InsertWebSession(const WebSessionRow& row);
+    bool DeleteWebSession(const std::string& token);
+    std::optional<WebSessionRow> GetWebSession(const std::string& token) const;
+    int PruneWebSessions(int64_t now);
 
     // ---------- Auth helper ----------
     // Full authorisation check: not banned, has valid unexpired license,
