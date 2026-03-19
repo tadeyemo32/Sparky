@@ -48,7 +48,7 @@ namespace Col
     static constexpr ImVec4 Border      = {0.14f,  0.17f,  0.30f,  1.f};
     static constexpr ImVec4 BorderDim   = {0.10f,  0.12f,  0.22f,  0.7f};
 
-    static constexpr ImVec4 Accent      = {0.00f,  0.75f,  0.95f,  1.f};  // electric cyan
+    static constexpr ImVec4 Accent      = {0.00f,  0.75f,  0.95f,  1.f};
     static constexpr ImVec4 AccentHover = {0.15f,  0.85f,  1.00f,  1.f};
     static constexpr ImVec4 AccentDim   = {0.00f,  0.50f,  0.65f,  1.f};
     static constexpr ImVec4 AccentDeep  = {0.00f,  0.35f,  0.48f,  1.f};
@@ -65,9 +65,6 @@ namespace Col
     static constexpr ImVec4 TextDisable = {0.30f,  0.30f,  0.40f,  1.f};
 }
 
-// ---------------------------------------------------------------------------
-// Convert ImVec4 to ImU32 helper
-// ---------------------------------------------------------------------------
 static ImU32 U32(const ImVec4& v)
 {
     return ImGui::ColorConvertFloat4ToU32(v);
@@ -142,12 +139,6 @@ static void ApplyTheme()
     c[ImGuiCol_ResizeGripHovered]    = Col::AccentDim;
     c[ImGuiCol_ResizeGripActive]     = Col::Accent;
 
-    c[ImGuiCol_Tab]                  = {0.07f, 0.08f, 0.15f, 1.f};
-    c[ImGuiCol_TabHovered]           = Col::AccentDeep;
-    c[ImGuiCol_TabActive]            = {0.00f, 0.50f, 0.65f, 1.f};
-    c[ImGuiCol_TabUnfocused]         = c[ImGuiCol_Tab];
-    c[ImGuiCol_TabUnfocusedActive]   = c[ImGuiCol_TabActive];
-
     c[ImGuiCol_ScrollbarBg]          = Col::BgDeep;
     c[ImGuiCol_ScrollbarGrab]        = Col::Border;
     c[ImGuiCol_ScrollbarGrabHovered] = Col::AccentDim;
@@ -158,17 +149,15 @@ static void ApplyTheme()
 }
 
 // ---------------------------------------------------------------------------
-// Small helpers
+// Helpers
 // ---------------------------------------------------------------------------
 
-// Three-colour status dot with label.
 static void StatusRow(const char* label, bool active, bool pending,
                       const char* activeText, const char* pendingText, const char* offText)
 {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 p       = ImGui::GetCursorScreenPos();
 
-    // Dot (14×14 area, dot radius 4.5)
     float cx = p.x + 7.f;
     float cy = p.y + 9.f;
 
@@ -176,14 +165,12 @@ static void StatusRow(const char* label, bool active, bool pending,
                     pending ? Col::Orange :
                               Col::Red;
 
-    // Glow ring behind dot
     if (active || pending)
         dl->AddCircleFilled({cx, cy}, 7.f, U32(ImVec4{dotCol.x, dotCol.y, dotCol.z, 0.18f}));
     dl->AddCircleFilled({cx, cy}, 4.5f, U32(dotCol));
 
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 20.f);
 
-    // Dim label column
     ImGui::PushStyleColor(ImGuiCol_Text, Col::TextLabel);
     ImGui::Text("%-10s", label);
     ImGui::PopStyleColor();
@@ -195,7 +182,6 @@ static void StatusRow(const char* label, bool active, bool pending,
     ImGui::PopStyleColor();
 }
 
-// Thin accent separator
 static void AccentSep()
 {
     ImGui::PushStyleColor(ImGuiCol_Separator, Col::AccentDim);
@@ -203,14 +189,12 @@ static void AccentSep()
     ImGui::PopStyleColor();
 }
 
-// Spinning "clock" ASCII spinner using elapsed time.
 static const char* Spinner()
 {
     static const char* frames[] = {"◐","◓","◑","◒"};
     return frames[(int)(ImGui::GetTime() * 6.0) & 3];
 }
 
-// Human-readable byte size
 static void FormatBytes(char* buf, size_t n, uint32_t bytes)
 {
     if (bytes >= 1024*1024)
@@ -222,31 +206,25 @@ static void FormatBytes(char* buf, size_t n, uint32_t bytes)
 }
 
 // ---------------------------------------------------------------------------
-// Inject tab
+// Main inject panel — rendered directly, no tab bar
 // ---------------------------------------------------------------------------
-static void TabInject(UIState& state,
-                      std::function<void()>& onConnect,
-                      std::function<void()>& onInject)
+static void InjectPanel(UIState& state,
+                        std::function<void()>& onConnect,
+                        std::function<void()>& onInject)
 {
     ImGui::Spacing();
 
     // ── Status panel ─────────────────────────────────────────────────────
     ImGui::PushStyleColor(ImGuiCol_ChildBg, Col::BgPanel);
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 7.f);
-    ImGui::BeginChild("##status", {0.f, 92.f}, true);
+    ImGui::BeginChild("##status", {0.f, 64.f}, true);
     ImGui::Spacing();
 
     char procText[64]{};
     if (state.processFound)
         snprintf(procText, sizeof(procText), "%s  (PID %u)", state.processName, state.targetPid);
-    else
-        snprintf(procText, sizeof(procText), "waiting…");
 
     StatusRow("Process", state.processFound, false, procText, "", "Not found");
-    ImGui::Spacing();
-
-    const char* srvActive  = state.serverConnected ? (state.useTls ? "Connected  (TLS)" : "Connected  (plain)") : "";
-    StatusRow("Server",  state.serverConnected, state.connecting, srvActive, "Connecting…", "Offline");
     ImGui::Spacing();
 
     char modText[48]{};
@@ -259,7 +237,8 @@ static void TabInject(UIState& state,
     else if (state.dllReady)
         snprintf(modText, sizeof(modText), "Ready");
 
-    StatusRow("Module",  state.dllReady,   false, modText, "", "Not ready");
+    StatusRow("Module",  state.dllReady, state.connecting, modText,
+              "Receiving…", "Not ready");
 
     ImGui::Spacing();
     ImGui::EndChild();
@@ -272,25 +251,16 @@ static void TabInject(UIState& state,
     ImGui::PushStyleColor(ImGuiCol_Text, Col::TextLabel);
     ImGui::TextUnformatted("Target Process");
     ImGui::PopStyleColor();
-
     ImGui::SetNextItemWidth(-1.f);
     ImGui::InputText("##proc", state.processName, sizeof(state.processName));
 
-    // ── Local DLL path (dev mode) ─────────────────────────────────────────
-    ImGui::Spacing();
-    ImGui::PushStyleColor(ImGuiCol_Text, Col::TextLabel);
-    ImGui::TextUnformatted("Local DLL  (dev fallback — leave blank for server-only)");
-    ImGui::PopStyleColor();
-    ImGui::SetNextItemWidth(-1.f);
-    ImGui::InputText("##dll", state.dllPath, sizeof(state.dllPath));
-
     ImGui::Spacing();
 
-    // ── Download progress bar (visible while download is running) ─────────
+    // ── Download progress bar ─────────────────────────────────────────────
     if (state.connecting && state.downloadProgress > 0.f)
     {
         char pctBuf[32];
-        snprintf(pctBuf, sizeof(pctBuf), "Downloading…  %.0f%%", state.downloadProgress * 100.f);
+        snprintf(pctBuf, sizeof(pctBuf), "%.0f%%", state.downloadProgress * 100.f);
         ImGui::PushStyleColor(ImGuiCol_PlotHistogram, Col::AccentDim);
         ImGui::PushStyleColor(ImGuiCol_FrameBg,       Col::BgDeep);
         ImGui::ProgressBar(state.downloadProgress, {-1.f, 6.f}, "");
@@ -365,75 +335,7 @@ static void TabInject(UIState& state,
 }
 
 // ---------------------------------------------------------------------------
-// Server tab
-// ---------------------------------------------------------------------------
-static void TabServer(UIState& state)
-{
-    ImGui::Spacing();
-
-    ImGui::PushStyleColor(ImGuiCol_Text, Col::TextLabel);
-    ImGui::TextUnformatted("Host");
-    ImGui::PopStyleColor();
-    ImGui::SetNextItemWidth(-1.f);
-    ImGui::InputText("##host", state.serverHost, sizeof(state.serverHost));
-
-    ImGui::Spacing();
-    ImGui::PushStyleColor(ImGuiCol_Text, Col::TextLabel);
-    ImGui::TextUnformatted("Port");
-    ImGui::PopStyleColor();
-    ImGui::SetNextItemWidth(100.f);
-    ImGui::InputInt("##port", &state.serverPort, 0);
-    state.serverPort = std::clamp(state.serverPort, 1, 65535);
-
-    ImGui::Spacing();
-    ImGui::Checkbox("Use TLS", &state.useTls);
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Text, Col::TextDim);
-    ImGui::TextUnformatted("(disable only for local dev — cert required in production)");
-    ImGui::PopStyleColor();
-
-    ImGui::Spacing();
-    AccentSep();
-    ImGui::Spacing();
-
-    // Connection info (read-only when connected)
-    if (state.serverConnected)
-    {
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, Col::BgPanel);
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 7.f);
-        ImGui::BeginChild("##srvinfo", {0.f, 70.f}, true);
-        ImGui::Spacing();
-
-        ImGui::PushStyleColor(ImGuiCol_Text, Col::TextLabel);
-        ImGui::TextUnformatted("  Endpoint");
-        ImGui::PopStyleColor();
-        ImGui::SameLine(90.f);
-        ImGui::Text("%s:%d", state.serverHost, state.serverPort);
-
-        ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_Text, Col::TextLabel);
-        ImGui::TextUnformatted("  Security");
-        ImGui::PopStyleColor();
-        ImGui::SameLine(90.f);
-        ImGui::PushStyleColor(ImGuiCol_Text, state.useTls ? Col::Green : Col::Orange);
-        ImGui::TextUnformatted(state.useTls ? "TLS  (encrypted)" : "Plaintext  (dev mode)");
-        ImGui::PopStyleColor();
-
-        ImGui::Spacing();
-        ImGui::EndChild();
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor();
-    }
-    else
-    {
-        ImGui::PushStyleColor(ImGuiCol_Text, Col::TextDim);
-        ImGui::TextWrapped("Not connected.  Configure the endpoint above, then click Connect on the Inject tab.");
-        ImGui::PopStyleColor();
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Log panel (shared between tabs — rendered below them)
+// Log panel
 // ---------------------------------------------------------------------------
 static void LogPanel(UIState& state)
 {
@@ -481,7 +383,6 @@ static void LogPanel(UIState& state)
         }
     }
 
-    // Auto-scroll to bottom unless user has scrolled up.
     if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4.f)
         ImGui::SetScrollHereY(1.f);
 
@@ -499,7 +400,6 @@ static void RenderFrame(UIState& state,
 {
     const ImGuiIO& io = ImGui::GetIO();
 
-    // Full-screen clear pass (no input, no decorations)
     ImGui::SetNextWindowPos({0, 0});
     ImGui::SetNextWindowSize(io.DisplaySize);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.f);
@@ -512,8 +412,8 @@ static void RenderFrame(UIState& state,
     ImGui::PopStyleVar(2);
 
     // ── Main panel ─────────────────────────────────────────────────────────
-    constexpr float W = 520.f;
-    constexpr float H = 640.f;
+    constexpr float W = 480.f;
+    constexpr float H = 580.f;
     ImGui::SetNextWindowPos(
         {std::floor((io.DisplaySize.x - W) * 0.5f),
          std::floor((io.DisplaySize.y - H) * 0.5f)},
@@ -536,25 +436,16 @@ static void RenderFrame(UIState& state,
 
     // ── Masthead ────────────────────────────────────────────────────────────
     {
-        // Lightning-bolt glyph + title
         ImGui::PushStyleColor(ImGuiCol_Text, Col::Accent);
         ImGui::SetWindowFontScale(1.55f);
         ImGui::Text("  \u26A1 SPARKY");
         ImGui::SetWindowFontScale(1.f);
         ImGui::PopStyleColor();
 
-        // Version badge top-right
         ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetStyle().WindowPadding.x - 44.f);
         ImGui::PushStyleColor(ImGuiCol_Text, Col::TextDim);
         ImGui::SetWindowFontScale(0.85f);
         ImGui::TextUnformatted("v3.0");
-        ImGui::SetWindowFontScale(1.f);
-        ImGui::PopStyleColor();
-
-        // Subtitle line
-        ImGui::PushStyleColor(ImGuiCol_Text, Col::TextDim);
-        ImGui::SetWindowFontScale(0.82f);
-        ImGui::TextUnformatted("   Stealth Loader  ·  Protocol v3  ·  APC Injection");
         ImGui::SetWindowFontScale(1.f);
         ImGui::PopStyleColor();
 
@@ -563,25 +454,8 @@ static void RenderFrame(UIState& state,
         ImGui::Spacing();
     }
 
-    // ── Tabs ────────────────────────────────────────────────────────────────
-    constexpr float TAB_AREA_H = 340.f;
-    if (ImGui::BeginTabBar("##tabs"))
-    {
-        if (ImGui::BeginTabItem("  Inject  "))
-        {
-            ImGui::SetNextWindowContentSize({0.f, TAB_AREA_H});
-            TabInject(state, onConnect, onInject);
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("  Server  "))
-        {
-            TabServer(state);
-            ImGui::EndTabItem();
-        }
-
-        ImGui::EndTabBar();
-    }
+    // ── Inject panel (no tab bar) ────────────────────────────────────────────
+    InjectPanel(state, onConnect, onInject);
 
     ImGui::Spacing();
     AccentSep();
@@ -609,19 +483,18 @@ void RunUI(UIState& state,
     glfwWindowHint(GLFW_RESIZABLE,  GLFW_FALSE);
     glfwWindowHint(GLFW_DECORATED,  GLFW_TRUE);
 
-    // Centre on the primary monitor
-    GLFWmonitor* mon  = glfwGetPrimaryMonitor();
+    GLFWmonitor* mon      = glfwGetPrimaryMonitor();
     const GLFWvidmode* vm = mon ? glfwGetVideoMode(mon) : nullptr;
 
-    GLFWwindow* win = glfwCreateWindow(520, 640, "Sparky", nullptr, nullptr);
+    GLFWwindow* win = glfwCreateWindow(480, 580, "Sparky", nullptr, nullptr);
     if (!win) { glfwTerminate(); return; }
 
     if (vm && mon)
     {
         int mx, my;
         glfwGetMonitorPos(mon, &mx, &my);
-        glfwSetWindowPos(win, mx + (vm->width  - 520) / 2,
-                              my + (vm->height - 640) / 2);
+        glfwSetWindowPos(win, mx + (vm->width  - 480) / 2,
+                              my + (vm->height - 580) / 2);
     }
 
     glfwMakeContextCurrent(win);
@@ -652,7 +525,6 @@ void RunUI(UIState& state,
         int fw, fh;
         glfwGetFramebufferSize(win, &fw, &fh);
         glViewport(0, 0, fw, fh);
-        // Deep navy background fill
         glClearColor(Col::Bg.x, Col::Bg.y, Col::Bg.z, 1.f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

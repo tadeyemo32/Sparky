@@ -358,11 +358,6 @@ static std::vector<uint8_t> ConnectAndFetchDll(
             state.AddLog("[WRN] No certificate pin set — MITM not prevented");
         }
 
-        state.AddLog("[INF] TLS established");
-    }
-    else
-    {
-        state.AddLog("[WRN] TLS unavailable — connecting in plaintext");
     }
 
     // ------------------------------------------------------------------
@@ -620,9 +615,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         state.connecting       = true;
         dllInRam.clear();
 
-        state.AddLog("[INF] Connecting to " + std::string(state.serverHost)
-                     + ":" + std::to_string(state.serverPort)
-                     + (state.useTls ? "  (TLS)" : "  (plain)") + "...");
+        state.AddLog("[INF] Connecting...");
 
         struct ConnArgs {
             UIState*              st;
