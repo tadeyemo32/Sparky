@@ -142,13 +142,7 @@ static std::string GenerateRandomString(size_t length)
     return result;
 }
 
-static std::string HexStr(const uint8_t* d, size_t n)
-{
-    static const char h[] = "0123456789abcdef";
-    std::string out; out.reserve(n * 2);
-    for (size_t i = 0; i < n; ++i) { out += h[d[i]>>4]; out += h[d[i]&0xF]; }
-    return out;
-}
+// HexStr is now inline in Protocol.h
 
 static std::vector<uint8_t> ReadFileFull(const char* path)
 {
@@ -520,6 +514,7 @@ static void HandleClient(int csock, SSL* ssl)
 
     // ---- 1. Receive Hello (or HTTP Health Check) ----
     MsgHeader h{};
+    std::vector<uint8_t> pay;
     if (!NetRecv(s.sock, s.ssl, &h, sizeof(h), 10000))
     {
         cleanup(); return;
@@ -664,7 +659,7 @@ static void HandleClient(int csock, SSL* ssl)
     {
         cleanup(); return;
     }
-    std::vector<uint8_t> pay(h.Length);
+    pay.resize(h.Length);
     if (!NetRecv(s.sock, s.ssl, pay.data(), h.Length, 10000)) { cleanup(); return; }
     uint32_t crc{}; if (!NetRecv(s.sock, s.ssl, &crc, 4, 10000)) { cleanup(); return; }
 
@@ -676,6 +671,7 @@ static void HandleClient(int csock, SSL* ssl)
     }
 
     if (pay.size() < sizeof(HelloPayload)) { cleanup(); return; }
+AUTH_LOGIC_START:
     const auto& hello = *reinterpret_cast<HelloPayload*>(pay.data());
 
     // Raw HWID hex from the loader
