@@ -8,6 +8,7 @@ import { OwnerRoute } from './components/OwnerRoute';
 import { Landing } from './pages/Landing';
 import { Login } from './pages/Login';
 import { SignUp } from './pages/SignUp';
+import { ForgotPassword } from './pages/ForgotPassword';
 import { Dashboard } from './pages/Dashboard';
 import { Download } from './pages/Download';
 import { AdminUsers } from './pages/admin/Users';
@@ -27,6 +28,7 @@ export default function App() {
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<SignUp />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
 
           {/* User routes */}
           <Route

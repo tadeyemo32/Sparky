@@ -10,6 +10,7 @@
 #  include <netinet/in.h>
 #  include <netinet/tcp.h>   // TCP_NODELAY
 #  include <arpa/inet.h>
+#  include <netdb.h>
 #  include <unistd.h>
 #  include <sys/stat.h>
 #  include <sys/wait.h>      // waitpid, fork
@@ -112,6 +113,11 @@ static int64_t g_startTime = 0;
 // an Origin header matching this value; CORS responses use the specific origin
 // instead of *.  If unset, origin checking is skipped (dev mode).
 static std::string g_allowedOrigin;
+
+// Resend API — set RESEND_API_KEY to enable transactional email (OTP, forgot-password).
+// Set RESEND_FROM_EMAIL to your verified sender address (e.g. "Sparky <noreply@yourdomain.com>").
+static std::string g_resendKey;
+static std::string g_resendFrom;
 
 // Per-HWID concurrent session guard.
 // Prevents one user from opening multiple simultaneous sessions.
@@ -574,6 +580,108 @@ static std::string MakeWebToken()
     return HexStr(raw, sizeof(raw));
 }
 
+// ── OTP generation ────────────────────────────────────────────────────────────
+
+// Returns a 6-digit zero-padded numeric OTP string.
+static std::string MakeOtp()
+{
+    uint8_t raw[4]{};
+    RAND_bytes(raw, sizeof(raw));
+    uint32_t n = (uint32_t)raw[0]
+               | ((uint32_t)raw[1] << 8)
+               | ((uint32_t)raw[2] << 16)
+               | ((uint32_t)raw[3] << 24);
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "%06u", (unsigned)(n % 1000000u));
+    return std::string(buf);
+}
+
+// ── Transactional email via Resend API ────────────────────────────────────────
+
+// Sends an email through the Resend REST API over raw HTTPS (no libcurl required).
+// Returns true if the API returns a 2xx status; logs failures to stderr.
+// If RESEND_API_KEY is not set the email is silently skipped and false is returned.
+static bool SendResendEmail(const std::string& to,
+                             const std::string& subject,
+                             const std::string& htmlBody)
+{
+    if (g_resendKey.empty()) {
+        std::cerr << "[Email] RESEND_API_KEY not set — email to " << to << " skipped\n";
+        return false;
+    }
+
+    std::string from = g_resendFrom.empty()
+                     ? std::string("Sparky <onboarding@resend.dev>")
+                     : g_resendFrom;
+
+    std::string payload = "{"
+        "\"from\":\""    + JEscape(from)     + "\","
+        "\"to\":[\""     + JEscape(to)       + "\"],"
+        "\"subject\":\"" + JEscape(subject)  + "\","
+        "\"html\":\""    + JEscape(htmlBody) + "\""
+        "}";
+
+    // Resolve api.resend.com
+    struct addrinfo hints{}, *addrRes = nullptr;
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo("api.resend.com", "443", &hints, &addrRes) != 0 || !addrRes) {
+        std::cerr << "[Email] DNS failed for api.resend.com\n";
+        return false;
+    }
+
+#ifdef _WIN32
+    SOCKET sock = socket(addrRes->ai_family, addrRes->ai_socktype, addrRes->ai_protocol);
+    bool connected = (sock != INVALID_SOCKET) &&
+                     connect(sock, addrRes->ai_addr, (int)addrRes->ai_addrlen) == 0;
+#else
+    int sock = socket(addrRes->ai_family, addrRes->ai_socktype, addrRes->ai_protocol);
+    bool connected = (sock >= 0) &&
+                     connect(sock, addrRes->ai_addr, (socklen_t)addrRes->ai_addrlen) == 0;
+#endif
+    freeaddrinfo(addrRes);
+
+    bool ok = false;
+    if (connected) {
+        SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
+        if (ctx) {
+            SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
+            SSL_CTX_set_default_verify_paths(ctx);
+            SSL* ssl = SSL_new(ctx);
+            if (ssl) {
+                SSL_set_fd(ssl, (int)sock);
+                SSL_set_tlsext_host_name(ssl, "api.resend.com");
+                if (SSL_connect(ssl) == 1) {
+                    std::string req =
+                        "POST /emails HTTP/1.1\r\n"
+                        "Host: api.resend.com\r\n"
+                        "Authorization: Bearer " + g_resendKey + "\r\n"
+                        "Content-Type: application/json\r\n"
+                        "Content-Length: " + std::to_string(payload.size()) + "\r\n"
+                        "Connection: close\r\n"
+                        "\r\n" + payload;
+                    SSL_write(ssl, req.c_str(), (int)req.size());
+                    char buf[2048]{};
+                    SSL_read(ssl, buf, sizeof(buf) - 1);
+                    ok = std::strstr(buf, "HTTP/1.1 2") != nullptr;
+                    if (!ok)
+                        std::cerr << "[Email] Resend error: "
+                                  << std::string(buf, std::min((size_t)200, std::strlen(buf)))
+                                  << "\n";
+                }
+                SSL_free(ssl);
+            }
+            SSL_CTX_free(ctx);
+        }
+    }
+#ifdef _WIN32
+    closesocket(sock);
+#else
+    if (sock >= 0) close(sock);
+#endif
+    return ok;
+}
+
 // ── Bearer token extraction ───────────────────────────────────────────────────
 
 static std::string ExtractBearerToken(const std::string& req)
@@ -679,7 +787,6 @@ static void HandleWebApi(ClientSession& s,
         if (username.empty() || passwordHash.empty())
         { SendApiError(s, 400, "username and passwordHash required"); return; }
 
-        // Enforce minimum lengths to prevent trivial brute-force
         if (username.size() < 3 || username.size() > 32)
         { SendApiError(s, 400, "username must be 3-32 characters"); return; }
 
@@ -692,6 +799,13 @@ static void HandleWebApi(ClientSession& s,
         {
             // Constant-time: always run comparison even when account not found
             SendApiError(s, 401, "Invalid username or password");
+            return;
+        }
+
+        // Block login if email is set but not yet verified (newly registered accounts)
+        if (!acct->email.empty() && acct->email_verified == 0)
+        {
+            SendApiError(s, 403, "Email not verified. Check your inbox for the verification code.");
             return;
         }
 
@@ -716,62 +830,176 @@ static void HandleWebApi(ClientSession& s,
     }
 
     // ── POST /api/auth/signup ─────────────────────────────────────────────────
-    // Creates a new web_accounts row.  No license key or HWID needed.
+    // Creates a new web_accounts row.  Requires email for OTP verification.
     if (method == "POST" && path == "/api/auth/signup")
     {
         std::string username     = ParseJsonStr(body, "username");
         std::string passwordHash = ParseJsonStr(body, "passwordHash");
-        if (username.empty() || passwordHash.empty())
-        { SendApiError(s, 400, "username and passwordHash required"); return; }
+        std::string email        = ParseJsonStr(body, "email");
+        if (username.empty() || passwordHash.empty() || email.empty())
+        { SendApiError(s, 400, "username, passwordHash, and email required"); return; }
 
         if (username.size() < 3 || username.size() > 32)
         { SendApiError(s, 400, "username must be 3-32 characters"); return; }
-        if (passwordHash.size() != 64) // must be SHA-256 hex
+        if (passwordHash.size() != 64)
         { SendApiError(s, 400, "passwordHash must be a 64-char SHA-256 hex string"); return; }
+        // Basic email sanity: must contain @ and a dot after it
+        {
+            size_t at = email.find('@');
+            if (at == std::string::npos || email.find('.', at) == std::string::npos || email.size() > 254)
+            { SendApiError(s, 400, "Invalid email address"); return; }
+        }
 
-        // Validate username: only alphanumeric + underscore
         for (char c : username) {
             if (!std::isalnum((unsigned char)c) && c != '_')
             { SendApiError(s, 400, "username may only contain letters, digits, and underscores"); return; }
         }
 
-        // Determine role — first registered web account becomes owner
-        std::string role = "user";
+        // Check email uniqueness
         {
             std::lock_guard lk(g_dbMu);
-            auto admins = g_db.ListWebAdmins();
-            // Check SPARKY_WEB_OWNER_USERNAME env var
+            if (g_db.GetWebAccountByEmail(email).has_value())
+            { SendApiError(s, 409, "Email already registered"); return; }
+        }
+
+        // Determine role
+        std::string role = "user";
+        {
             const char* ownerEnv = std::getenv("SPARKY_WEB_OWNER_USERNAME");
             if (ownerEnv && std::string(ownerEnv) == username)
                 role = "owner";
         }
 
         WebAccountRow acct{};
-        acct.username      = username;
-        acct.password_hash = passwordHash;
-        acct.role          = role;
-        acct.created_at    = (int64_t)time(nullptr);
-        acct.last_login    = acct.created_at;
+        acct.username       = username;
+        acct.password_hash  = passwordHash;
+        acct.role           = role;
+        acct.created_at     = (int64_t)time(nullptr);
+        acct.last_login     = acct.created_at;
+        acct.email          = email;
+        acct.email_verified = 0;
 
         bool created = false;
         { std::lock_guard lk(g_dbMu); created = g_db.CreateWebAccount(acct); }
         if (!created)
         { SendApiError(s, 409, "Username already taken"); return; }
 
+        // Generate and store OTP (valid 10 minutes)
+        std::string otp     = MakeOtp();
+        int64_t     otpExp  = (int64_t)time(nullptr) + 600;
+        { std::lock_guard lk(g_dbMu); g_db.SetWebAccountOtp(username, otp, otpExp); }
+
+        // Send verification email (fire-and-forget — don't fail signup if email send fails)
+        std::string emailHtml =
+            "<h2>Verify your Sparky account</h2>"
+            "<p>Your verification code is:</p>"
+            "<h1 style=\"letter-spacing:8px\">" + otp + "</h1>"
+            "<p>This code expires in 10 minutes.</p>";
+        SendResendEmail(email, "Verify your Sparky account", emailHtml);
+
+        // Return 202 — pending OTP verification (no session token yet)
+        std::string resp = "{" + JStr("status", "pending") + ","
+                               + JStr("username", username) + "}";
+        SendJson(s, 202, resp);
+        return;
+    }
+
+    // ── POST /api/auth/verify-otp ─────────────────────────────────────────────
+    // Verifies the signup OTP and issues a session token.
+    if (method == "POST" && path == "/api/auth/verify-otp")
+    {
+        std::string username = ParseJsonStr(body, "username");
+        std::string otp      = ParseJsonStr(body, "otp");
+        if (username.empty() || otp.empty())
+        { SendApiError(s, 400, "username and otp required"); return; }
+
+        std::optional<WebAccountRow> acct;
+        { std::lock_guard lk(g_dbMu); acct = g_db.GetWebAccount(username); }
+        if (!acct)
+        { SendApiError(s, 404, "Account not found"); return; }
+
+        if (acct->email_verified)
+        { SendApiError(s, 400, "Email already verified"); return; }
+
+        int64_t now = (int64_t)time(nullptr);
+        if (acct->otp_code != otp || acct->otp_expires < now)
+        { SendApiError(s, 400, "Invalid or expired verification code"); return; }
+
+        { std::lock_guard lk(g_dbMu); g_db.VerifyWebAccountEmail(username); }
+
+        std::string role = acct->role.empty() ? "user" : acct->role;
+        { std::lock_guard lk(g_dbMu); g_db.UpdateWebAccountLastLogin(username, now); }
+
         WebSessionRow ws{};
         ws.token      = MakeWebToken();
         ws.username   = username;
         ws.role       = role;
-        ws.created_at = acct.created_at;
-        ws.expires_at = ws.created_at + 86400;
-
+        ws.created_at = now;
+        ws.expires_at = now + 86400;
         { std::lock_guard lk(g_dbMu); g_db.InsertWebSession(ws); }
 
         std::string resp = "{" + JStr("token", ws.token) + ","
                                + JStr("username", username) + ","
                                + JStr("role", role) + ","
                                + JStr("expiresAt", std::to_string(ws.expires_at)) + "}";
-        SendJson(s, 201, resp);
+        SendJson(s, 200, resp);
+        return;
+    }
+
+    // ── POST /api/auth/forgot-password ────────────────────────────────────────
+    // Sends a password-reset OTP to the registered email address.
+    // Always returns 200 to avoid revealing whether an account exists.
+    if (method == "POST" && path == "/api/auth/forgot-password")
+    {
+        std::string email = ParseJsonStr(body, "email");
+        if (email.empty())
+        { SendApiError(s, 400, "email required"); return; }
+
+        std::optional<WebAccountRow> acct;
+        { std::lock_guard lk(g_dbMu); acct = g_db.GetWebAccountByEmail(email); }
+
+        if (acct) {
+            std::string otp    = MakeOtp();
+            int64_t     otpExp = (int64_t)time(nullptr) + 600;
+            { std::lock_guard lk(g_dbMu); g_db.SetWebAccountOtp(acct->username, otp, otpExp); }
+
+            std::string emailHtml =
+                "<h2>Reset your Sparky password</h2>"
+                "<p>Your password reset code is:</p>"
+                "<h1 style=\"letter-spacing:8px\">" + otp + "</h1>"
+                "<p>Enter this code along with your username to set a new password. "
+                "It expires in 10 minutes.</p>";
+            SendResendEmail(email, "Reset your Sparky password", emailHtml);
+        }
+
+        SendJson(s, 200, "{\"status\":\"sent\"}");
+        return;
+    }
+
+    // ── POST /api/auth/reset-password ─────────────────────────────────────────
+    // Verifies the reset OTP and updates the password.
+    if (method == "POST" && path == "/api/auth/reset-password")
+    {
+        std::string username     = ParseJsonStr(body, "username");
+        std::string otp          = ParseJsonStr(body, "otp");
+        std::string newPwdHash   = ParseJsonStr(body, "newPasswordHash");
+        if (username.empty() || otp.empty() || newPwdHash.empty())
+        { SendApiError(s, 400, "username, otp, and newPasswordHash required"); return; }
+        if (newPwdHash.size() != 64)
+        { SendApiError(s, 400, "newPasswordHash must be a 64-char SHA-256 hex string"); return; }
+
+        std::optional<WebAccountRow> acct;
+        { std::lock_guard lk(g_dbMu); acct = g_db.GetWebAccount(username); }
+        if (!acct)
+        { SendApiError(s, 404, "Account not found"); return; }
+
+        int64_t now = (int64_t)time(nullptr);
+        if (acct->otp_code != otp || acct->otp_expires < now)
+        { SendApiError(s, 400, "Invalid or expired reset code"); return; }
+
+        { std::lock_guard lk(g_dbMu); g_db.UpdateWebAccountPassword(username, newPwdHash); }
+
+        SendJson(s, 200, "{\"status\":\"ok\"}");
         return;
     }
 
@@ -2018,6 +2246,18 @@ int main(int argc, char** argv)
         g_sparkyKey = k;
         std::cout << "[S] Loaded SPARKY_KEY from environment.\n";
     }
+
+    if (const char* rk = std::getenv("RESEND_API_KEY"))
+    {
+        g_resendKey = rk;
+        std::cout << "[S] Resend email: enabled\n";
+    }
+    else
+    {
+        std::cout << "[S] Resend email: disabled (set RESEND_API_KEY to enable)\n";
+    }
+    if (const char* rf = std::getenv("RESEND_FROM_EMAIL"))
+        g_resendFrom = rf;
 
     // ---- GCP Cloud Run: honour $PORT env var (default 8080 on Cloud Run) ----
     // If PORT is set (e.g. by Cloud Run), listen on that port instead of 7777.

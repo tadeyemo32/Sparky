@@ -179,6 +179,11 @@ bool Database::CreateSchema()
             created_at    BIGINT NOT NULL,
             last_login    BIGINT NOT NULL DEFAULT 0
         );
+        ALTER TABLE web_accounts ADD COLUMN IF NOT EXISTS email          TEXT    NOT NULL DEFAULT '';
+        ALTER TABLE web_accounts ADD COLUMN IF NOT EXISTS email_verified INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE web_accounts ADD COLUMN IF NOT EXISTS otp_code       TEXT    NOT NULL DEFAULT '';
+        ALTER TABLE web_accounts ADD COLUMN IF NOT EXISTS otp_expires    BIGINT  NOT NULL DEFAULT 0;
+        CREATE INDEX IF NOT EXISTS idx_web_accounts_email ON web_accounts(email);
     )sql";
 
     PGresult* res = PQexec(PG(m_db), ddl);
@@ -776,11 +781,12 @@ std::vector<std::pair<std::string,std::string>> Database::ListIpBans() const
 bool Database::CreateWebAccount(const WebAccountRow& row)
 {
     auto* res = PgExec(PG(m_db),
-        "INSERT INTO web_accounts(username,password_hash,role,created_at,last_login)"
-        " VALUES($1,$2,$3,$4,$5)"
+        "INSERT INTO web_accounts(username,password_hash,role,created_at,last_login,email,email_verified)"
+        " VALUES($1,$2,$3,$4,$5,$6,$7)"
         " ON CONFLICT(username) DO NOTHING",
         { row.username, row.password_hash, row.role,
-          std::to_string(row.created_at), std::to_string(row.last_login) });
+          std::to_string(row.created_at), std::to_string(row.last_login),
+          row.email, std::to_string(row.email_verified) });
     if (!res) return false;
     bool created = std::atoi(PQcmdTuples(res)) > 0;
     PQclear(res);
@@ -790,7 +796,7 @@ bool Database::CreateWebAccount(const WebAccountRow& row)
 std::optional<WebAccountRow> Database::GetWebAccount(const std::string& username) const
 {
     auto* res = PgExec(PG(m_db),
-        "SELECT username,password_hash,role,created_at,last_login"
+        "SELECT username,password_hash,role,created_at,last_login,email,email_verified,otp_code,otp_expires"
         " FROM web_accounts WHERE username=$1",
         { username });
     if (!res) return std::nullopt;
@@ -799,11 +805,15 @@ std::optional<WebAccountRow> Database::GetWebAccount(const std::string& username
     if (PQntuples(res) == 1)
     {
         WebAccountRow r;
-        r.username      = PQgetvalue(res, 0, 0);
-        r.password_hash = PQgetvalue(res, 0, 1);
-        r.role          = PQgetvalue(res, 0, 2);
-        r.created_at    = PgInt64(res, 0, 3);
-        r.last_login    = PgInt64(res, 0, 4);
+        r.username       = PQgetvalue(res, 0, 0);
+        r.password_hash  = PQgetvalue(res, 0, 1);
+        r.role           = PQgetvalue(res, 0, 2);
+        r.created_at     = PgInt64(res, 0, 3);
+        r.last_login     = PgInt64(res, 0, 4);
+        r.email          = PQgetvalue(res, 0, 5);
+        r.email_verified = PgInt(res, 0, 6);
+        r.otp_code       = PQgetvalue(res, 0, 7);
+        r.otp_expires    = PgInt64(res, 0, 8);
         if (r.role.empty()) r.role = "user";
         result = r;
     }
@@ -853,6 +863,68 @@ std::vector<WebAccountRow> Database::ListWebAdmins() const
     }
     PQclear(res);
     return rows;
+}
+
+std::optional<WebAccountRow> Database::GetWebAccountByEmail(const std::string& email) const
+{
+    if (email.empty()) return std::nullopt;
+    auto* res = PgExec(PG(m_db),
+        "SELECT username,password_hash,role,created_at,last_login,email,email_verified,otp_code,otp_expires"
+        " FROM web_accounts WHERE email=$1 LIMIT 1",
+        { email });
+    if (!res) return std::nullopt;
+
+    std::optional<WebAccountRow> result;
+    if (PQntuples(res) == 1)
+    {
+        WebAccountRow r;
+        r.username       = PQgetvalue(res, 0, 0);
+        r.password_hash  = PQgetvalue(res, 0, 1);
+        r.role           = PQgetvalue(res, 0, 2);
+        r.created_at     = PgInt64(res, 0, 3);
+        r.last_login     = PgInt64(res, 0, 4);
+        r.email          = PQgetvalue(res, 0, 5);
+        r.email_verified = PgInt(res, 0, 6);
+        r.otp_code       = PQgetvalue(res, 0, 7);
+        r.otp_expires    = PgInt64(res, 0, 8);
+        if (r.role.empty()) r.role = "user";
+        result = r;
+    }
+    PQclear(res);
+    return result;
+}
+
+bool Database::SetWebAccountOtp(const std::string& username,
+                                 const std::string& otp_code,
+                                 int64_t            otp_expires)
+{
+    auto* res = PgExec(PG(m_db),
+        "UPDATE web_accounts SET otp_code=$1,otp_expires=$2 WHERE username=$3",
+        { otp_code, std::to_string(otp_expires), username });
+    if (!res) return false;
+    PQclear(res);
+    return true;
+}
+
+bool Database::VerifyWebAccountEmail(const std::string& username)
+{
+    auto* res = PgExec(PG(m_db),
+        "UPDATE web_accounts SET email_verified=1,otp_code='',otp_expires=0 WHERE username=$1",
+        { username });
+    if (!res) return false;
+    PQclear(res);
+    return true;
+}
+
+bool Database::UpdateWebAccountPassword(const std::string& username,
+                                         const std::string& password_hash)
+{
+    auto* res = PgExec(PG(m_db),
+        "UPDATE web_accounts SET password_hash=$1,otp_code='',otp_expires=0 WHERE username=$2",
+        { password_hash, username });
+    if (!res) return false;
+    PQclear(res);
+    return true;
 }
 
 // ---------------------------------------------------------------------------

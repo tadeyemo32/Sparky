@@ -64,3 +64,8 @@ export interface AuthState {
   role: Role | null;
   expiresAt: string | null;
 }
+
+export interface SignupPendingResponse {
+  status: 'pending';
+  username: string;
+}

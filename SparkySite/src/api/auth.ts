@@ -1,5 +1,5 @@
 import { apiPost, apiGet } from './client';
-import type { AuthResponse, MeResponse } from '../types';
+import type { AuthResponse, MeResponse, SignupPendingResponse } from '../types';
 
 export async function sha256Hex(input: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -14,15 +14,30 @@ export async function login(username: string, password: string): Promise<AuthRes
   return apiPost<AuthResponse>('/api/auth/login', { username, passwordHash });
 }
 
-// Web accounts are independent — no license key required.
-// licenseKey param kept for backwards-compat but ignored by the server.
 export async function signup(
   username: string,
-  _licenseKey: string,
+  email: string,
   password: string
-): Promise<AuthResponse> {
+): Promise<SignupPendingResponse> {
   const passwordHash = await sha256Hex(password);
-  return apiPost<AuthResponse>('/api/auth/signup', { username, passwordHash });
+  return apiPost<SignupPendingResponse>('/api/auth/signup', { username, email, passwordHash });
+}
+
+export async function verifyOtp(username: string, otp: string): Promise<AuthResponse> {
+  return apiPost<AuthResponse>('/api/auth/verify-otp', { username, otp });
+}
+
+export async function forgotPassword(email: string): Promise<void> {
+  return apiPost<void>('/api/auth/forgot-password', { email });
+}
+
+export async function resetPassword(
+  username: string,
+  otp: string,
+  newPassword: string
+): Promise<void> {
+  const newPasswordHash = await sha256Hex(newPassword);
+  return apiPost<void>('/api/auth/reset-password', { username, otp, newPasswordHash });
 }
 
 export async function logout(token: string): Promise<void> {

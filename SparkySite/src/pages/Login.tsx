@@ -94,6 +94,12 @@ export function Login() {
         </form>
 
         <p className={styles.switchLink}>
+          <Link to="/forgot-password" className={styles.link}>
+            Forgot password?
+          </Link>
+        </p>
+
+        <p className={styles.switchLink}>
           Don't have an account?{' '}
           <Link to="/signup" className={styles.link}>
             Sign up

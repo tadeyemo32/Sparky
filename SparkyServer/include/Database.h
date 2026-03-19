@@ -65,6 +65,10 @@ struct WebAccountRow
     std::string role;          // "user", "admin", or "owner"
     int64_t     created_at;
     int64_t     last_login;
+    std::string email;
+    int         email_verified = 0; // 0 = pending verification, 1 = verified
+    std::string otp_code;           // 6-digit OTP (empty when not in use)
+    int64_t     otp_expires = 0;    // unix timestamp; 0 = no pending OTP
 };
 
 // Web sessions — separate from binary-protocol sessions; used by the React site.
@@ -180,8 +184,12 @@ public:
     // ---------- Web accounts (React site — no HWID/license required) ----------
     bool CreateWebAccount(const WebAccountRow& row);
     std::optional<WebAccountRow> GetWebAccount(const std::string& username) const;
+    std::optional<WebAccountRow> GetWebAccountByEmail(const std::string& email) const;
     bool SetWebAccountRole(const std::string& username, const std::string& role);
     bool UpdateWebAccountLastLogin(const std::string& username, int64_t now);
+    bool SetWebAccountOtp(const std::string& username, const std::string& otp_code, int64_t otp_expires);
+    bool VerifyWebAccountEmail(const std::string& username);
+    bool UpdateWebAccountPassword(const std::string& username, const std::string& password_hash);
     std::vector<WebAccountRow> ListWebAdmins() const; // role='admin' or 'owner'
 
     // ---------- Web sessions (React site) ----------
