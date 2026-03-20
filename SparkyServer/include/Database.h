@@ -69,6 +69,7 @@ struct WebAccountRow
     int         email_verified = 0; // 0 = pending verification, 1 = verified
     std::string otp_code;           // 6-digit OTP (empty when not in use)
     int64_t     otp_expires = 0;    // unix timestamp; 0 = no pending OTP
+    int         otp_fail_count = 0; // failed OTP attempts since last new OTP issued
 };
 
 // Web sessions — separate from binary-protocol sessions; used by the React site.
@@ -152,6 +153,7 @@ public:
     bool InsertSession(const SessionRow& row);
     bool TouchSession(const std::string& token_hex, int64_t now);
     bool DeleteSession(const std::string& token_hex);
+    bool DeleteSessionsByHwid(const std::string& hwid_hash);
     std::optional<SessionRow> GetSession(const std::string& token_hex) const;
     int  PruneSessions(int64_t now, int64_t max_age_sec = 7200);
 
@@ -188,6 +190,7 @@ public:
     bool SetWebAccountRole(const std::string& username, const std::string& role);
     bool UpdateWebAccountLastLogin(const std::string& username, int64_t now);
     bool SetWebAccountOtp(const std::string& username, const std::string& otp_code, int64_t otp_expires);
+    bool IncrementOtpFailCount(const std::string& username);
     bool VerifyWebAccountEmail(const std::string& username);
     bool UpdateWebAccountPassword(const std::string& username, const std::string& password_hash);
     std::vector<WebAccountRow> ListWebAdmins() const; // role='admin' or 'owner'

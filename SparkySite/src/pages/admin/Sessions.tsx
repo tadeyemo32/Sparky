@@ -12,26 +12,35 @@ export function AdminSessions() {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
     if (!user?.token) return;
     setError(null);
     try {
-      const data = await getSessions(user.token);
+      const data = await getSessions(user.token, signal);
       setCount(data.count);
       setLastUpdated(new Date());
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load sessions.');
+      if (err instanceof Error && err.name !== 'AbortError')
+        setError(err.message || 'Failed to load sessions.');
     } finally {
       setLoading(false);
     }
   }, [user?.token]);
 
   useEffect(() => {
-    load();
-    intervalRef.current = setInterval(load, REFRESH_INTERVAL_MS);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    load(controller.signal);
+    intervalRef.current = setInterval(() => {
+      if (abortRef.current) abortRef.current.abort();
+      abortRef.current = new AbortController();
+      load(abortRef.current.signal);
+    }, REFRESH_INTERVAL_MS);
     return () => {
       if (intervalRef.current !== null) clearInterval(intervalRef.current);
+      if (abortRef.current) abortRef.current.abort();
     };
   }, [load]);
 
@@ -42,7 +51,7 @@ export function AdminSessions() {
           <h1 className={styles.title}>Active Sessions</h1>
           <p className={styles.subtitle}>Auto-refreshes every 10 seconds.</p>
         </div>
-        <button onClick={load} className={styles.refreshBtn} disabled={loading}>
+        <button onClick={() => load()} className={styles.refreshBtn} disabled={loading}>
           {loading ? 'Loading…' : 'Refresh'}
         </button>
       </div>

@@ -207,12 +207,13 @@ static DWORD FindProcessByName(const char* name)
 // ---------------------------------------------------------------------------
 struct ServerSession
 {
-    SOCKET   sock    = INVALID_SOCKET;
-    SSL*     ssl     = nullptr;  // nullptr = plaintext dev mode
-    uint64_t hdrKey  = 0;        // 0 until AuthOk is processed (AuthOk itself is plain)
-    uint64_t dllKey  = 0;
+    SOCKET   sock      = INVALID_SOCKET;
+    SSL*     ssl       = nullptr;  // nullptr = plaintext dev mode
+    uint64_t hdrKey    = 0;        // 0 until AuthOk is processed (AuthOk itself is plain)
+    uint64_t dllKey    = 0;
     uint8_t  token[16]{};
-    bool     wsMode  = false;    // true after WebSocket upgrade handshake
+    bool     wsMode    = false;    // true after WebSocket upgrade handshake
+    uint32_t expiresAt = 0;        // unix timestamp from AuthOk; 0 = no expiry enforced
 };
 
 // SendMsg: encrypts payload with hdrKey if non-zero, computes CRC-32.
@@ -312,6 +313,18 @@ static bool ReceiveDll(ServerSession& ss, std::vector<uint8_t>& dllBuf, UIState&
     if (t == MsgType::Config)
     {
         state.AddLog("[INF] Config received (" + std::to_string(p.size()) + " bytes)");
+        // Log first 64 bytes as hex to aid mismatch diagnostics
+        {
+            std::string preview;
+            size_t n = (p.size() < 64) ? p.size() : 64;
+            for (size_t i = 0; i < n; ++i)
+            {
+                char h[3];
+                std::snprintf(h, sizeof(h), "%02x", p[i]);
+                preview += h;
+            }
+            state.AddLog("[DBG] Config[0:" + std::to_string(n) + "]=" + preview);
+        }
         if (!RecvMsg(ss, t, p, 30000))
         {
             state.AddLog("[ERR] No BinaryReady after Config");
@@ -478,6 +491,14 @@ static DWORD WINAPI SessionThread(LPVOID p)
         SSL_set_fd(ss.ssl, (int)ss.sock);
         SSL_set_tlsext_host_name(ss.ssl, host);
 
+        // Re-apply timeouts before TLS handshake; the connect() timeout only
+        // covers TCP establishment.  A stalling server-side TLS state machine
+        // would otherwise block indefinitely.
+        {
+            DWORD tlsTo = 10000;
+            setsockopt(ss.sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&tlsTo, sizeof(tlsTo));
+            setsockopt(ss.sock, SOL_SOCKET, SO_SNDTIMEO, (char*)&tlsTo, sizeof(tlsTo));
+        }
         if (SSL_connect(ss.ssl) <= 0)
         {
             state.AddLog("[ERR] TLS handshake failed: " + TlsLastError());
@@ -587,8 +608,9 @@ static DWORD WINAPI SessionThread(LPVOID p)
         }
         const auto& aok = *reinterpret_cast<const AuthOkPayload*>(pay.data());
         memcpy(ss.token, aok.SessionToken, 16);
-        ss.hdrKey = DeriveKey(ss.token, 0);
-        ss.dllKey = DeriveKey(ss.token, 1);
+        ss.hdrKey    = DeriveKey(ss.token, 0);
+        ss.dllKey    = DeriveKey(ss.token, 1);
+        ss.expiresAt = aok.ExpiresAt;
 
         state.serverConnected = true;
         state.loggedIn        = true;
@@ -609,6 +631,13 @@ static DWORD WINAPI SessionThread(LPVOID p)
     {
         Sleep(1000);
         ++hbTicks;
+
+        // Enforce server-side session expiry
+        if (ss.expiresAt != 0 && (uint32_t)time(nullptr) >= ss.expiresAt)
+        {
+            state.AddLog("[INF] Session expired — disconnecting");
+            break;
+        }
 
         if (state.dllRequested)
         {
@@ -652,6 +681,11 @@ static DWORD WINAPI SessionThread(LPVOID p)
             if (!SendMsg(ss, MsgType::Heartbeat, &hb, sizeof(hb))) break;
             MsgType t{}; std::vector<uint8_t> mp;
             if (!RecvMsg(ss, t, mp, 10000)) break;
+            if (t == MsgType::Kick)
+            {
+                state.AddLog("[INF] Server terminated session (Kick)");
+                break;
+            }
         }
     }
 

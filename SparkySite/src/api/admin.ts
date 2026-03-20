@@ -3,8 +3,8 @@ import type { User, License, Admin, SessionsResponse, IssueLicenseResponse, Metr
 
 // --- Admin: Users ---
 
-export async function getUsers(token: string): Promise<User[]> {
-  return apiGet<User[]>('/api/admin/users', token);
+export async function getUsers(token: string, signal?: AbortSignal): Promise<User[]> {
+  return apiGet<User[]>('/api/admin/users', token, signal);
 }
 
 export async function banUser(token: string, hwid: string): Promise<void> {
@@ -17,8 +17,8 @@ export async function unbanUser(token: string, hwid: string): Promise<void> {
 
 // --- Admin: Licenses ---
 
-export async function getLicenses(token: string): Promise<License[]> {
-  return apiGet<License[]>('/api/admin/licenses', token);
+export async function getLicenses(token: string, signal?: AbortSignal): Promise<License[]> {
+  return apiGet<License[]>('/api/admin/licenses', token, signal);
 }
 
 export async function issueLicense(
@@ -31,14 +31,14 @@ export async function issueLicense(
 
 // --- Admin: Sessions ---
 
-export async function getSessions(token: string): Promise<SessionsResponse> {
-  return apiGet<SessionsResponse>('/api/admin/sessions', token);
+export async function getSessions(token: string, signal?: AbortSignal): Promise<SessionsResponse> {
+  return apiGet<SessionsResponse>('/api/admin/sessions', token, signal);
 }
 
 // --- Owner: Admins ---
 
-export async function getAdmins(token: string): Promise<Admin[]> {
-  return apiGet<Admin[]>('/api/owner/admins', token);
+export async function getAdmins(token: string, signal?: AbortSignal): Promise<Admin[]> {
+  return apiGet<Admin[]>('/api/owner/admins', token, signal);
 }
 
 export async function grantAdmin(token: string, username: string): Promise<void> {
@@ -51,6 +51,6 @@ export async function revokeAdmin(token: string, username: string): Promise<void
 
 // --- Owner: Metrics ---
 
-export async function getMetrics(token: string): Promise<MetricsResponse> {
-  return apiGet<MetricsResponse>('/api/owner/metrics', token);
+export async function getMetrics(token: string, signal?: AbortSignal): Promise<MetricsResponse> {
+  return apiGet<MetricsResponse>('/api/owner/metrics', token, signal);
 }

@@ -44,6 +44,6 @@ export async function logout(token: string): Promise<void> {
   return apiPost<void>('/api/auth/logout', {}, token);
 }
 
-export async function getMe(token: string): Promise<MeResponse> {
-  return apiGet<MeResponse>('/api/auth/me', token);
+export async function getMe(token: string, signal?: AbortSignal): Promise<MeResponse> {
+  return apiGet<MeResponse>('/api/auth/me', token, signal);
 }

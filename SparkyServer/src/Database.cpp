@@ -186,6 +186,7 @@ bool Database::CreateSchema()
         ALTER TABLE web_accounts ADD COLUMN IF NOT EXISTS otp_code       TEXT    NOT NULL DEFAULT '';
         ALTER TABLE web_accounts ADD COLUMN IF NOT EXISTS otp_expires    BIGINT  NOT NULL DEFAULT 0;
         CREATE INDEX IF NOT EXISTS idx_web_accounts_email ON web_accounts(email);
+        ALTER TABLE web_accounts ADD COLUMN IF NOT EXISTS otp_fail_count INT NOT NULL DEFAULT 0;
     )sql";
 
     PGresult* res = PQexec(PG(m_db), ddl);
@@ -798,7 +799,7 @@ bool Database::CreateWebAccount(const WebAccountRow& row)
 std::optional<WebAccountRow> Database::GetWebAccount(const std::string& username) const
 {
     auto* res = PgExec(PG(m_db),
-        "SELECT username,password_hash,role,created_at,last_login,email,email_verified,otp_code,otp_expires"
+        "SELECT username,password_hash,role,created_at,last_login,email,email_verified,otp_code,otp_expires,otp_fail_count"
         " FROM web_accounts WHERE username=$1",
         { username });
     if (!res) return std::nullopt;
@@ -807,15 +808,16 @@ std::optional<WebAccountRow> Database::GetWebAccount(const std::string& username
     if (PQntuples(res) == 1)
     {
         WebAccountRow r;
-        r.username       = PQgetvalue(res, 0, 0);
-        r.password_hash  = PQgetvalue(res, 0, 1);
-        r.role           = PQgetvalue(res, 0, 2);
-        r.created_at     = PgInt64(res, 0, 3);
-        r.last_login     = PgInt64(res, 0, 4);
-        r.email          = PQgetvalue(res, 0, 5);
-        r.email_verified = PgInt(res, 0, 6);
-        r.otp_code       = PQgetvalue(res, 0, 7);
-        r.otp_expires    = PgInt64(res, 0, 8);
+        r.username        = PQgetvalue(res, 0, 0);
+        r.password_hash   = PQgetvalue(res, 0, 1);
+        r.role            = PQgetvalue(res, 0, 2);
+        r.created_at      = PgInt64(res, 0, 3);
+        r.last_login      = PgInt64(res, 0, 4);
+        r.email           = PQgetvalue(res, 0, 5);
+        r.email_verified  = PgInt(res, 0, 6);
+        r.otp_code        = PQgetvalue(res, 0, 7);
+        r.otp_expires     = PgInt64(res, 0, 8);
+        r.otp_fail_count  = PgInt(res, 0, 9);
         if (r.role.empty()) r.role = "user";
         result = r;
     }
@@ -871,7 +873,7 @@ std::optional<WebAccountRow> Database::GetWebAccountByEmail(const std::string& e
 {
     if (email.empty()) return std::nullopt;
     auto* res = PgExec(PG(m_db),
-        "SELECT username,password_hash,role,created_at,last_login,email,email_verified,otp_code,otp_expires"
+        "SELECT username,password_hash,role,created_at,last_login,email,email_verified,otp_code,otp_expires,otp_fail_count"
         " FROM web_accounts WHERE email=$1 LIMIT 1",
         { email });
     if (!res) return std::nullopt;
@@ -880,15 +882,16 @@ std::optional<WebAccountRow> Database::GetWebAccountByEmail(const std::string& e
     if (PQntuples(res) == 1)
     {
         WebAccountRow r;
-        r.username       = PQgetvalue(res, 0, 0);
-        r.password_hash  = PQgetvalue(res, 0, 1);
-        r.role           = PQgetvalue(res, 0, 2);
-        r.created_at     = PgInt64(res, 0, 3);
-        r.last_login     = PgInt64(res, 0, 4);
-        r.email          = PQgetvalue(res, 0, 5);
-        r.email_verified = PgInt(res, 0, 6);
-        r.otp_code       = PQgetvalue(res, 0, 7);
-        r.otp_expires    = PgInt64(res, 0, 8);
+        r.username        = PQgetvalue(res, 0, 0);
+        r.password_hash   = PQgetvalue(res, 0, 1);
+        r.role            = PQgetvalue(res, 0, 2);
+        r.created_at      = PgInt64(res, 0, 3);
+        r.last_login      = PgInt64(res, 0, 4);
+        r.email           = PQgetvalue(res, 0, 5);
+        r.email_verified  = PgInt(res, 0, 6);
+        r.otp_code        = PQgetvalue(res, 0, 7);
+        r.otp_expires     = PgInt64(res, 0, 8);
+        r.otp_fail_count  = PgInt(res, 0, 9);
         if (r.role.empty()) r.role = "user";
         result = r;
     }
@@ -901,7 +904,7 @@ bool Database::SetWebAccountOtp(const std::string& username,
                                  int64_t            otp_expires)
 {
     auto* res = PgExec(PG(m_db),
-        "UPDATE web_accounts SET otp_code=$1,otp_expires=$2 WHERE username=$3",
+        "UPDATE web_accounts SET otp_code=$1,otp_expires=$2,otp_fail_count=0 WHERE username=$3",
         { otp_code, std::to_string(otp_expires), username });
     if (!res) return false;
     PQclear(res);
@@ -911,7 +914,7 @@ bool Database::SetWebAccountOtp(const std::string& username,
 bool Database::VerifyWebAccountEmail(const std::string& username)
 {
     auto* res = PgExec(PG(m_db),
-        "UPDATE web_accounts SET email_verified=1,otp_code='',otp_expires=0 WHERE username=$1",
+        "UPDATE web_accounts SET email_verified=1,otp_code='',otp_expires=0,otp_fail_count=0 WHERE username=$1",
         { username });
     if (!res) return false;
     PQclear(res);
@@ -922,7 +925,7 @@ bool Database::UpdateWebAccountPassword(const std::string& username,
                                          const std::string& password_hash)
 {
     auto* res = PgExec(PG(m_db),
-        "UPDATE web_accounts SET password_hash=$1,otp_code='',otp_expires=0 WHERE username=$2",
+        "UPDATE web_accounts SET password_hash=$1,otp_code='',otp_expires=0,otp_fail_count=0 WHERE username=$2",
         { password_hash, username });
     if (!res) return false;
     PQclear(res);
@@ -988,6 +991,35 @@ int Database::PruneWebSessions(int64_t now)
     int n = std::atoi(PQcmdTuples(res));
     PQclear(res);
     return n;
+}
+
+// ---------------------------------------------------------------------------
+// Session eviction by HWID
+// ---------------------------------------------------------------------------
+bool Database::DeleteSessionsByHwid(const std::string& hwid_hash)
+{
+    auto* res = PgExec(PG(m_db),
+        "DELETE FROM sessions WHERE hwid_hash=$1", { hwid_hash });
+    if (!res) return false;
+    PQclear(res);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// OTP fail counter — increments and auto-expires OTP at count >= 5
+// ---------------------------------------------------------------------------
+bool Database::IncrementOtpFailCount(const std::string& username)
+{
+    auto* res = PgExec(PG(m_db),
+        "UPDATE web_accounts"
+        " SET otp_fail_count = otp_fail_count + 1,"
+        "     otp_code    = CASE WHEN otp_fail_count + 1 >= 5 THEN '' ELSE otp_code END,"
+        "     otp_expires = CASE WHEN otp_fail_count + 1 >= 5 THEN 0  ELSE otp_expires END"
+        " WHERE username=$1",
+        { username });
+    if (!res) return false;
+    PQclear(res);
+    return true;
 }
 
 // ---------------------------------------------------------------------------

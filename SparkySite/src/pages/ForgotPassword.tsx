@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { forgotPassword, resetPassword } from '../api/auth';
+import { GridCanvas } from '../components/GridCanvas';
 import styles from './AuthForm.module.css';
 
 type Step = 'email' | 'reset' | 'done';
@@ -17,6 +18,7 @@ export function ForgotPassword() {
 
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [cooldown, setCooldown] = useState(false);
 
   async function handleRequestCode(e: React.FormEvent) {
     e.preventDefault();
@@ -34,6 +36,8 @@ export function ForgotPassword() {
       setStep('reset');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
+      setCooldown(true);
+      setTimeout(() => setCooldown(false), 2000);
     } finally {
       setLoading(false);
     }
@@ -58,6 +62,8 @@ export function ForgotPassword() {
       setStep('done');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Reset failed. Please try again.');
+      setCooldown(true);
+      setTimeout(() => setCooldown(false), 2000);
     } finally {
       setLoading(false);
     }
@@ -66,6 +72,7 @@ export function ForgotPassword() {
   if (step === 'done') {
     return (
       <div className={styles.page}>
+        <GridCanvas />
         <div className={styles.glowBg} />
         <div className={styles.card}>
           <div className={styles.cardHeader}>
@@ -87,6 +94,7 @@ export function ForgotPassword() {
   if (step === 'reset') {
     return (
       <div className={styles.page}>
+        <GridCanvas />
         <div className={styles.glowBg} />
         <div className={styles.card}>
           <div className={styles.cardHeader}>
@@ -158,7 +166,7 @@ export function ForgotPassword() {
               />
             </div>
 
-            <button type="submit" className={styles.submitBtn} disabled={loading}>
+            <button type="submit" className={styles.submitBtn} disabled={loading || cooldown}>
               {loading ? 'Updating…' : 'Set New Password'}
             </button>
           </form>
@@ -207,7 +215,7 @@ export function ForgotPassword() {
             />
           </div>
 
-          <button type="submit" className={styles.submitBtn} disabled={loading}>
+          <button type="submit" className={styles.submitBtn} disabled={loading || cooldown}>
             {loading ? 'Sending…' : 'Send Reset Code'}
           </button>
         </form>

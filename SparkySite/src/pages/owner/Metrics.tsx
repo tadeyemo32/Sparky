@@ -28,26 +28,37 @@ export function OwnerMetrics() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
     if (!user?.token) return;
     try {
-      const data = await getMetrics(user.token);
+      const data = await getMetrics(user.token, signal);
       setMetrics(data);
       setLastUpdated(new Date());
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load metrics.');
+      if (err instanceof Error && err.name !== 'AbortError')
+        setError(err.message || 'Failed to load metrics.');
     } finally {
       setLoading(false);
     }
   }, [user?.token]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const controller = new AbortController();
+    abortRef.current = controller;
+    load(controller.signal);
+    return () => controller.abort();
+  }, [load]);
 
   useEffect(() => {
     if (autoRefresh) {
-      timerRef.current = setInterval(load, 30_000);
+      timerRef.current = setInterval(() => {
+        if (abortRef.current) abortRef.current.abort();
+        abortRef.current = new AbortController();
+        load(abortRef.current.signal);
+      }, 30_000);
     } else if (timerRef.current) {
       clearInterval(timerRef.current);
     }
@@ -63,7 +74,7 @@ export function OwnerMetrics() {
             Live statistics pulled directly from the production instance.
           </p>
         </div>
-        <button onClick={load} className={styles.refreshBtn} disabled={loading}>
+        <button onClick={() => load()} className={styles.refreshBtn} disabled={loading}>
           {loading ? 'Fetching…' : 'Refresh now'}
         </button>
       </div>

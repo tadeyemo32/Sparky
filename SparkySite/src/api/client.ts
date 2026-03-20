@@ -8,6 +8,7 @@ export interface RequestOptions {
   body?: unknown;
   token?: string | null;
   responseType?: 'json' | 'blob';
+  signal?: AbortSignal;
 }
 
 export class ApiError extends Error {
@@ -24,7 +25,7 @@ export async function apiFetch<T>(
   path: string,
   options: RequestOptions = {}
 ): Promise<T> {
-  const { method = 'GET', body, token, responseType = 'json' } = options;
+  const { method = 'GET', body, token, responseType = 'json', signal } = options;
 
   const headers: Record<string, string> = {};
 
@@ -40,6 +41,7 @@ export async function apiFetch<T>(
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal,
   });
 
   if (!res.ok) {
@@ -72,16 +74,21 @@ export async function apiFetch<T>(
   }
 }
 
-export async function apiGet<T>(path: string, token?: string | null): Promise<T> {
-  return apiFetch<T>(path, { method: 'GET', token });
+export async function apiGet<T>(
+  path: string,
+  token?: string | null,
+  signal?: AbortSignal
+): Promise<T> {
+  return apiFetch<T>(path, { method: 'GET', token, signal });
 }
 
 export async function apiPost<T>(
   path: string,
   body: unknown,
-  token?: string | null
+  token?: string | null,
+  signal?: AbortSignal
 ): Promise<T> {
-  return apiFetch<T>(path, { method: 'POST', body, token });
+  return apiFetch<T>(path, { method: 'POST', body, token, signal });
 }
 
 export async function apiGetBlob(path: string, token?: string | null): Promise<Blob> {

@@ -144,6 +144,8 @@ inline bool WsRecvFrame(SOCKET sock, SSL* ssl,
         if (!NetRecv(sock, ssl, ext, 8, ms)) return false;
         paylen = 0;
         for (int i = 0; i < 8; ++i) paylen = (paylen << 8) | ext[i];
+        if (paylen > 16 * 1024 * 1024)  // 16 MB sanity cap — reject malformed frames
+            return false;
     }
 
     uint8_t maskKey[4]{};

@@ -18,21 +18,24 @@ export function OwnerAdmins() {
   const [grantError, setGrantError] = useState<string | null>(null);
   const [grantSuccess, setGrantSuccess] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
     if (!user?.token) return;
     setError(null);
     try {
-      const data = await getAdmins(user.token);
+      const data = await getAdmins(user.token, signal);
       setAdmins(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load admins.');
+      if (err instanceof Error && err.name !== 'AbortError')
+        setError(err.message || 'Failed to load admins.');
     } finally {
       setLoading(false);
     }
   }, [user?.token]);
 
   useEffect(() => {
-    load();
+    const controller = new AbortController();
+    load(controller.signal);
+    return () => controller.abort();
   }, [load]);
 
   async function handleRevoke(username: string) {
@@ -88,7 +91,7 @@ export function OwnerAdmins() {
             this.
           </p>
         </div>
-        <button onClick={load} className={styles.refreshBtn} disabled={loading}>
+        <button onClick={() => load()} className={styles.refreshBtn} disabled={loading}>
           {loading ? 'Loading…' : 'Refresh'}
         </button>
       </div>

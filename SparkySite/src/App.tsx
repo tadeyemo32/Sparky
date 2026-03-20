@@ -22,7 +22,7 @@ export default function App() {
     <>
       <Navbar />
 
-      <main style={{ flex: 1 }}>
+      <main style={{ flex: 1, paddingTop: '57px' }}>
         <Routes>
           {/* Public routes */}
           <Route path="/" element={<Landing />} />

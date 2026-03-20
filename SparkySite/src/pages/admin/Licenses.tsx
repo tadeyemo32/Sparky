@@ -19,21 +19,24 @@ export function AdminLicenses() {
   const [issuedKey, setIssuedKey] = useState<string | null>(null);
   const [copySuccess, setCopySuccess] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
     if (!user?.token) return;
     setError(null);
     try {
-      const data = await getLicenses(user.token);
+      const data = await getLicenses(user.token, signal);
       setLicenses(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load licenses.');
+      if (err instanceof Error && err.name !== 'AbortError')
+        setError(err.message || 'Failed to load licenses.');
     } finally {
       setLoading(false);
     }
   }, [user?.token]);
 
   useEffect(() => {
-    load();
+    const controller = new AbortController();
+    load(controller.signal);
+    return () => controller.abort();
   }, [load]);
 
   function formatDate(iso: string) {
@@ -100,7 +103,7 @@ export function AdminLicenses() {
           <p className={styles.subtitle}>View all licenses and issue new ones.</p>
         </div>
         <div className={styles.headerActions}>
-          <button onClick={load} className={styles.refreshBtn} disabled={loading}>
+          <button onClick={() => load()} className={styles.refreshBtn} disabled={loading}>
             {loading ? 'Loading…' : 'Refresh'}
           </button>
           <button onClick={openModal} className={styles.primaryBtn}>

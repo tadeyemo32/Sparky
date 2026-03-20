@@ -12,11 +12,14 @@ export function Dashboard() {
 
   useEffect(() => {
     if (!user?.token) return;
+    const controller = new AbortController();
 
-    getMe(user.token)
+    getMe(user.token, controller.signal)
       .then(setMe)
-      .catch((err: Error) => setError(err.message))
+      .catch((err: Error) => { if (err.name !== 'AbortError') setError(err.message); })
       .finally(() => setLoading(false));
+
+    return () => controller.abort();
   }, [user?.token]);
 
   function formatDate(iso: string) {

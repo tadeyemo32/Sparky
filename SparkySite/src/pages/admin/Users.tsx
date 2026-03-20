@@ -17,21 +17,26 @@ export function AdminUsers() {
   const [filter, setFilter] = useState<Filter>('all');
   const [copied, setCopied] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
     if (!user?.token) return;
     setLoading(true);
     setError(null);
     try {
-      const data = await getUsers(user.token);
+      const data = await getUsers(user.token, signal);
       setUsers(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load users.');
+      if (err instanceof Error && err.name !== 'AbortError')
+        setError(err.message || 'Failed to load users.');
     } finally {
       setLoading(false);
     }
   }, [user?.token]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const controller = new AbortController();
+    load(controller.signal);
+    return () => controller.abort();
+  }, [load]);
 
   async function handleBan(hwid: string, currentlyBanned: boolean) {
     if (!user?.token) return;
@@ -97,7 +102,7 @@ export function AdminUsers() {
             Server enforces all role permissions.
           </p>
         </div>
-        <button onClick={load} className={styles.refreshBtn} disabled={loading}>
+        <button onClick={() => load()} className={styles.refreshBtn} disabled={loading}>
           {loading ? 'Loading…' : 'Refresh'}
         </button>
       </div>

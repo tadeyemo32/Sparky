@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { login } from '../api/auth';
 import { useAuth } from '../contexts/AuthContext';
+import { GridCanvas } from '../components/GridCanvas';
 import styles from './AuthForm.module.css';
 
 export function Login() {
@@ -14,6 +15,7 @@ export function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [cooldown, setCooldown] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -39,6 +41,8 @@ export function Login() {
       } else {
         setError('Login failed. Please try again.');
       }
+      setCooldown(true);
+      setTimeout(() => setCooldown(false), 2000);
     } finally {
       setLoading(false);
     }
@@ -46,6 +50,7 @@ export function Login() {
 
   return (
     <div className={styles.page}>
+      <GridCanvas />
       <div className={styles.glowBg} />
       <div className={styles.card}>
         <div className={styles.cardHeader}>
@@ -88,7 +93,7 @@ export function Login() {
             />
           </div>
 
-          <button type="submit" className={styles.submitBtn} disabled={loading}>
+          <button type="submit" className={styles.submitBtn} disabled={loading || cooldown}>
             {loading ? 'Signing in…' : 'Sign In'}
           </button>
         </form>

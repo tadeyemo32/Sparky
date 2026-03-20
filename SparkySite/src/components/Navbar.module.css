@@ -1,21 +1,16 @@
 .nav {
-  position: sticky;
+  position: fixed;
   top: 0;
+  left: 0;
+  right: 0;
   z-index: 100;
-  background: rgba(10, 10, 12, 0.85);
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.inner {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 0 1.5rem;
-  height: 60px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1.5rem;
+  padding: 18px 48px;
+  backdrop-filter: blur(12px);
+  background: rgba(10,10,10,0.6);
+  border-bottom: 1px solid var(--border);
 }
 
 .left {
@@ -25,15 +20,19 @@
 }
 
 .logo {
-  font-size: 1.15rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-display);
   font-weight: 800;
-  letter-spacing: -0.03em;
-  color: #fff;
+  font-size: 1.1rem;
+  letter-spacing: 0.05em;
+  color: #ffffff;
   text-decoration: none;
-  background: #ffffff;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+}
+
+.logo svg {
+  flex-shrink: 0;
 }
 
 .links {
@@ -43,7 +42,7 @@
 }
 
 .link {
-  color: var(--text-secondary);
+  color: var(--muted);
   text-decoration: none;
   font-size: 0.875rem;
   padding: 0.35rem 0.75rem;
@@ -52,14 +51,14 @@
 }
 
 .link:hover {
-  color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.05);
+  color: #ffffff;
+  background: rgba(255,255,255,0.05);
 }
 
 .right {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 24px;
 }
 
 .userPill {
@@ -83,33 +82,56 @@
 }
 
 .logoutBtn {
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: var(--text-secondary);
-  padding: 0.35rem 0.85rem;
-  border-radius: 6px;
-  font-size: 0.8rem;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-size: 0.9rem;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.2s;
+  padding: 0;
 }
 
 .logoutBtn:hover {
-  background: rgba(239, 68, 68, 0.12);
-  border-color: rgba(239, 68, 68, 0.35);
-  color: #ef4444;
+  color: #ffffff;
 }
 
+/* Ghost "Login" link */
+.loginLink {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+  transition: color 0.2s;
+  background: none;
+}
+
+.loginLink:hover {
+  color: #ffffff;
+}
+
+/* Filled "Sign Up" button */
 .signupBtn {
   background: #ffffff;
   color: #000000;
   text-decoration: none;
-  padding: 0.4rem 1rem;
+  padding: 8px 20px;
   border-radius: 6px;
-  font-size: 0.875rem;
-  font-weight: 600;
-  transition: opacity 0.15s;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.85rem;
+  transition: opacity 0.2s;
 }
 
 .signupBtn:hover {
   opacity: 0.85;
+}
+
+@media (max-width: 768px) {
+  .nav {
+    padding: 16px 20px;
+  }
+
+  .links {
+    display: none;
+  }
 }

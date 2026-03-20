@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { signup, verifyOtp } from '../api/auth';
 import { useAuth } from '../contexts/AuthContext';
+import { GridCanvas } from '../components/GridCanvas';
 import styles from './AuthForm.module.css';
 
 type Step = 'register' | 'verify';
@@ -24,6 +25,7 @@ export function SignUp() {
 
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [cooldown, setCooldown] = useState(false);
 
   async function handleRegister(e: React.FormEvent) {
     e.preventDefault();
@@ -46,6 +48,8 @@ export function SignUp() {
       setStep('verify');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sign up failed. Please try again.');
+      setCooldown(true);
+      setTimeout(() => setCooldown(false), 2000);
     } finally {
       setLoading(false);
     }
@@ -67,6 +71,8 @@ export function SignUp() {
       navigate('/dashboard', { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Verification failed. Please try again.');
+      setCooldown(true);
+      setTimeout(() => setCooldown(false), 2000);
     } finally {
       setLoading(false);
     }
@@ -104,7 +110,7 @@ export function SignUp() {
               />
             </div>
 
-            <button type="submit" className={styles.submitBtn} disabled={loading}>
+            <button type="submit" className={styles.submitBtn} disabled={loading || cooldown}>
               {loading ? 'Verifying…' : 'Verify Email'}
             </button>
           </form>
@@ -127,6 +133,7 @@ export function SignUp() {
 
   return (
     <div className={styles.page}>
+      <GridCanvas />
       <div className={styles.glowBg} />
       <div className={styles.card}>
         <div className={styles.cardHeader}>
@@ -193,7 +200,7 @@ export function SignUp() {
             />
           </div>
 
-          <button type="submit" className={styles.submitBtn} disabled={loading}>
+          <button type="submit" className={styles.submitBtn} disabled={loading || cooldown}>
             {loading ? 'Creating account…' : 'Create Account'}
           </button>
         </form>

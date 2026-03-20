@@ -197,7 +197,7 @@ static std::vector<uint8_t> ReadFileFull(const char* path)
 // ---------------------------------------------------------------------------
 static std::string PepperHwid(const std::string& hwid)
 {
-    if (!g_pepperSet || hwid.size() < 64) return hwid;
+    if (!g_pepperSet || hwid.size() != 64) return hwid;
 
     // Decode 64 hex chars → 32 raw bytes
     uint8_t raw[32]{};
@@ -522,8 +522,8 @@ static std::string ParseJsonStr(const std::string& body, const std::string& key)
     ++p; // skip opening quote
     std::string out;
     while (p < body.size() && body[p] != '"') {
-        if (body[p] == '\\' && p + 1 < body.size()) { ++p; out += body[p++]; }
-        else out += body[p++];
+        if (body[p] == '\\') return "";  // reject backslash — Sparky values are plain
+        out += body[p++];
     }
     return out;
 }
@@ -962,8 +962,15 @@ static void HandleWebApi(ClientSession& s,
         { SendApiError(s, 400, "Email already verified"); return; }
 
         int64_t now = (int64_t)time(nullptr);
+
+        if (acct->otp_fail_count >= 5)
+        { SendApiError(s, 429, "Too many failed attempts. Request a new verification code."); return; }
+
         if (acct->otp_code != otp || acct->otp_expires < now)
-        { SendApiError(s, 400, "Invalid or expired verification code"); return; }
+        {
+            { std::lock_guard lk(g_dbMu); g_db.IncrementOtpFailCount(username); }
+            SendApiError(s, 400, "Invalid or expired verification code"); return;
+        }
 
         { std::lock_guard lk(g_dbMu); g_db.VerifyWebAccountEmail(username); }
 
@@ -1034,8 +1041,15 @@ static void HandleWebApi(ClientSession& s,
         { SendApiError(s, 404, "Account not found"); return; }
 
         int64_t now = (int64_t)time(nullptr);
+
+        if (acct->otp_fail_count >= 5)
+        { SendApiError(s, 429, "Too many failed attempts. Request a new reset code."); return; }
+
         if (acct->otp_code != otp || acct->otp_expires < now)
-        { SendApiError(s, 400, "Invalid or expired reset code"); return; }
+        {
+            { std::lock_guard lk(g_dbMu); g_db.IncrementOtpFailCount(username); }
+            SendApiError(s, 400, "Invalid or expired reset code"); return;
+        }
 
         { std::lock_guard lk(g_dbMu); g_db.UpdateWebAccountPassword(username, newPwdHash); }
 
@@ -1145,7 +1159,15 @@ static void HandleWebApi(ClientSession& s,
 
         std::string hwid = ParseJsonStr(body, "hwid");
         if (hwid.empty()) { SendApiError(s, 400, "hwid required"); return; }
-        { std::lock_guard lk(g_dbMu); g_db.BanUser(hwid, "web admin ban"); }
+        {
+            std::lock_guard lk(g_dbMu);
+            g_db.BanUser(hwid, "web admin ban");
+            g_db.DeleteSessionsByHwid(hwid);
+        }
+        {
+            std::lock_guard lk(g_hwidMu);
+            g_activeHwids.erase(hwid);
+        }
         SendJson(s, 200, "{}");
         return;
     }
@@ -1206,6 +1228,7 @@ static void HandleWebApi(ClientSession& s,
         int tier = ParseJsonInt(body, "tier");
         int days = ParseJsonInt(body, "days");
         if (tier < 1 || tier > 4) { SendApiError(s, 400, "tier must be 1-4"); return; }
+        if (days < 0) { SendApiError(s, 400, "days must be non-negative"); return; }
 
         std::string key;
         { std::lock_guard lk(g_dbMu); key = g_lm->IssueLicense(tier, days); }
@@ -1824,8 +1847,14 @@ AUTH_LOGIC_START:
             }
             if (lic->hwid_hash.empty())
             {
-                // Unbound license — bind it to this HWID now.
-                g_db.BindLicense(licenseKey, s.hwid);
+                // Unbound license — bind atomically via DB WHERE hwid_hash=''.
+                // If another thread won the race, BindLicense returns false.
+                if (!g_db.BindLicense(licenseKey, s.hwid))
+                {
+                    std::cout << "[S] Reject sign-up: license bind race lost\n";
+                    SendMsg(s, MsgType::AuthFail);
+                    cleanup(); return;
+                }
                 g_db.SetUserLicense(s.hwid, licenseKey);
                 std::cout << std::format("[S] License bound to HWID {:.16}...\n", s.hwid);
             }
@@ -1921,15 +1950,18 @@ AUTH_LOGIC_START:
         cleanup(); return;
     }
     {
-        std::lock_guard lk(g_hwidMu);
-        if (g_activeHwids.count(s.hwid))
+        bool inserted = false;
+        {
+            std::lock_guard lk(g_hwidMu);
+            inserted = g_activeHwids.insert(s.hwid).second;
+            if (inserted) hwidRegistered = true;
+        }
+        if (!inserted)
         {
             std::cout << std::format("[S] Reject: duplicate session for {:.16}...\n", s.hwid);
             SendMsg(s, MsgType::AuthFail);
             cleanup(); return;
         }
-        g_activeHwids.insert(s.hwid);
-        hwidRegistered = true;
     }
 
     // ---- 4. Generate session token ----
