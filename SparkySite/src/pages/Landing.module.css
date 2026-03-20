@@ -123,34 +123,9 @@
   gap: 20px;
 }
 
+/* .card is applied to GlowCard's inner element — only content styles here */
 .card {
-  background: rgba(255,255,255,0.03);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 32px 28px;
-  transition: background 0.3s, border-color 0.3s, transform 0.3s;
-  position: relative;
-  overflow: hidden;
-}
-
-.card::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(135deg, rgba(255,255,255,0.04) 0%, transparent 60%);
-  opacity: 0;
-  transition: opacity 0.3s;
-  pointer-events: none;
-}
-
-.card:hover {
-  background: rgba(255,255,255,0.06);
-  border-color: rgba(255,255,255,0.15);
-  transform: translateY(-3px);
-}
-
-.card:hover::before {
-  opacity: 1;
+  /* background/padding/radius/overflow come from GlowCard.module.css .inner */
 }
 
 .cardIcon {

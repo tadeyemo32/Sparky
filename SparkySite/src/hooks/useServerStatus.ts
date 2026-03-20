@@ -13,9 +13,11 @@ export function useServerStatus(): ServerStatus {
 
     async function check() {
       try {
-        const res = await fetch(`${API_BASE}/`, { method: 'GET' });
+        // Probe a backend-only route. A 401 means the server responded (online);
+        // a 5xx means the proxy/backend is down; a thrown error means no connection.
+        const res = await fetch(`${API_BASE}/api/auth/me`, { method: 'GET' });
         if (!cancelled) {
-          setStatus(res.ok ? 'online' : 'offline');
+          setStatus(res.status < 500 ? 'online' : 'offline');
         }
       } catch {
         if (!cancelled) {
