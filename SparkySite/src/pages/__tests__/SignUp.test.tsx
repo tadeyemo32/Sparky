@@ -73,6 +73,7 @@ describe('SignUp form — validation', () => {
   it('rejects password shorter than 8 characters', async () => {
     renderSignUp();
     await userEvent.type(screen.getByLabelText(/^username/i), 'alice');
+    await userEvent.type(screen.getByLabelText(/^email/i), 'alice@example.com');
     await userEvent.type(screen.getByLabelText(/^password$/i), 'short');
     await userEvent.click(screen.getByRole('button', { name: /create account/i }));
     expect(await screen.findByText(/at least 8 char/i)).toBeInTheDocument();
@@ -81,6 +82,7 @@ describe('SignUp form — validation', () => {
   it('rejects mismatched passwords', async () => {
     renderSignUp();
     await userEvent.type(screen.getByLabelText(/^username/i), 'alice');
+    await userEvent.type(screen.getByLabelText(/^email/i), 'alice@example.com');
     await userEvent.type(screen.getByLabelText(/^password$/i), 'password123');
     await userEvent.type(screen.getByLabelText(/confirm password/i), 'differentpass');
     await userEvent.click(screen.getByRole('button', { name: /create account/i }));
@@ -89,23 +91,22 @@ describe('SignUp form — validation', () => {
 });
 
 describe('SignUp form — submission', () => {
-  it('calls signup without licenseKey in the payload', async () => {
+  it('calls signup with username, email, and password (no licenseKey)', async () => {
     const spy = vi.spyOn(authApi, 'signup').mockResolvedValue({
-      token: 'tok',
+      status: 'pending',
       username: 'alice',
-      role: 'user',
-      expiresAt: '9999999999',
     });
 
     renderSignUp();
     await userEvent.type(screen.getByLabelText(/^username/i), 'alice');
+    await userEvent.type(screen.getByLabelText(/^email/i), 'alice@example.com');
     await userEvent.type(screen.getByLabelText(/^password$/i), 'password123');
     await userEvent.type(screen.getByLabelText(/confirm password/i), 'password123');
     await userEvent.click(screen.getByRole('button', { name: /create account/i }));
 
     await waitFor(() => expect(spy).toHaveBeenCalledOnce());
-    // Second arg is the licenseKey passed through (should be empty string)
-    expect(spy.mock.calls[0][1]).toBe('');
+    expect(spy.mock.calls[0][0]).toBe('alice');
+    expect(spy.mock.calls[0][1]).toBe('alice@example.com');
   });
 
   it('shows API error on failure', async () => {
@@ -113,6 +114,7 @@ describe('SignUp form — submission', () => {
 
     renderSignUp();
     await userEvent.type(screen.getByLabelText(/^username/i), 'alice');
+    await userEvent.type(screen.getByLabelText(/^email/i), 'alice@example.com');
     await userEvent.type(screen.getByLabelText(/^password$/i), 'password123');
     await userEvent.type(screen.getByLabelText(/confirm password/i), 'password123');
     await userEvent.click(screen.getByRole('button', { name: /create account/i }));
@@ -122,11 +124,12 @@ describe('SignUp form — submission', () => {
 
   it('shows loading state while submitting', async () => {
     vi.spyOn(authApi, 'signup').mockImplementation(
-      () => new Promise((res) => setTimeout(() => res({ token: 't', username: 'u', role: 'user', expiresAt: '0' }), 100))
+      () => new Promise((res) => setTimeout(() => res({ status: 'pending', username: 'alice' }), 100))
     );
 
     renderSignUp();
     await userEvent.type(screen.getByLabelText(/^username/i), 'alice');
+    await userEvent.type(screen.getByLabelText(/^email/i), 'alice@example.com');
     await userEvent.type(screen.getByLabelText(/^password$/i), 'password123');
     await userEvent.type(screen.getByLabelText(/confirm password/i), 'password123');
     await userEvent.click(screen.getByRole('button', { name: /create account/i }));
