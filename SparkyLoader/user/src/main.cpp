@@ -130,7 +130,7 @@ static void AttestLoaderHash(const uint8_t rawHash[32], uint8_t out[32])
     // Stored XOR-obfuscated so a binary scan won't find it as a plaintext hex string.
     uint8_t key[32]{};
     bool    haveKey = ParseHex(
-        XS("00718e2a9bfc04d6588eb4f5dd817e271f3ff78c6aabe760083a25640c54c166"),
+        _S("00718e2a9bfc04d6588eb4f5dd817e271f3ff78c6aabe760083a25640c54c166"),
         key, 32);
 
     if (haveKey)
