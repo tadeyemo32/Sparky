@@ -960,10 +960,34 @@ static void HandleWebApi(ClientSession& s,
 
         // Send verification email (fire-and-forget — don't fail signup if email send fails)
         std::string emailHtml =
-            "<h2>Verify your Sparky account</h2>"
-            "<p>Your verification code is:</p>"
-            "<h1 style=\"letter-spacing:8px\">" + otp + "</h1>"
-            "<p>This code expires in 10 minutes.</p>";
+            "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1.0\"></head>"
+            "<body style=\"margin:0;padding:0;background:#0a0a0c;font-family:Arial,sans-serif;\">"
+            "<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#0a0a0c;\">"
+            "<tr><td align=\"center\" style=\"padding:48px 24px;\">"
+            "<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:480px;\">"
+            "<tr><td style=\"padding-bottom:32px;text-align:center;\">"
+            "<span style=\"font-size:22px;font-weight:700;color:#f0f0f5;letter-spacing:-0.5px;\">Sparky</span>"
+            "</td></tr>"
+            "<tr><td style=\"background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);"
+            "border-radius:12px;padding:40px 36px;\">"
+            "<h2 style=\"margin:0 0 8px;font-size:20px;font-weight:600;color:#f0f0f5;\">Verify your account</h2>"
+            "<p style=\"margin:0 0 28px;font-size:14px;color:#888888;line-height:1.6;\">"
+            "Enter the code below to verify your email and complete your registration.</p>"
+            "<div style=\"background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);"
+            "border-radius:8px;padding:24px;text-align:center;margin-bottom:28px;\">"
+            "<span style=\"font-size:36px;font-weight:700;color:#f0f0f5;letter-spacing:12px;"
+            "font-family:monospace;\">" + otp + "</span>"
+            "</div>"
+            "<p style=\"margin:0;font-size:13px;color:#888888;\">This code expires in "
+            "<span style=\"color:#f0f0f5;\">10 minutes</span>. Do not share it with anyone.</p>"
+            "</td></tr>"
+            "<tr><td style=\"padding-top:24px;text-align:center;\">"
+            "<p style=\"margin:0;font-size:12px;color:rgba(255,255,255,0.3);\">"
+            "If you did not create a Sparky account, you can safely ignore this email.</p>"
+            "</td></tr>"
+            "</table></td></tr></table>"
+            "</body></html>";
         SendResendEmail(email, "Verify your Sparky account", emailHtml);
 
         // Return 202 — pending OTP verification (no session token yet)
@@ -1040,11 +1064,34 @@ static void HandleWebApi(ClientSession& s,
             { std::lock_guard lk(g_dbMu); g_db.SetWebAccountOtp(acct->username, otp, otpExp); }
 
             std::string emailHtml =
-                "<h2>Reset your Sparky password</h2>"
-                "<p>Your password reset code is:</p>"
-                "<h1 style=\"letter-spacing:8px\">" + otp + "</h1>"
-                "<p>Enter this code along with your username to set a new password. "
-                "It expires in 10 minutes.</p>";
+                "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
+                "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1.0\"></head>"
+                "<body style=\"margin:0;padding:0;background:#0a0a0c;font-family:Arial,sans-serif;\">"
+                "<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#0a0a0c;\">"
+                "<tr><td align=\"center\" style=\"padding:48px 24px;\">"
+                "<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:480px;\">"
+                "<tr><td style=\"padding-bottom:32px;text-align:center;\">"
+                "<span style=\"font-size:22px;font-weight:700;color:#f0f0f5;letter-spacing:-0.5px;\">Sparky</span>"
+                "</td></tr>"
+                "<tr><td style=\"background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);"
+                "border-radius:12px;padding:40px 36px;\">"
+                "<h2 style=\"margin:0 0 8px;font-size:20px;font-weight:600;color:#f0f0f5;\">Reset your password</h2>"
+                "<p style=\"margin:0 0 28px;font-size:14px;color:#888888;line-height:1.6;\">"
+                "Enter the code below along with your username to set a new password.</p>"
+                "<div style=\"background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);"
+                "border-radius:8px;padding:24px;text-align:center;margin-bottom:28px;\">"
+                "<span style=\"font-size:36px;font-weight:700;color:#f0f0f5;letter-spacing:12px;"
+                "font-family:monospace;\">" + otp + "</span>"
+                "</div>"
+                "<p style=\"margin:0;font-size:13px;color:#888888;\">This code expires in "
+                "<span style=\"color:#f0f0f5;\">10 minutes</span>. Do not share it with anyone.</p>"
+                "</td></tr>"
+                "<tr><td style=\"padding-top:24px;text-align:center;\">"
+                "<p style=\"margin:0;font-size:12px;color:rgba(255,255,255,0.3);\">"
+                "If you did not request a password reset, you can safely ignore this email.</p>"
+                "</td></tr>"
+                "</table></td></tr></table>"
+                "</body></html>";
             SendResendEmail(email, "Reset your Sparky password", emailHtml);
         }
 
