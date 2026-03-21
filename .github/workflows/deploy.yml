@@ -154,6 +154,21 @@ jobs:
       - name: Restore NuGet packages
         run: nuget restore SparkyCore/tf2/Spxarky/Spxarky.sln
 
+      - name: Provide FreeType static lib (Freetype configurations only)
+        if: contains(matrix.configuration, 'Freetype')
+        shell: pwsh
+        run: |
+          vcpkg install freetype:x64-windows-static
+          $vcpkgLib = "C:\vcpkg\installed\x64-windows-static\lib\freetype.lib"
+          $destLib  = "SparkyCore\tf2\Spxarky\Spxarky\include\freetype\freetype.lib"
+          if (Test-Path $vcpkgLib) {
+            Copy-Item $vcpkgLib $destLib
+            Write-Host "freetype.lib copied from vcpkg"
+          } else {
+            Write-Error "freetype.lib not found at $vcpkgLib"
+            exit 1
+          }
+
       - name: Build
         run: |
           msbuild SparkyCore/tf2/Spxarky/Spxarky.sln `

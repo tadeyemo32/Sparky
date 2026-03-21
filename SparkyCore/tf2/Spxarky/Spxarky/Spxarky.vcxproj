@@ -1480,7 +1480,7 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-    <Library Include="include\freetype\freetype.lib" />
+    <Library Condition="$(Configuration.Contains('Freetype'))" Include="include\freetype\freetype.lib" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
