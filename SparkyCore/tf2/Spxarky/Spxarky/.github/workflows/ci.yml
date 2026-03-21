@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v1
+        with:
+          msbuild-architecture: x64
+
+      - name: Restore NuGet packages
+        run: nuget restore Spxarky.sln
+
+      - name: Run tests
+        run: |
+          cd test
+          for %%f in (*.exe) do (
+            echo Running %%f
+            %%f
+          )
+
+      - name: Build solution (ReleaseAVX2)
+        run: msbuild Spxarky.sln /p:Configuration=ReleaseAVX2 /p:Platform=x64
