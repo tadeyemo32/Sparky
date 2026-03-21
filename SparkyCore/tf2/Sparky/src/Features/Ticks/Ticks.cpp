@@ -424,7 +424,7 @@ void CTicks::Draw(CTFPlayer* pLocal)
 		int iSizeX = H::Draw.Scale(100, Scale_Round), iSizeY = H::Draw.Scale(12, Scale_Round);
 		int iPosX = dtPos.x - iSizeX / 2, iPosY = dtPos.y + fFont.m_nTall + H::Draw.Scale(4) + 1;
 
-		H::Draw.StringOutlined(fFont, dtPos.x, dtPos.y + 2, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOP, std::format(XS("Ticks {} / {}"), iTicks, iMax).c_str());
+		H::Draw.StringOutlined(fFont, dtPos.x, dtPos.y + 2, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOP, XSFMT(XS("Ticks {} / {}"), iTicks, iMax).c_str());
 		if (m_iWait)
 			H::Draw.StringOutlined(fFont, dtPos.x, dtPos.y + fFont.m_nTall + H::Draw.Scale(18, Scale_Round) + 1, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOP, XS("Not Ready"));
 
@@ -439,5 +439,5 @@ void CTicks::Draw(CTFPlayer* pLocal)
 		}
 	}
 	else
-		H::Draw.StringOutlined(fFont, dtPos.x, dtPos.y + 2, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOP, std::format(XS("Speedhack x{}"), Vars::Speedhack::Amount.Value).c_str());
+		H::Draw.StringOutlined(fFont, dtPos.x, dtPos.y + 2, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOP, XSFMT(XS("Speedhack x{}"), Vars::Speedhack::Amount.Value).c_str());
 }

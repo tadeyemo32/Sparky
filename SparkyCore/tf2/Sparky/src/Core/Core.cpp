@@ -50,12 +50,12 @@ void CCore::AppendFailText(const char* sMessage)
 	if (m_ssFailStream.str().empty())
 	{
 		m_ssFailStream << XS("Built @ ") __DATE__ XS(", ") __TIME__ XS(", ") __CONFIGURATION__ XS("\n");
-		m_ssFailStream << std::format(XS("Time @ {}, {}\n"), SDK::GetDate(), SDK::GetTime());
+		m_ssFailStream << XSFMT(XS("Time @ {}, {}\n"), SDK::GetDate(), SDK::GetTime());
 		m_ssFailStream << XS("\n");
 	}
 
-	m_ssFailStream << std::format(XS("{}\n"), sMessage);
-	OutputDebugStringA(std::format(XS("{}\n"), sMessage).c_str());
+	m_ssFailStream << XSFMT(XS("{}\n"), sMessage);
+	OutputDebugStringA(XSFMT(XS("{}\n"), sMessage).c_str());
 }
 
 void CCore::LogFailText()
@@ -96,7 +96,7 @@ void CCore::Load()
 		Sleep(500), flTime += 0.5f;
 		if (m_bUnload = m_bFailed = flTime >= 60.f)
 		{
-			AppendFailText(std::format(XS("Failed to load in time:\n  {:#x} ({:#x})\n  {:#x}"), uDereference, uSignature, uintptr_t(hWindow)).c_str());
+			AppendFailText(XSFMT(XS("Failed to load in time:\n  {:#x} ({:#x})\n  {:#x}"), uDereference, uSignature, uintptr_t(hWindow)).c_str());
 			return;
 		}
 		if (m_bUnload = m_bFailed = U::KeyHandler.Down(VK_F11, true))

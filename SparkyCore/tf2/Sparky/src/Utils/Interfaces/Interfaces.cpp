@@ -45,9 +45,9 @@ bool CInterfaces::Initialize()
 			{
 				std::stringstream ssModuleStream;
 				for (auto& sName : vModules)
-					ssModuleStream << std::format(XS("{}{}"), !ssModuleStream.str().empty() ? XS(", ") : "", sName);
+					ssModuleStream << XSFMT(XS("{}{}"), !ssModuleStream.str().empty() ? XS(", ") : "", sName);
 
-				U::Core.AppendFailText(std::format(XS("CInterfaces::Initialize() failed to find module:\n  {}\n  {}"), ssModuleStream.str(), Interface->m_sName).c_str());
+				U::Core.AppendFailText(XSFMT(XS("CInterfaces::Initialize() failed to find module:\n  {}\n  {}"), ssModuleStream.str(), Interface->m_sName).c_str());
 				m_bFailed = true;
 				continue;
 			}
@@ -70,7 +70,7 @@ bool CInterfaces::Initialize()
 			auto dwDest = U::Memory.FindSignature(sModule, Interface->m_sName);
 			if (!dwDest)
 			{
-				U::Core.AppendFailText(std::format(XS("CInterfaces::Initialize() failed to find signature")).c_str());
+				U::Core.AppendFailText(XSFMT(XS("CInterfaces::Initialize() failed to find signature")).c_str());
 				break;
 			}
 
@@ -87,7 +87,7 @@ bool CInterfaces::Initialize()
 
 		if (!*Interface->m_pPtr)
 		{
-			U::Core.AppendFailText(std::format(XS("CInterfaces::Initialize() failed to initialize:\n  {}\n  {}"), sModule, Interface->m_sName).c_str());
+			U::Core.AppendFailText(XSFMT(XS("CInterfaces::Initialize() failed to initialize:\n  {}\n  {}"), sModule, Interface->m_sName).c_str());
 			m_bFailed = true;
 		}
 	}

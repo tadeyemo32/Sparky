@@ -33,7 +33,7 @@ MAKE_HOOK(FX_FireBullets_Server, S::FX_FireBullets_Server(), void,
 	DEBUG_RETURN(FX_FireBullets_Server, pWpn, iPlayer, vecOrigin, vecAngles, iWeapon, iMode, iSeed, flSpread, flDamage, bCritical);
 
 	if (Vars::Aimbot::General::NoSpread.Value)
-		SDK::Output(XS("FX_FireBullets"), std::format(XS("{}"), iSeed).c_str(), { 0, 255, 0 });
+		SDK::Output(XS("FX_FireBullets"), XSFMT(XS("{}"), iSeed).c_str(), { 0, 255, 0 });
 	return CALL_ORIGINAL(pWpn, iPlayer, vecOrigin, vecAngles, iWeapon, iMode, iSeed, flSpread, flDamage, bCritical);
 }
 
@@ -54,7 +54,7 @@ MAKE_HOOK(CBasePlayer_ProcessUsercmds, S::CBasePlayer_ProcessUsercmds(), void,
 		double dFloatTime = SDK::PlatFloatTime();
 		float flTime = float(SDK::PlatFloatTime() * 1000.0);
 		int iSeed = *reinterpret_cast<int*>((char*)&flTime) & 255;
-		SDK::Output(XS("ProcessUsercmds"), std::format(XS("{}: {}"), dFloatTime, iSeed).c_str(), { 0, 255, 0, 100 });
+		SDK::Output(XS("ProcessUsercmds"), XSFMT(XS("{}: {}"), dFloatTime, iSeed).c_str(), { 0, 255, 0, 100 });
 	}
 
 	return CALL_ORIGINAL(rcx, cmds, numcmds, totalcmds, dropped_packets, paused);

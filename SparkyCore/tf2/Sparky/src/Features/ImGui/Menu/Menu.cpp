@@ -562,17 +562,17 @@ void CMenu::MenuVisuals(int iTab)
 				bool bDelete = IconButton(ICON_MD_DELETE);
 
 				SetCursorPos(vOriginalPos);
-				bool bClicked = Button(std::format(XS("##{}"), iGroup).c_str(), { flWidth, flHeight });
+				bool bClicked = Button(XSFMT(XS("##{}"), iGroup).c_str(), { flWidth, flHeight });
 				bool bPopup = IsItemClicked(ImGuiMouseButton_Right);
 
 				if (bClicked)
 					iCurrentGroup = iGroup;
 				else if (bPopup)
-					OpenPopup(std::format(XS("RightClicked{}"), iGroup).c_str());
+					OpenPopup(XSFMT(XS("RightClicked{}"), iGroup).c_str());
 				else if (iDragging == -1 && IsItemHovered() && IsMouseDown(ImGuiMouseButton_Left))
 					iDragging = iGroup;
 
-				if (FBeginPopup(std::format(XS("RightClicked{}"), iGroup).c_str()))
+				if (FBeginPopup(XSFMT(XS("RightClicked{}"), iGroup).c_str()))
 				{
 					PushStyleVar(ImGuiStyleVar_ItemSpacing, { H::Draw.Scale(8), 0 });
 
@@ -1339,7 +1339,7 @@ void CMenu::MenuLogs(int iTab)
 						{
 							// tag bar
 							SetCursorPos({ vOriginalPos.x + lOffset, vOriginalPos.y });
-							if (BeginChild(std::format(XS("TagBar{}"), tPlayer.m_iUserID).c_str(), { flWidth - lOffset - H::Draw.Scale(4), flHeight }, ImGuiWindowFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground))
+							if (BeginChild(XSFMT(XS("TagBar{}"), tPlayer.m_iUserID).c_str(), { flWidth - lOffset - H::Draw.Scale(4), flHeight }, ImGuiWindowFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground))
 							{
 								std::vector<PriorityLabel_t> vLabels = {};
 								std::vector<std::pair<PriorityLabel_t*, int>> vTags = {};
@@ -1349,7 +1349,7 @@ void CMenu::MenuLogs(int iTab)
 									if (!--iParty)
 										vTags.emplace_back(pTag, 0);
 									else
-										vLabels.emplace_back(std::format(XS("{}: {}"), pTag->m_sName, iParty), pTag->m_tColor.HueShift(iParty * 360.f / iPartyCount));
+										vLabels.emplace_back(XSFMT(XS("{}: {}"), pTag->m_sName, iParty), pTag->m_tColor.HueShift(iParty * 360.f / iPartyCount));
 								}
 								if (tPlayer.m_bF2P)
 								{
@@ -1395,14 +1395,14 @@ void CMenu::MenuLogs(int iTab)
 							bPopup = IsItemHovered() && IsMouseReleased(ImGuiMouseButton_Right);
 						}
 						SetCursorPos(vOriginalPos);
-						Button(std::format(XS("##{}"), tPlayer.m_iUserID).c_str(), { flWidth, flHeight });
+						Button(XSFMT(XS("##{}"), tPlayer.m_iUserID).c_str(), { flWidth, flHeight });
 						bPopup |= IsItemHovered() && IsMouseReleased(ImGuiMouseButton_Right);
 
 						// popups
 						if (bPopup)
-							OpenPopup(std::format(XS("RightClicked{}"), tPlayer.m_iUserID).c_str());
+							OpenPopup(XSFMT(XS("RightClicked{}"), tPlayer.m_iUserID).c_str());
 
-						if (FBeginPopup(std::format(XS("RightClicked{}"), tPlayer.m_iUserID).c_str()))
+						if (FBeginPopup(XSFMT(XS("RightClicked{}"), tPlayer.m_iUserID).c_str()))
 						{
 							PushStyleVar(ImGuiStyleVar_ItemSpacing, { H::Draw.Scale(8), H::Draw.Scale(8) });
 
@@ -1411,7 +1411,7 @@ void CMenu::MenuLogs(int iTab)
 								if (FSelectable(XS("Profile")))
 									I::SteamFriends->ActivateGameOverlayToUser(XS("steamid"), CSteamID(tPlayer.m_uAccountID, k_EUniversePublic, k_EAccountTypeIndividual));
 								if (FSelectable(XS("History")))
-									I::SteamFriends->ActivateGameOverlayToWebPage(std::format(XS("https://steamhistory.net/id/{}"), CSteamID(tPlayer.m_uAccountID, k_EUniversePublic, k_EAccountTypeIndividual).ConvertToUint64()).c_str());
+									I::SteamFriends->ActivateGameOverlayToWebPage(XSFMT(XS("https://steamhistory.net/id/{}"), CSteamID(tPlayer.m_uAccountID, k_EUniversePublic, k_EAccountTypeIndividual).ConvertToUint64()).c_str());
 							}
 
 							if (FSelectable(F::Spectate.GetTarget(true) == tPlayer.m_iUserID ? XS("Unspectate") : XS("Spectate")))
@@ -1420,13 +1420,13 @@ void CMenu::MenuLogs(int iTab)
 							if (!I::EngineClient->IsPlayingDemo() && FBeginMenu(XS("Votekick")))
 							{
 								if (FSelectable(XS("No reason")))
-									I::ClientState->SendStringCmd(std::format(XS("callvote Kick \"{} other\""), tPlayer.m_iUserID).c_str());
+									I::ClientState->SendStringCmd(XSFMT(XS("callvote Kick \"{} other\""), tPlayer.m_iUserID).c_str());
 								if (FSelectable(XS("Cheating")))
-									I::ClientState->SendStringCmd(std::format(XS("callvote Kick \"{} cheating\""), tPlayer.m_iUserID).c_str());
+									I::ClientState->SendStringCmd(XSFMT(XS("callvote Kick \"{} cheating\""), tPlayer.m_iUserID).c_str());
 								if (FSelectable(XS("Idle")))
-									I::ClientState->SendStringCmd(std::format(XS("callvote Kick \"{} idle\""), tPlayer.m_iUserID).c_str());
+									I::ClientState->SendStringCmd(XSFMT(XS("callvote Kick \"{} idle\""), tPlayer.m_iUserID).c_str());
 								if (FSelectable(XS("Scamming")))
-									I::ClientState->SendStringCmd(std::format(XS("callvote Kick \"{} scamming\""), tPlayer.m_iUserID).c_str());
+									I::ClientState->SendStringCmd(XSFMT(XS("callvote Kick \"{} scamming\""), tPlayer.m_iUserID).c_str());
 
 								ImGui::EndMenu();
 							}
@@ -1587,7 +1587,7 @@ void CMenu::MenuLogs(int iTab)
 								{
 									int iTier = std::max(std::ceil(tPlayer.m_iLevel / 150.f), 1.f);
 									int iLevel = ((tPlayer.m_iLevel - 1) % 150) + 1;
-									sLevel = std::format(XS("T{} L{}"), iTier, iLevel);
+									sLevel = XSFMT(XS("T{} L{}"), iTier, iLevel);
 								}
 								TextColored(F::Render.Inactive.Value, sLevel.c_str());
 							}
@@ -1737,7 +1737,7 @@ void CMenu::MenuLogs(int iTab)
 					if (!_tTag.m_bLabel)
 					{
 						SetCursorPos({ vOriginalPos.x + flWidth / 2, vOriginalPos.y + H::Draw.Scale(7) });
-						FText(std::format(XS("{}"), _tTag.m_iPriority).c_str());
+						FText(XSFMT(XS("{}"), _tTag.m_iPriority).c_str());
 					}
 
 					// buttons / icons
@@ -1762,7 +1762,7 @@ void CMenu::MenuLogs(int iTab)
 					}
 
 					SetCursorPos(vOriginalPos);
-					bool bClicked = Button(std::format(XS("##{}"), _tTag.m_sName).c_str(), { flWidth, flHeight });
+					bool bClicked = Button(XSFMT(XS("##{}"), _tTag.m_sName).c_str(), { flWidth, flHeight });
 					bool bPopup = IsItemClicked(ImGuiMouseButton_Right);
 
 					if (bClicked)
@@ -1774,11 +1774,11 @@ void CMenu::MenuLogs(int iTab)
 						tTag.m_bLabel = _tTag.m_bLabel;
 					}
 					else if (bPopup)
-						OpenPopup(std::format(XS("RightClicked{}"), _iID).c_str());
+						OpenPopup(XSFMT(XS("RightClicked{}"), _iID).c_str());
 					else if (bDelete)
-						OpenPopup(std::format(XS("DeleteTag{}"), _iID).c_str());
+						OpenPopup(XSFMT(XS("DeleteTag{}"), _iID).c_str());
 
-					if (FBeginPopup(std::format(XS("RightClicked{}"), _iID).c_str()))
+					if (FBeginPopup(XSFMT(XS("RightClicked{}"), _iID).c_str()))
 					{
 						PushStyleVar(ImGuiStyleVar_ItemSpacing, { H::Draw.Scale(8), 0 });
 
@@ -1817,9 +1817,9 @@ void CMenu::MenuLogs(int iTab)
 						PopStyleVar();
 						EndPopup();
 					}
-					else if (FBeginPopupModal(std::format(XS("DeleteTag{}"), _iID).c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysUseWindowPadding))
+					else if (FBeginPopupModal(XSFMT(XS("DeleteTag{}"), _iID).c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysUseWindowPadding))
 					{
-						FText(std::format(XS("Do you really want to delete '{}'?"), _tTag.m_sName).c_str());
+						FText(XSFMT(XS("Do you really want to delete '{}'?"), _tTag.m_sName).c_str());
 
 						if (FButton(XS("Yes"), FButtonEnum::Left))
 						{
@@ -2073,7 +2073,7 @@ void CMenu::MenuLogs(int iTab)
 							PushTransparent(iIDTo == -1);
 							{
 								int iTo = iIDTo + 1;
-								FDropdown(std::format(XS("##{}"), i).c_str(), &iTo, vEntries, vValues, FSliderEnum::Right);
+								FDropdown(XSFMT(XS("##{}"), i).c_str(), &iTo, vEntries, vValues, FSliderEnum::Right);
 								iIDTo = iTo - 1;
 							}
 							PopTransparent();
@@ -2125,7 +2125,7 @@ void CMenu::MenuLogs(int iTab)
 						}
 						std::filesystem::copy(
 							F::Configs.m_sCorePath + XS("Players.json"),
-							F::Configs.m_sCorePath + std::format(XS("Backup{}.json"), iBackupCount + 1),
+							F::Configs.m_sCorePath + XSFMT(XS("Backup{}.json"), iBackupCount + 1),
 							std::filesystem::copy_options::overwrite_existing
 						);
 						SDK::Output(XS("Sparky"), XS("Saved backup playerlist"), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
@@ -2299,13 +2299,13 @@ void CMenu::MenuLogs(int iTab)
 				SetCursorPos(vOriginalPos); DebugDummy({ flWidth, H::Draw.Scale(13) * iLines + GetStyle().WindowPadding.y });
 
 				if (IsItemHovered() && IsMouseReleased(ImGuiMouseButton_Right))
-					OpenPopup(std::format(XS("Output{}"), tOutput.m_iID).c_str());
-				if (FBeginPopup(std::format(XS("Output{}"), tOutput.m_iID).c_str()))
+					OpenPopup(XSFMT(XS("Output{}"), tOutput.m_iID).c_str());
+				if (FBeginPopup(XSFMT(XS("Output{}"), tOutput.m_iID).c_str()))
 				{
 					PushStyleVar(ImGuiStyleVar_ItemSpacing, { H::Draw.Scale(8), H::Draw.Scale(8) });
 
 					if (FSelectable(XS("Copy")))
-						SDK::SetClipboard(std::format(XS("{}{}{}"), tOutput.m_sFunction, tOutput.m_sFunction != "" ? XS(" ") : "", tOutput.m_sLog));
+						SDK::SetClipboard(XSFMT(XS("{}{}{}"), tOutput.m_sFunction, tOutput.m_sFunction != "" ? XS(" ") : "", tOutput.m_sLog));
 
 					PopStyleVar();
 					EndPopup();
@@ -2427,18 +2427,18 @@ void CMenu::MenuSettings(int iTab)
 						else if (bSave)
 						{
 							if (!bCurrentConfig || !bVisual && !F::Configs.m_sCurrentVisuals.empty())
-								OpenPopup(std::format(XS("Save{}{}"), sType, sConfigName).c_str());
+								OpenPopup(XSFMT(XS("Save{}{}"), sType, sConfigName).c_str());
 							else if (!bVisual)
 								F::Configs.SaveConfig(sConfigName);
 							else
 								F::Configs.SaveVisual(sConfigName);
 						}
 						else if (bDelete)
-							OpenPopup(std::format(XS("Remove{}{}"), sType, sConfigName).c_str());
+							OpenPopup(XSFMT(XS("Remove{}{}"), sType, sConfigName).c_str());
 
-						if (FBeginPopupModal(std::format(XS("Save{}{}"), sType, sConfigName).c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysUseWindowPadding))
+						if (FBeginPopupModal(XSFMT(XS("Save{}{}"), sType, sConfigName).c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysUseWindowPadding))
 						{
-							FText(std::format(XS("Do you really want to override '{}'?"), sConfigName).c_str());
+							FText(XSFMT(XS("Do you really want to override '{}'?"), sConfigName).c_str());
 
 							if (FButton(XS("Yes, override"), FButtonEnum::Left))
 							{
@@ -2453,9 +2453,9 @@ void CMenu::MenuSettings(int iTab)
 
 							EndPopup();
 						}
-						else if (FBeginPopupModal(std::format(XS("Remove{}{}"), sType, sConfigName).c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysUseWindowPadding))
+						else if (FBeginPopupModal(XSFMT(XS("Remove{}{}"), sType, sConfigName).c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysUseWindowPadding))
 						{
-							FText(std::format(XS("Do you really want to remove '{}'?"), sConfigName).c_str());
+							FText(XSFMT(XS("Do you really want to remove '{}'?"), sConfigName).c_str());
 
 							PushDisabled(!bVisual && FNV1A::Hash32(sConfigName.c_str()) == FNV1A::Hash32Const(XS("default")));
 							{
@@ -2554,7 +2554,7 @@ void CMenu::MenuSettings(int iTab)
 				FSDropdown(XS("Name"), &tBind.m_sName, {}, FDropdownEnum::Left | FSDropdownEnum::AutoUpdate);
 				{
 					auto sParent = bParent ? XS("...") : tBind.m_iParent != DEFAULT_BIND && tBind.m_iParent < F::Binds.m_vBinds.size() ? F::Binds.m_vBinds[tBind.m_iParent].m_sName : XS("None");
-					if (FButton(std::format(XS("Parent: {}"), sParent).c_str(), FButtonEnum::Right | FButtonEnum::SameLine | FButtonEnum::NoUpper, { 0, 40 }))
+					if (FButton(XSFMT(XS("Parent: {}"), sParent).c_str(), FButtonEnum::Right | FButtonEnum::SameLine | FButtonEnum::NoUpper, { 0, 40 }))
 						bParent = 2;
 				}
 				FDropdown(XS("Type"), &tBind.m_iType, { XS("Key"), XS("Class"), XS("Weapon type"), XS("Item slot"), XS("Misc") }, {}, FDropdownEnum::Left);
@@ -2706,7 +2706,7 @@ void CMenu::MenuSettings(int iTab)
 							break;
 						case BindEnum::ItemSlot:
 							sType = XS("slot");
-							sInfo = std::format(XS("{}"), _tBind.m_iInfo + 1);
+							sInfo = XSFMT(XS("{}"), _tBind.m_iInfo + 1);
 							break;
 						case BindEnum::Misc:
 							switch (_tBind.m_iInfo)
@@ -2735,7 +2735,7 @@ void CMenu::MenuSettings(int iTab)
 							break;
 						}
 						if (_tBind.m_bNot && (_tBind.m_iType != BindEnum::Key || _tBind.m_iInfo == BindEnum::KeyEnum::Hold))
-							sType = std::format(XS("not {}"), sType);
+							sType = XSFMT(XS("not {}"), sType);
 
 						ImVec2 vOriginalPos = { H::Draw.Scale(8) + H::Draw.Scale(28) * std::min(x, 3), GetCursorPosY() + H::Draw.Scale(8) };
 
@@ -2758,7 +2758,7 @@ void CMenu::MenuSettings(int iTab)
 						// text
 						if (x > 3)
 						{	// don't indent too much
-							auto sText = std::format(XS("-> {}"), x);
+							auto sText = XSFMT(XS("-> {}"), x);
 							SetCursorPos({ vOriginalPos.x - FCalcTextSize(sText.c_str()).x - H::Draw.Scale(10), vOriginalPos.y + H::Draw.Scale(7) });
 							FText(sText.c_str());
 						}
@@ -2800,7 +2800,7 @@ void CMenu::MenuSettings(int iTab)
 							_tBind.m_bEnabled = !_tBind.m_bEnabled;
 
 						SetCursorPos(vOriginalPos);
-						bool bClicked = Button(std::format(XS("##{}"), _iBind).c_str(), { flWidth, flHeight });
+						bool bClicked = Button(XSFMT(XS("##{}"), _iBind).c_str(), { flWidth, flHeight });
 						bool bPopup = IsItemClicked(ImGuiMouseButton_Right);
 
 						PopTransparent(1, 1);
@@ -2829,7 +2829,7 @@ void CMenu::MenuSettings(int iTab)
 							}
 						}
 						else if (bPopup)
-							OpenPopup(std::format(XS("RightClicked{}"), _iBind).c_str());
+							OpenPopup(XSFMT(XS("RightClicked{}"), _iBind).c_str());
 						else if (iDragging == -1 && IsItemHovered() && IsMouseDown(ImGuiMouseButton_Left))
 							iDragging = _iBind, iLayer = iParent;
 						else if (bDelete)
@@ -2837,10 +2837,10 @@ void CMenu::MenuSettings(int iTab)
 							if (U::KeyHandler.Down(VK_SHIFT)) // allow user to quickly remove binds
 								F::Binds.RemoveBind(_iBind);
 							else
-								OpenPopup(std::format(XS("DeleteBind{}"), _iBind).c_str());
+								OpenPopup(XSFMT(XS("DeleteBind{}"), _iBind).c_str());
 						}
 
-						if (FBeginPopup(std::format(XS("RightClicked{}"), _iBind).c_str()))
+						if (FBeginPopup(XSFMT(XS("RightClicked{}"), _iBind).c_str()))
 						{
 							PushStyleVar(ImGuiStyleVar_ItemSpacing, { H::Draw.Scale(8), 0 });
 
@@ -2869,9 +2869,9 @@ void CMenu::MenuSettings(int iTab)
 							PopStyleVar();
 							EndPopup();
 						}
-						else if (FBeginPopupModal(std::format(XS("DeleteBind{}"), _iBind).c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysUseWindowPadding))
+						else if (FBeginPopupModal(XSFMT(XS("DeleteBind{}"), _iBind).c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysUseWindowPadding))
 						{
-							FText(std::format(XS("Do you really want to delete '{}'{}?"), _tBind.m_sName, F::Binds.HasChildren(_iBind) ? XS(" and all of its children") : "").c_str());
+							FText(XSFMT(XS("Do you really want to delete '{}'{}?"), _tBind.m_sName, F::Binds.HasChildren(_iBind) ? XS(" and all of its children") : "").c_str());
 
 							if (FButton(XS("Yes"), FButtonEnum::Left))
 							{
@@ -2985,10 +2985,10 @@ void CMenu::MenuSettings(int iTab)
 					{
 						SetCursorPos({ GetWindowWidth() - H::Draw.Scale(iOffset += 25), vOriginalPos.y + H::Draw.Scale(9) });
 						if (IconButton(ICON_MD_DELETE))
-							OpenPopup(std::format(XS("DeleteMat{}"), tMaterial.m_sName).c_str());
-						if (FBeginPopupModal(std::format(XS("DeleteMat{}"), tMaterial.m_sName).c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysUseWindowPadding))
+							OpenPopup(XSFMT(XS("DeleteMat{}"), tMaterial.m_sName).c_str());
+						if (FBeginPopupModal(XSFMT(XS("DeleteMat{}"), tMaterial.m_sName).c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysUseWindowPadding))
 						{
-							FText(std::format(XS("Do you really want to delete '{}'?"), tMaterial.m_sName).c_str());
+							FText(XSFMT(XS("Do you really want to delete '{}'?"), tMaterial.m_sName).c_str());
 
 							if (FButton(XS("Yes"), FButtonEnum::Left))
 							{
@@ -3043,7 +3043,7 @@ void CMenu::MenuSettings(int iTab)
 							CurrentMaterial = "";
 						SetCursorPosY(H::Draw.Scale(52));
 						PushStyleColor(ImGuiCol_Text, F::Render.Inactive.Value);
-						FText(std::format(XS("{}: {}"), LockedMaterial ? XS("Viewing") : XS("Editing"), CurrentMaterial).c_str(), FTextEnum::Right);
+						FText(XSFMT(XS("{}: {}"), LockedMaterial ? XS("Viewing") : XS("Editing"), CurrentMaterial).c_str(), FTextEnum::Right);
 						PopStyleColor();
 
 						// Text editor
@@ -3295,7 +3295,7 @@ void CMenu::MenuSearch(std::string sSearch)
 		{
 			if (uLastSection)
 				EndSection();
-			Section(std::format(XS("{}## {}"), pBase->Section(), pBase->Name()).c_str());
+			Section(XSFMT(XS("{}## {}"), pBase->Section(), pBase->Name()).c_str());
 			i = 0;
 		}
 		uLastSection = uSection;
@@ -3605,7 +3605,7 @@ void CMenu::DrawBinds()
 						break;
 					case BindEnum::ItemSlot:
 						sType = XS("slot");
-						sInfo = std::format(XS("{}"), tBind.m_iInfo + 1);
+						sInfo = XSFMT(XS("{}"), tBind.m_iInfo + 1);
 						break;
 					case BindEnum::Misc:
 						switch (tBind.m_iInfo)
@@ -3634,7 +3634,7 @@ void CMenu::DrawBinds()
 						break;
 					}
 					if (tBind.m_bNot && (tBind.m_iType != BindEnum::Key || tBind.m_iInfo == BindEnum::KeyEnum::Hold))
-						sInfo = std::format(XS("not {}"), sInfo);
+						sInfo = XSFMT(XS("not {}"), sInfo);
 
 					vInfo.emplace_back(tBind.m_sName.c_str(), sType, sInfo, iBind, tBind);
 				}
@@ -3746,12 +3746,12 @@ void CMenu::DrawBinds()
 					if (U::KeyHandler.Down(VK_SHIFT)) // allow user to quickly remove binds
 						F::Binds.RemoveBind(iBind);
 					else
-						OpenPopup(std::format(XS("DeleteBind{}"), iBind).c_str());
+						OpenPopup(XSFMT(XS("DeleteBind{}"), iBind).c_str());
 				}
 
-				if (FBeginPopupModal(std::format(XS("DeleteBind{}"), iBind).c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysUseWindowPadding))
+				if (FBeginPopupModal(XSFMT(XS("DeleteBind{}"), iBind).c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysUseWindowPadding))
 				{
-					FText(std::format(XS("Do you really want to delete '{}'{}?"), tBind.m_sName, F::Binds.HasChildren(iBind) ? XS(" and all of its children") : "").c_str());
+					FText(XSFMT(XS("Do you really want to delete '{}'{}?"), tBind.m_sName, F::Binds.HasChildren(iBind) ? XS(" and all of its children") : "").c_str());
 
 					SetCursorPosY(GetCursorPosY() - 8); // stupid and i don't know why this is needed here
 					if (FButton(XS("Yes"), FButtonEnum::Left))

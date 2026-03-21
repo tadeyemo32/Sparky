@@ -442,8 +442,8 @@ void CBacktrack::Draw(CTFPlayer* pLocal)
 	}
 
 	if (flFake || Vars::Backtrack::Interp.Value > G::Lerp * 1000)
-		H::Draw.StringOutlined(fFont, x, y, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, std::format(XS("Ping {:.0f} (+ {:.0f}) ms"), flLatency, flFake).c_str());
+		H::Draw.StringOutlined(fFont, x, y, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, XSFMT(XS("Ping {:.0f} (+ {:.0f}) ms"), flLatency, flFake).c_str());
 	else
-		H::Draw.StringOutlined(fFont, x, y, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, std::format(XS("Ping {:.0f} ms"), flLatency).c_str());
-	H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, std::format(XS("Scoreboard {} ms"), iLatencyScoreboard).c_str());
+		H::Draw.StringOutlined(fFont, x, y, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, XSFMT(XS("Ping {:.0f} ms"), flLatency).c_str());
+	H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, XSFMT(XS("Scoreboard {} ms"), iLatencyScoreboard).c_str());
 }

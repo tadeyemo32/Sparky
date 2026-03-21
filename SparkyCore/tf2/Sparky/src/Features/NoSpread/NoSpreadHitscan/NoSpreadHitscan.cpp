@@ -57,11 +57,11 @@ std::string CNoSpreadHitscan::GetFormat(int iServerTime)
 	int iSeconds = iServerTime % 60;
 
 	if (iDays)
-		return std::format(XS("{}d {}h"), iDays, iHours);
+		return XSFMT(XS("{}d {}h"), iDays, iHours);
 	else if (iHours)
-		return std::format(XS("{}h {}m"), iHours, iMinutes);
+		return XSFMT(XS("{}h {}m"), iHours, iMinutes);
 	else
-		return std::format(XS("{}m {}s"), iMinutes, iSeconds);
+		return XSFMT(XS("{}m {}s"), iMinutes, iSeconds);
 }
 
 void CNoSpreadHitscan::AskForPlayerPerf()
@@ -116,8 +116,8 @@ bool CNoSpreadHitscan::ParsePlayerPerf(const std::string& sMsg)
 
 		if (flMantissaStep > m_flMantissaStep && (m_bSynced || !m_flMantissaStep))
 		{
-			SDK::Output(XS("Seed Prediction"), m_bSynced ? std::format(XS("Synced ({})"), m_dTimeDelta).c_str() : XS("Not synced, step too low"), Vars::Menu::Theme::Accent.Value);
-			SDK::Output(XS("Seed Prediction"), std::format(XS("Age {}; Step {}"), GetFormat(m_flServerTime), flMantissaStep).c_str(), Vars::Menu::Theme::Accent.Value);
+			SDK::Output(XS("Seed Prediction"), m_bSynced ? XSFMT(XS("Synced ({})"), m_dTimeDelta).c_str() : XS("Not synced, step too low"), Vars::Menu::Theme::Accent.Value);
+			SDK::Output(XS("Seed Prediction"), XSFMT(XS("Age {}; Step {}"), GetFormat(m_flServerTime), flMantissaStep).c_str(), Vars::Menu::Theme::Accent.Value);
 		}
 		m_flMantissaStep = flMantissaStep;
 
@@ -134,7 +134,7 @@ void CNoSpreadHitscan::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* 
 
 	m_iSeed = GetSeed(pCmd);
 #ifdef SEEDPRED_DEBUG
-	SDK::Output(XS("CNoSpreadHitscan::Run"), std::format(XS("{}: {}"), SDK::PlatFloatTime() + m_dTimeDelta, m_iSeed).c_str(), { 255, 0, 0 });
+	SDK::Output(XS("CNoSpreadHitscan::Run"), XSFMT(XS("{}: {}"), SDK::PlatFloatTime() + m_dTimeDelta, m_iSeed).c_str(), { 255, 0, 0 });
 #endif
 
 	if (!m_bSynced)
@@ -220,8 +220,8 @@ void CNoSpreadHitscan::Draw(CTFPlayer* pLocal)
 
 	const auto& cColor = m_bSynced ? Vars::Menu::Theme::Active.Value : Vars::Menu::Theme::Inactive.Value;
 
-	H::Draw.StringOutlined(fFont, x, y, cColor, Vars::Menu::Theme::Background.Value, align, std::format(XS("Uptime {}"), GetFormat(m_flServerTime)).c_str());
-	H::Draw.StringOutlined(fFont, x, y += nTall, cColor, Vars::Menu::Theme::Background.Value, align, std::format(XS("Mantissa step {}"), m_flMantissaStep).c_str());
+	H::Draw.StringOutlined(fFont, x, y, cColor, Vars::Menu::Theme::Background.Value, align, XSFMT(XS("Uptime {}"), GetFormat(m_flServerTime)).c_str());
+	H::Draw.StringOutlined(fFont, x, y += nTall, cColor, Vars::Menu::Theme::Background.Value, align, XSFMT(XS("Mantissa step {}"), m_flMantissaStep).c_str());
 	if (Vars::Debug::Info.Value)
-		H::Draw.StringOutlined(fFont, x, y += nTall, cColor, Vars::Menu::Theme::Background.Value, align, std::format(XS("Delta {:.3f}"), m_dTimeDelta).c_str());
+		H::Draw.StringOutlined(fFont, x, y += nTall, cColor, Vars::Menu::Theme::Background.Value, align, XSFMT(XS("Delta {:.3f}"), m_dTimeDelta).c_str());
 }

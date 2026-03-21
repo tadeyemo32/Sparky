@@ -17,12 +17,12 @@ void CAutoVote::UserMessage(bf_read& msgData)
 		|| /*Vars::Aimbot::General::Ignore.Value & Vars::Aimbot::General::IgnoreEnum::Friends &&*/ H::Entities.IsFriend(iTarget)
 		|| /*Vars::Aimbot::General::Ignore.Value & Vars::Aimbot::General::IgnoreEnum::Friends &&*/ H::Entities.InParty(iTarget)))
 	{
-		I::ClientState->SendStringCmd(std::format(XS("vote {} option2"), iVoteID).c_str());
+		I::ClientState->SendStringCmd(XSFMT(XS("vote {} option2"), iVoteID).c_str());
 	}
 	else if (Vars::Misc::Automation::AutoF1Priority.Value && F::PlayerUtils.IsPrioritized(iTarget)
 		&& !H::Entities.IsFriend(iTarget)
 		&& !H::Entities.InParty(iTarget))
 	{
-		I::ClientState->SendStringCmd(std::format(XS("vote {} option1"), iVoteID).c_str());
+		I::ClientState->SendStringCmd(XSFMT(XS("vote {} option1"), iVoteID).c_str());
 	}
 }

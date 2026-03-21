@@ -62,7 +62,7 @@ static inline std::deque<Frame_t> StackTrace(PCONTEXT pContext)
 			if (GetModuleBaseName(hProcess, hBase, buffer, sizeof(buffer) / sizeof(char)))
 				tFrame.m_sModule = buffer;
 			else
-				tFrame.m_sModule = std::format(XS("{:#x}"), tFrame.m_uBase);
+				tFrame.m_sModule = XSFMT(XS("{:#x}"), tFrame.m_uBase);
 		}
 
 		{
@@ -114,22 +114,22 @@ static LONG APIENTRY ExceptionFilter(PEXCEPTION_POINTERS ExceptionInfo)
 	s_mAddresses[ExceptionInfo->ExceptionRecord->ExceptionAddress];
 
 	std::stringstream ssErrorStream;
-	ssErrorStream << std::format(XS("Error: {} (0x{:X}) ({})\n"), sError, ExceptionInfo->ExceptionRecord->ExceptionCode, ++s_iExceptions);
+	ssErrorStream << XSFMT(XS("Error: {} (0x{:X}) ({})\n"), sError, ExceptionInfo->ExceptionRecord->ExceptionCode, ++s_iExceptions);
 	ssErrorStream << XS("Built @ ") __DATE__ XS(", ") __TIME__ XS(", ") __CONFIGURATION__ XS("\n");
-	ssErrorStream << std::format(XS("Time @ {}, {}\n"), SDK::GetDate(), SDK::GetTime());
+	ssErrorStream << XSFMT(XS("Time @ {}, {}\n"), SDK::GetDate(), SDK::GetTime());
 
 	ssErrorStream << XS("\n");
 	if (U::Memory.GetOffsetFromBase(s_lpParam))
-		ssErrorStream << std::format(XS("This: {}\n"), U::Memory.GetModuleOffset(s_lpParam));
-	ssErrorStream << std::format(XS("RIP: {:#x}\n"), ExceptionInfo->ContextRecord->Rip);
-	ssErrorStream << std::format(XS("RAX: {:#x}\n"), ExceptionInfo->ContextRecord->Rax);
-	ssErrorStream << std::format(XS("RCX: {:#x}\n"), ExceptionInfo->ContextRecord->Rcx);
-	ssErrorStream << std::format(XS("RDX: {:#x}\n"), ExceptionInfo->ContextRecord->Rdx);
-	ssErrorStream << std::format(XS("RBX: {:#x}\n"), ExceptionInfo->ContextRecord->Rbx);
-	ssErrorStream << std::format(XS("RSP: {:#x}\n"), ExceptionInfo->ContextRecord->Rsp);
-	ssErrorStream << std::format(XS("RBP: {:#x}\n"), ExceptionInfo->ContextRecord->Rbp);
-	ssErrorStream << std::format(XS("RSI: {:#x}\n"), ExceptionInfo->ContextRecord->Rsi);
-	ssErrorStream << std::format(XS("RDI: {:#x}\n"), ExceptionInfo->ContextRecord->Rdi);
+		ssErrorStream << XSFMT(XS("This: {}\n"), U::Memory.GetModuleOffset(s_lpParam));
+	ssErrorStream << XSFMT(XS("RIP: {:#x}\n"), ExceptionInfo->ContextRecord->Rip);
+	ssErrorStream << XSFMT(XS("RAX: {:#x}\n"), ExceptionInfo->ContextRecord->Rax);
+	ssErrorStream << XSFMT(XS("RCX: {:#x}\n"), ExceptionInfo->ContextRecord->Rcx);
+	ssErrorStream << XSFMT(XS("RDX: {:#x}\n"), ExceptionInfo->ContextRecord->Rdx);
+	ssErrorStream << XSFMT(XS("RBX: {:#x}\n"), ExceptionInfo->ContextRecord->Rbx);
+	ssErrorStream << XSFMT(XS("RSP: {:#x}\n"), ExceptionInfo->ContextRecord->Rsp);
+	ssErrorStream << XSFMT(XS("RBP: {:#x}\n"), ExceptionInfo->ContextRecord->Rbp);
+	ssErrorStream << XSFMT(XS("RSI: {:#x}\n"), ExceptionInfo->ContextRecord->Rsi);
+	ssErrorStream << XSFMT(XS("RDI: {:#x}\n"), ExceptionInfo->ContextRecord->Rdi);
 
 	ssErrorStream << XS("\n");
 	if (auto vTrace = StackTrace(ExceptionInfo->ContextRecord);
@@ -139,15 +139,15 @@ static LONG APIENTRY ExceptionFilter(PEXCEPTION_POINTERS ExceptionInfo)
 		{
 			Frame_t& tFrame = vTrace[i];
 
-			ssErrorStream << std::format(XS("{}: "), i + 1);
+			ssErrorStream << XSFMT(XS("{}: "), i + 1);
 			if (tFrame.m_uBase)
-				ssErrorStream << std::format(XS("{}+{:#x}"), tFrame.m_sModule, tFrame.m_uAddress - tFrame.m_uBase);
+				ssErrorStream << XSFMT(XS("{}+{:#x}"), tFrame.m_sModule, tFrame.m_uAddress - tFrame.m_uBase);
 			else
-				ssErrorStream << std::format(XS("{:#x}"), tFrame.m_uAddress);
+				ssErrorStream << XSFMT(XS("{:#x}"), tFrame.m_uAddress);
 			if (!tFrame.m_sFile.empty())
-				ssErrorStream << std::format(XS(" ({} L{})"), tFrame.m_sFile, tFrame.m_uLine);
+				ssErrorStream << XSFMT(XS(" ({} L{})"), tFrame.m_sFile, tFrame.m_uLine);
 			if (!tFrame.m_sName.empty())
-				ssErrorStream << std::format(XS(" ({})"), tFrame.m_sName);
+				ssErrorStream << XSFMT(XS(" ({})"), tFrame.m_sName);
 			ssErrorStream << XS("\n");
 		}
 	}

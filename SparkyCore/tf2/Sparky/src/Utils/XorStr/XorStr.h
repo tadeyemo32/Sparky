@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <format>
 
 template<size_t N>
 struct XorStr
@@ -33,3 +34,13 @@ struct XorStr
 		static const std::string _s = _xs.Decrypt();                   \
 		return _s.c_str();                                              \
 	}())
+
+// Runtime-format wrapper for use with XS() format strings.
+// std::format requires a consteval format string; use XSFMT when the format
+// string is a runtime value such as the result of XS().
+// Usage: XSFMT(XS("value: {}"), someValue)
+template<typename... Args>
+inline std::string XSFMT(const char* fmt, Args&&... args)
+{
+	return std::vformat(fmt, std::make_format_args(args...));
+}

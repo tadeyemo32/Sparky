@@ -1919,9 +1919,9 @@ void CAimbotProjectile::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd*
 		int iTraceCount = 0;
 		for (auto& [_, iTraces] : s_mTraceCount)
 			iTraceCount += iTraces;
-		SDK::Output(XS("Traces"), std::format(XS("{}"), iTraceCount).c_str());
+		SDK::Output(XS("Traces"), XSFMT(XS("{}"), iTraceCount).c_str());
 		for (auto& [sType, iTraces] : s_mTraceCount)
-			SDK::Output(XS("Traces"), std::format(XS("{}: {}"), sType, iTraces).c_str());
+			SDK::Output(XS("Traces"), XSFMT(XS("{}: {}"), sType, iTraces).c_str());
 	}
 	s_mTraceCount.clear();
 #endif

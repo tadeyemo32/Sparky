@@ -45,13 +45,13 @@ void SDK::Output(const char* sFunction, const char* sLog, Color_t tColor,
 			I::CVar->ConsoleColorPrintf({}, XS("%s\n"), sLog);
 		}
 		if (iTo & OUTPUT_DEBUG)
-			OutputDebugString(std::format(XS("{}{}{} {}\n"), sLeft, sFunction, sRight, sLog).c_str());
+			OutputDebugString(XSFMT(XS("{}{}{} {}\n"), sLeft, sFunction, sRight, sLog).c_str());
 		if (iTo & OUTPUT_TOAST)
 			F::Notifications.Add(sLog, tColor);
 		if (iTo & OUTPUT_MENU)
-			F::Menu.AddOutput(std::format(XS("{}{}{}"), sLeft, sFunction, sRight).c_str(), sLog, tColor);
+			F::Menu.AddOutput(XSFMT(XS("{}{}{}"), sLeft, sFunction, sRight).c_str(), sLog, tColor);
 		if (iTo & OUTPUT_CHAT)
-			I::ClientModeShared->m_pChatElement->ChatPrintf(0, std::format(XS("{}{}{}{}\x1 {}"), tColor.ToHex(), sLeft, sFunction, sRight, sLog).c_str());
+			I::ClientModeShared->m_pChatElement->ChatPrintf(0, XSFMT(XS("{}{}{}{}\x1 {}"), tColor.ToHex(), sLeft, sFunction, sRight, sLog).c_str());
 		if (iTo & OUTPUT_PARTY)
 			I::TFPartyClient->SendPartyChat(sLog);
 		if (iMessageBox != -1)
@@ -62,13 +62,13 @@ void SDK::Output(const char* sFunction, const char* sLog, Color_t tColor,
 		if (iTo & OUTPUT_CONSOLE)
 			I::CVar->ConsoleColorPrintf(tColor, XS("%s\n"), sFunction);
 		if (iTo & OUTPUT_DEBUG)
-			OutputDebugString(std::format(XS("{}\n"), sFunction).c_str());
+			OutputDebugString(XSFMT(XS("{}\n"), sFunction).c_str());
 		if (iTo & OUTPUT_TOAST)
 			F::Notifications.Add(sFunction, tColor);
 		if (iTo & OUTPUT_MENU)
 			F::Menu.AddOutput("", sFunction, tColor);
 		if (iTo & OUTPUT_CHAT)
-			I::ClientModeShared->m_pChatElement->ChatPrintf(0, std::format(XS("{}{}\x1"), tColor.ToHex(), sFunction).c_str());
+			I::ClientModeShared->m_pChatElement->ChatPrintf(0, XSFMT(XS("{}{}\x1"), tColor.ToHex(), sFunction).c_str());
 		if (iTo & OUTPUT_PARTY)
 			I::TFPartyClient->SendPartyChat(sFunction);
 		if (iMessageBox != -1)

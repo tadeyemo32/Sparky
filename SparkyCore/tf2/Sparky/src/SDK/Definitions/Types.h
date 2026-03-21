@@ -923,12 +923,12 @@ struct Color_t
 
 	inline std::string ToHex() const
 	{
-		return std::format(XS("\x7{:02x}{:02x}{:02x}"), r, g, b);
+		return XSFMT(XS("\x7{:02x}{:02x}{:02x}"), r, g, b);
 	}
 
 	inline std::string ToHexA() const
 	{
-		return std::format(XS("\x8{:02x}{:02x}{:02x}{:02x}"), r, g, b, a);
+		return XSFMT(XS("\x8{:02x}{:02x}{:02x}{:02x}"), r, g, b, a);
 	}
 
 	inline Color_t Lerp(Color_t to, float t, LerpEnum::LerpEnum eLerp = LerpEnum::All) const

@@ -21,7 +21,7 @@ bool CSignature::Initialize()
 	m_dwVal = U::Memory.FindSignature(m_sDLLName, m_sSignature);
 	if (!m_dwVal)
 	{
-		U::Core.AppendFailText(std::format(XS("CSignature::Initialize() failed to initialize:\n  {}\n  {}\n  {}"), m_sName, m_sDLLName, m_sSignature).c_str());
+		U::Core.AppendFailText(XSFMT(XS("CSignature::Initialize() failed to initialize:\n  {}\n  {}\n  {}"), m_sName, m_sDLLName, m_sSignature).c_str());
 		return false;
 	}
 

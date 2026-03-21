@@ -91,71 +91,31 @@ void CMaterials::LoadMaterials()
 	// default materials
 	StoreStruct( // hacky
 		XS("None"),
-			XS("\"UnlitGeneric\"")
-			XS("\n{")
-			XS("\n\t$color2 \"[0 0 0]\"")
-			XS("\n\t$additive \"1\"")
-			XS("\n}"),
+			XS("\"UnlitGeneric\"\n{\n\t$color2 \"[0 0 0]\"\n\t$additive \"1\"\n}"),
 		true);
 	StoreStruct(
 		XS("Flat"),
-			XS("\"UnlitGeneric\"")
-			XS("\n{")
-			XS("\n\t$basetexture \"white\"")
-			XS("\n}"),
+			XS("\"UnlitGeneric\"\n{\n\t$basetexture \"white\"\n}"),
 		true);
 	StoreStruct(
 		XS("Shaded"),
-			XS("\"VertexLitGeneric\"")
-			XS("\n{")
-			XS("\n\t$basetexture \"white\"")
-			XS("\n}"),
+			XS("\"VertexLitGeneric\"\n{\n\t$basetexture \"white\"\n}"),
 		true);
 	StoreStruct(
 		XS("Wireframe"),
-			XS("\"UnlitGeneric\"")
-			XS("\n{")
-			XS("\n\t$basetexture \"white\"")
-			XS("\n\t$wireframe \"1\"")
-			XS("\n}"),
+			XS("\"UnlitGeneric\"\n{\n\t$basetexture \"white\"\n\t$wireframe \"1\"\n}"),
 		true);
 	StoreStruct(
 		XS("Fresnel"),
-			XS("\"VertexLitGeneric\"")
-			XS("\n{")
-			XS("\n\t$basetexture \"white\"")
-			XS("\n\t$bumpmap \"models/player/shared/shared_normal\"")
-			XS("\n\t$color2 \"[0 0 0]\"")
-			XS("\n\t$additive \"1\"")
-			XS("\n\t$phong \"1\"")
-			XS("\n\t$phongfresnelranges \"[0 0.5 1]\"")
-			XS("\n\t$envmap \"skybox/sky_dustbowl_01\"")
-			XS("\n\t$envmapfresnel \"1\"")
-			XS("\n}"),
+			XS("\"VertexLitGeneric\"\n{\n\t$basetexture \"white\"\n\t$bumpmap \"models/player/shared/shared_normal\"\n\t$color2 \"[0 0 0]\"\n\t$additive \"1\"\n\t$phong \"1\"\n\t$phongfresnelranges \"[0 0.5 1]\"\n\t$envmap \"skybox/sky_dustbowl_01\"\n\t$envmapfresnel \"1\"\n}"),
 		true);
 	StoreStruct(
 		XS("Shine"),
-			XS("\"VertexLitGeneric\"")
-			XS("\n{")
-			XS("\n\t$additive \"1\"")
-			XS("\n\t$envmap \"cubemaps/cubemap_sheen002.hdr\"")
-			XS("\n\t$envmaptint \"[1 1 1]\"")
-			XS("\n}"),
+			XS("\"VertexLitGeneric\"\n{\n\t$additive \"1\"\n\t$envmap \"cubemaps/cubemap_sheen002.hdr\"\n\t$envmaptint \"[1 1 1]\"\n}"),
 		true);
 	StoreStruct(
 		XS("Tint"),
-			XS("\"VertexLitGeneric\"")
-			XS("\n{")
-			XS("\n\t$basetexture \"models/player/shared/ice_player\"")
-			XS("\n\t$bumpmap \"models/player/shared/shared_normal\"")
-			XS("\n\t$additive \"1\"")
-			XS("\n\t$phong \"1\"")
-			XS("\n\t$phongfresnelranges \"[0 0.001 0.001]\"")
-			XS("\n\t$envmap \"skybox/sky_dustbowl_01\"")
-			XS("\n\t$envmapfresnel \"1\"")
-			XS("\n\t$selfillum \"1\"")
-			XS("\n\t$selfillumtint \"[0 0 0]\"")
-			XS("\n}"),
+			XS("\"VertexLitGeneric\"\n{\n\t$basetexture \"models/player/shared/ice_player\"\n\t$bumpmap \"models/player/shared/shared_normal\"\n\t$additive \"1\"\n\t$phong \"1\"\n\t$phongfresnelranges \"[0 0.001 0.001]\"\n\t$envmap \"skybox/sky_dustbowl_01\"\n\t$envmapfresnel \"1\"\n\t$selfillum \"1\"\n\t$selfillumtint \"[0 0 0]\"\n}"),
 		true);
 	// user materials
 	for (auto& tEntry : std::filesystem::directory_iterator(F::Configs.m_sMaterialsPath))
@@ -298,10 +258,7 @@ void CMaterials::AddMaterial(const char* sName)
 
 	StoreStruct(
 		sName,
-			XS("\"VertexLitGeneric\"")
-			XS("\n{")
-			XS("\n\t")
-			XS("\n}")
+			XS("\"VertexLitGeneric\"\n{\n\t\n}")
 		);
 	auto& tMaterial = m_mMaterials[uHash];
 
