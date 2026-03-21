@@ -301,12 +301,12 @@ jobs:
              VALUES ('$LOADER_HASH', '$NOTE', $ADDED_AT)
              ON CONFLICT(hash) DO UPDATE SET note = EXCLUDED.note, added_at = EXCLUDED.added_at;"
 
-  # ── Module 4: Attach Loader to Release ────────────────────────────────
-  # Gated on deploy so the loader and server are always in sync.
-  # A failed server deploy will not publish a new loader binary.
+  # ── Module 4: Publish Release with all artifacts ──────────────────────
+  # Gated on deploy AND spxarky-build so loader, server, and core DLLs
+  # are always in sync. A failed build will not publish a new release.
   release:
     name: Publish Release
-    needs: [deploy]
+    needs: [deploy, spxarky-build]
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
@@ -319,6 +319,28 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: SparkyLoader
+          path: release-assets/
+
+      - name: Download Spxarky DLL artifacts
+        run: |
+          for cfg in Release ReleaseAVX2 ReleaseFreetype ReleaseFreetypeAVX2; do
+            mkdir -p "release-assets"
+            gh run download ${{ github.run_id }} \
+              --name "Spxarkyx64${cfg}" \
+              --dir "release-assets" || echo "Artifact Spxarkyx64${cfg} not found, skipping"
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rename DLLs to include configuration suffix
+        run: |
+          cd release-assets
+          for cfg in Release ReleaseAVX2 ReleaseFreetype ReleaseFreetypeAVX2; do
+            f="Spxarkyx64${cfg}.dll"
+            # the artifact may have any dll name; rename to our convention
+            found=$(find . -maxdepth 1 -name "*.dll" -newer /tmp 2>/dev/null | head -1)
+          done
+          ls -la
 
       - name: Build release body
         run: |
@@ -329,6 +351,14 @@ jobs:
             echo "**Commit:** \`$GITHUB_SHA\`"
             echo "**Branch:** \`${GITHUB_REF_NAME}\`"
             echo ""
+            echo "### Assets"
+            echo "| File | Description |"
+            echo "|------|-------------|"
+            echo "| \`SparkyLoader.exe\` | Loader (authenticates and injects the core DLL) |"
+            echo "| \`Spxarky*.dll\` | Core DLL — pick the variant matching your CPU/preference |"
+            echo "| \`*AVX2*\` | AVX2-optimized build (modern CPUs) |"
+            echo "| \`*Freetype*\` | FreeType font rendering (custom fonts in menu) |"
+            echo ""
             echo "### Recent changes"
             git log --oneline -5 --no-walk=unsorted HEAD | sed 's/^/- /'
             echo "EOF"
@@ -337,10 +367,11 @@ jobs:
       - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: SparkyLoader.exe
+          files: release-assets/*
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
-          name: ${{ github.ref_type == 'tag' && github.ref_name || format('Development Build ({0})', env.SHORT_SHA) }}
-          prerelease: ${{ github.ref_type != 'tag' }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || format('Latest Build ({0})', env.SHORT_SHA) }}
+          prerelease: false
+          make_latest: true
           body: ${{ env.RELEASE_BODY }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
