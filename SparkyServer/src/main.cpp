@@ -2836,7 +2836,11 @@ int main(int argc, char** argv)
 
         char ip[INET_ADDRSTRLEN]{}; inet_ntop(AF_INET, &ca.sin_addr, ip, sizeof(ip));
 
-        if (!g_rl_loader.Allow(ip))
+        // Skip rate-limiting for GCP internal IPs (169.254.x.x link-local) used
+        // by Cloud Run GFE health probes — banning these breaks all HTTP traffic.
+        const bool isGcpInternal = (strncmp(ip, "169.254.", 8) == 0);
+
+        if (!isGcpInternal && !g_rl_loader.Allow(ip))
         {
             // If the rate limiter just triggered a new hard-ban, persist it so it
             // survives restarts (HardBanned() includes both old and new bans).
