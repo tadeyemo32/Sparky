@@ -42,6 +42,7 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/hmac.h>
+#include <openssl/crypto.h>
 
 // OpenSSL import libs are linked via CMake (OpenSSL::SSL, OpenSSL::Crypto)
 
@@ -83,9 +84,11 @@ static Database        g_db;
 static LicenseManager* g_lm = nullptr;
 static std::mutex      g_dbMu;
 
-// Rate limiter: 10 connections per 60 s → soft throttle
-//               30 connections per 60 s → hard ban + iptables suggestion
-static RateLimiter g_rl(10, 30, 60);
+// Per-endpoint rate limiters — separate buckets prevent flooding one path
+// from consuming quota on another.
+static RateLimiter g_rl_auth(5, 10, 60);    // /api/auth/* — 5 soft / 10 hard per 60 s
+static RateLimiter g_rl_api(20, 50, 60);    // /api/admin|owner/* — 20 soft / 50 hard
+static RateLimiter g_rl_loader(5, 10, 300); // loader binary protocol — 5 per 5 min
 
 static std::vector<uint8_t> g_dllBytes;
 static std::vector<uint8_t> g_cfgBytes;    // config.bin loaded once at startup
@@ -138,6 +141,11 @@ static std::string g_proxySecret;
 // Protected by g_hwidMu (separate from g_dbMu to avoid deadlocks).
 static std::unordered_set<std::string> g_activeHwids;
 static std::mutex                       g_hwidMu;
+
+// Per-IP concurrent connection cap — prevents single-IP exhaustion even
+// within rate-limit windows.  Max 20 simultaneous sockets per IP.
+static std::unordered_map<std::string, int> g_connCount;
+static std::mutex                            g_connMu;
 
 #ifdef _WIN32
 static BOOL WINAPI CtrlHandler(DWORD)
@@ -407,7 +415,9 @@ struct ClientSession
     std::string hwid;
     std::string tokenHex;
     std::string loaderHash; // hex of loader SHA-256 from Hello
-    bool        wsMode   = false;   // true after WebSocket upgrade handshake
+    std::string ip;         // remote IP, set on accept
+    bool        wsMode     = false; // true after WebSocket upgrade handshake
+    bool        keepAlive  = false; // true when client sent Connection: keep-alive
 };
 
 static bool SendMsg(ClientSession& s, MsgType t,
@@ -566,7 +576,8 @@ static void SendHttp(ClientSession& s, int code, const std::string& ct, const st
         "Vary: Origin\r\n"
         "Access-Control-Allow-Headers: Content-Type, Authorization, x-sparky-key\r\n"
         "Content-Type: " + ct + "\r\n"
-        "Content-Length: " + std::to_string(body.size()) + "\r\n"
+        "Content-Length: " + std::to_string(body.size()) + "\r\n" +
+        (s.keepAlive ? "Connection: keep-alive\r\n" : "Connection: close\r\n") +
         "\r\n" + body;
     NetSend(s.sock, s.ssl, resp.c_str(), (int)resp.size());
 }
@@ -811,10 +822,27 @@ static void HandleWebApi(ClientSession& s,
             while (ve > vs && (req[ve-1] == ' ' || req[ve-1] == '\t')) --ve;
             sent = req.substr(vs, ve - vs);
         }
-        if (sent != g_proxySecret)
+        bool secretOk = sent.size() == g_proxySecret.size() &&
+                        CRYPTO_memcmp(sent.data(), g_proxySecret.data(), sent.size()) == 0;
+        if (!secretOk)
         {
             SendApiError(s, 403, "Forbidden");
             return;
+        }
+    }
+
+    // ── Per-endpoint rate limiting ────────────────────────────────────────────
+    if (!s.ip.empty())
+    {
+        if (path.rfind("/api/auth/", 0) == 0)
+        {
+            if (!g_rl_auth.Allow(s.ip))
+            { SendApiError(s, 429, "Too Many Requests"); return; }
+        }
+        else
+        {
+            if (!g_rl_api.Allow(s.ip))
+            { SendApiError(s, 429, "Too Many Requests"); return; }
         }
     }
 
@@ -1430,14 +1458,15 @@ static bool StreamEncryptedDll(ClientSession& s)
 // HandleClient
 // ---------------------------------------------------------------------------
 #ifdef _WIN32
-static void HandleClient(SOCKET csock, SSL* ssl)
+static void HandleClient(SOCKET csock, SSL* ssl, std::string clientIp)
 #else
-static void HandleClient(int csock, SSL* ssl)
+static void HandleClient(int csock, SSL* ssl, std::string clientIp)
 #endif
 {
     ClientSession s{};
     s.sock = csock;
     s.ssl  = ssl;
+    s.ip   = clientIp;
     const int64_t now = (int64_t)time(nullptr);
 
     // Track whether this HWID has been registered in g_activeHwids.
@@ -1459,6 +1488,16 @@ static void HandleClient(int csock, SSL* ssl)
 #else
         ::close(csock);
 #endif
+        // Decrement per-IP connection counter
+        if (!clientIp.empty())
+        {
+            std::lock_guard lk(g_connMu);
+            auto it = g_connCount.find(clientIp);
+            if (it != g_connCount.end() && it->second > 0)
+            {
+                if (--(it->second) == 0) g_connCount.erase(it);
+            }
+        }
     };
 
     // ---- 1. Receive Hello (or HTTP Health Check) ----
@@ -1477,6 +1516,19 @@ static void HandleClient(int csock, SSL* ssl)
         std::string req;
         req.append((const char*)&h, sizeof(h));
         char c;
+        // Slowloris mitigation: impose a hard deadline on the entire header read.
+        // Even with per-call NetRecv timeouts, an attacker trickle-sending one
+        // byte every 4.9 s could hold the thread open for hours.  SO_RCVTIMEO
+        // caps each underlying recv() call at the OS level.
+        {
+#ifdef _WIN32
+            DWORD hdrTo = 5000;
+            setsockopt(csock, SOL_SOCKET, SO_RCVTIMEO, (char*)&hdrTo, sizeof(hdrTo));
+#else
+            struct timeval hdrTo{5, 0};
+            setsockopt(csock, SOL_SOCKET, SO_RCVTIMEO, &hdrTo, sizeof(hdrTo));
+#endif
+        }
         // Read until \r\n\r\n or max 8KB
         while (req.size() < 8192 && NetRecv(s.sock, s.ssl, &c, 1, 5000))
         {
@@ -1561,7 +1613,18 @@ static void HandleClient(int csock, SSL* ssl)
                 authHex = req.substr(start, end - start);
             }
 
-            // 3. Extract Sec-WebSocket-Key for WebSocket upgrade detection
+            // 3. Detect Connection: keep-alive
+            {
+                size_t cp = lowerReq.find("connection:");
+                if (cp != std::string::npos)
+                {
+                    size_t vs = cp + 11;
+                    while (vs < req.size() && (req[vs] == ' ' || req[vs] == '\t')) ++vs;
+                    s.keepAlive = (lowerReq.compare(vs, 10, "keep-alive") == 0);
+                }
+            }
+
+            // 4. Extract Sec-WebSocket-Key for WebSocket upgrade detection
             // (compare lowercase header name, but extract value from original req)
             size_t wsKeyPos = lowerReq.find(XS("sec-websocket-key:"));
             if (wsKeyPos != std::string::npos)
@@ -1593,7 +1656,13 @@ static void HandleClient(int csock, SSL* ssl)
                     if (ve == std::string::npos) ve = req.size();
                     try {
                         int cl = std::stoi(req.substr(vs, ve - vs));
-                        if (cl > 0 && cl <= 65536) {
+                        if (cl > 64 * 1024) {
+                            // Reject oversized bodies immediately — all API payloads
+                            // are tiny JSON; anything larger is an attack or misclient.
+                            SendApiError(s, 413, "Request body too large");
+                            cleanup(); return;
+                        }
+                        if (cl > 0) {
                             httpBody.resize((size_t)cl);
                             NetRecv(s.sock, s.ssl, httpBody.data(), cl, 5000);
                         }
@@ -1601,10 +1670,78 @@ static void HandleClient(int csock, SSL* ssl)
                 }
             }
 
-            // Route /api/* to the web API handler
+            // Route /api/* to the web API handler.
+            // Keep-alive loop: login → getMe → download can reuse the same TCP
+            // connection, saving 2 extra TLS handshakes for the typical flow.
             if (httpPath.size() >= 5 && httpPath.compare(0, 5, "/api/") == 0)
             {
-                HandleWebApi(s, httpMethod, httpPath, req, httpBody);
+                while (true)
+                {
+                    HandleWebApi(s, httpMethod, httpPath, req, httpBody);
+                    if (!s.keepAlive) break;
+
+                    // Read next HTTP request on the same connection.
+                    req.clear(); httpMethod.clear(); httpPath.clear(); httpBody.clear();
+                    s.keepAlive = false; // re-set when parsing next request headers
+
+                    // Read first 16 bytes (same framing as the initial MsgHeader read)
+                    MsgHeader hn{};
+                    if (!NetRecv(s.sock, s.ssl, &hn, sizeof(hn), 30000)) break;
+                    if (memcmp(&hn.Magic, "GET ", 4) != 0 &&
+                        memcmp(&hn.Magic, "POST", 4) != 0 &&
+                        memcmp(&hn.Magic, "HEAD", 4) != 0 &&
+                        memcmp(&hn.Magic, "OPTI", 4) != 0) break;
+                    req.append((const char*)&hn, sizeof(hn));
+                    while (req.size() < 8192 && NetRecv(s.sock, s.ssl, &c, 1, 5000))
+                    {
+                        req += c;
+                        if (req.size() >= 4 && req.compare(req.size() - 4, 4, "\r\n\r\n") == 0)
+                            break;
+                    }
+                    // Re-parse method and path
+                    {
+                        size_t sp1 = req.find(' ');
+                        if (sp1 != std::string::npos)
+                        {
+                            httpMethod = req.substr(0, sp1);
+                            size_t sp2 = req.find(' ', sp1 + 1);
+                            if (sp2 != std::string::npos)
+                                httpPath = req.substr(sp1 + 1, sp2 - sp1 - 1);
+                        }
+                    }
+                    if (httpPath.size() < 5 || httpPath.compare(0, 5, "/api/") != 0) break;
+                    // Re-detect keep-alive for this request
+                    {
+                        std::string lr = req;
+                        for (auto& ch : lr) ch = (char)std::tolower((unsigned char)ch);
+                        size_t cp = lr.find("connection:");
+                        if (cp != std::string::npos)
+                        {
+                            size_t vs = cp + 11;
+                            while (vs < req.size() && (req[vs] == ' ' || req[vs] == '\t')) ++vs;
+                            s.keepAlive = (lr.compare(vs, 10, "keep-alive") == 0);
+                        }
+                    }
+                    // Re-read body for POST
+                    if (httpMethod == "POST")
+                    {
+                        std::string lr2 = req;
+                        for (auto& ch : lr2) ch = (char)std::tolower((unsigned char)ch);
+                        size_t cp = lr2.find("content-length:");
+                        if (cp != std::string::npos)
+                        {
+                            size_t vs = cp + 15;
+                            while (vs < req.size() && (req[vs] == ' ' || req[vs] == '\t')) ++vs;
+                            size_t ve = req.find('\r', vs);
+                            if (ve == std::string::npos) ve = req.size();
+                            try {
+                                int cl = std::stoi(req.substr(vs, ve - vs));
+                                if (cl > 64 * 1024) { SendApiError(s, 413, "Request body too large"); break; }
+                                if (cl > 0) { httpBody.resize((size_t)cl); NetRecv(s.sock, s.ssl, httpBody.data(), cl, 5000); }
+                            } catch (...) {}
+                        }
+                    }
+                }
                 cleanup(); return;
             }
 
@@ -1616,6 +1753,30 @@ static void HandleClient(int csock, SSL* ssl)
                 {
                     if (s.wsMode && !s.tokenHex.empty())
                     {
+                        // WebSocket origin validation — block WS upgrades from unknown
+                        // web origins.  Loader connections have no Origin header and are
+                        // always allowed through; only browser-initiated WS is checked.
+                        if (!g_allowedOrigin.empty())
+                        {
+                            std::string lrws = req;
+                            for (auto& ch : lrws) ch = (char)std::tolower((unsigned char)ch);
+                            size_t op = lrws.find("origin:");
+                            if (op != std::string::npos)
+                            {
+                                size_t vs = op + 7;
+                                while (vs < req.size() && (req[vs]==' '||req[vs]=='\t')) ++vs;
+                                size_t ve = req.find('\r', vs);
+                                if (ve == std::string::npos) ve = req.size();
+                                std::string origin = req.substr(vs, ve - vs);
+                                if (origin != g_allowedOrigin)
+                                {
+                                    const char* rej = "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\n\r\nForbidden";
+                                    NetSend(s.sock, s.ssl, rej, (int)strlen(rej));
+                                    cleanup(); return;
+                                }
+                            }
+                        }
+
                         // WebSocket upgrade path — sends RFC 6455 §4.2.2 handshake.
                         // The GCP HTTP LB then proxies frames transparently, allowing
                         // binary protocol messages to flow in both directions.
@@ -1712,6 +1873,13 @@ static void HandleClient(int csock, SSL* ssl)
         uint32_t computed = Crc32((uint8_t*)&h, sizeof(h));
         if (!pay.empty()) computed ^= Crc32(pay.data(), (uint32_t)pay.size());
         if (computed != crc) { cleanup(); return; }
+    }
+
+    // Padding must be zero — non-zero bytes indicate a malformed or fuzzed frame
+    if (h.Pad[0] != 0 || h.Pad[1] != 0 || h.Pad[2] != 0 || h.Pad[3] != 0)
+    {
+        std::cout << "[S] Reject: non-zero MsgHeader padding — dropping connection\n";
+        cleanup(); return;
     }
 
     if (pay.size() < sizeof(HelloPayload)) { cleanup(); return; }
@@ -2421,6 +2589,11 @@ int main(int argc, char** argv)
     else
     {
         std::cout << "[S] Web API origin restriction: disabled (set SPARKY_ALLOWED_ORIGIN to restrict)\n";
+        if (std::getenv("SPARKY_DEV") == nullptr)
+        {
+            std::cerr << "[WARN] SPARKY_ALLOWED_ORIGIN not set — CORS allows any origin. "
+                         "Set this in production!\n";
+        }
     }
 
     if (const char* k = std::getenv(XS("SPARKY_KEY")))
@@ -2529,7 +2702,9 @@ int main(int argc, char** argv)
         auto ipBans = g_db.ListIpBans();
         for (auto& [ip, reason] : ipBans)
         {
-            g_rl.HardBanIp(ip);
+            g_rl_loader.HardBanIp(ip);
+            g_rl_auth.HardBanIp(ip);
+            g_rl_api.HardBanIp(ip);
         }
         if (!ipBans.empty())
             std::cout << "[S] Restored " << ipBans.size() << " persistent IP ban(s)\n";
@@ -2553,7 +2728,15 @@ int main(int argc, char** argv)
     // Generate a self-signed cert for testing:
     //   openssl req -x509 -newkey rsa:4096 -keyout sparky.key -out sparky.crt \
     //               -days 365 -nodes -subj "/CN=sparky"
+    //
+    // Set SPARKY_NO_TLS=1 to skip TLS entirely (Cloud Run: GFE terminates TLS externally).
     OPENSSL_init_ssl(0, nullptr);
+    if (getenv("SPARKY_NO_TLS"))
+    {
+        std::cout << "[S] TLS: disabled via SPARKY_NO_TLS (plaintext mode)\n";
+    }
+    else
+    {
     g_sslCtx = SSL_CTX_new(TLS_server_method());
     if (g_sslCtx)
     {
@@ -2590,6 +2773,7 @@ int main(int argc, char** argv)
                          "(SPARKY_ALLOW_PLAINTEXT=1)\n";
         }
     }
+    } // end !SPARKY_NO_TLS
 
 #ifdef _WIN32
     SetConsoleCtrlHandler(CtrlHandler, TRUE);
@@ -2645,7 +2829,7 @@ int main(int argc, char** argv)
 
         char ip[INET_ADDRSTRLEN]{}; inet_ntop(AF_INET, &ca.sin_addr, ip, sizeof(ip));
 
-        if (!g_rl.Allow(ip))
+        if (!g_rl_loader.Allow(ip))
         {
             // If the rate limiter just triggered a new hard-ban, persist it so it
             // survives restarts (HardBanned() includes both old and new bans).
@@ -2659,6 +2843,21 @@ int main(int argc, char** argv)
             ::close(cs);
 #endif
             continue;
+        }
+
+        // Per-IP concurrent connection cap — reject if already at 20 open sockets.
+        {
+            std::lock_guard lk(g_connMu);
+            if (g_connCount[ip] >= 20)
+            {
+#ifdef _WIN32
+                closesocket(cs);
+#else
+                ::close(cs);
+#endif
+                continue;
+            }
+            g_connCount[ip]++;
         }
 
         // Set TCP options:
@@ -2703,7 +2902,7 @@ int main(int argc, char** argv)
 
         std::cout << std::format("[S] Connection from {}{}\n",
                                   ip, ssl ? " (TLS)" : (useTls ? " (Broken TLS)" : " (Plain)"));
-        std::thread(HandleClient, cs, ssl).detach();
+        std::thread(HandleClient, cs, ssl, std::string(ip)).detach();
     }
 
     std::cout << "[S] Shutting down...\n";
