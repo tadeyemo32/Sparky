@@ -3,7 +3,22 @@ name: MSBuild
 on: [push, pull_request]
 
 jobs:
-  msbuild:
+  test:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure Tests
+      run: cmake -S test -B test/build
+
+    - name: Build Tests
+      run: cmake --build test/build --config Debug
+
+    - name: Run Tests
+      run: ctest --test-dir test/build -C Debug --output-on-failure
+
+  build:
+    needs: test
     runs-on: windows-latest
 
     strategy:
@@ -18,11 +33,9 @@ jobs:
       uses: microsoft/setup-msbuild@v2
 
     - name: Restore NuGet packages
-      working-directory: ${{ env.GITHUB_WORKSPACE }}
-      run: nuget restore
+      run: nuget restore Spxarky.sln
 
     - name: Build
-      working-directory: ${{ env.GITHUB_WORKSPACE }}
       run: msbuild Spxarky.sln /p:Platform=${{ matrix.platform }} /p:Configuration=${{ matrix.configuration }}
     
     - uses: actions/upload-artifact@v4
