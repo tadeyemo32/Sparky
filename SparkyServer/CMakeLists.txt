@@ -75,7 +75,7 @@ else()
     target_compile_options(SparkyServer PRIVATE
         -O3
         -flto
-        -march=native
+        -march=x86-64-v2
         -fstack-protector-strong
         -fPIE
         -fvisibility=hidden
