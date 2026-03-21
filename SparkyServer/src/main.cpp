@@ -784,22 +784,23 @@ static void HandleWebApi(ClientSession& s,
     {
         std::string lr = req;
         for (auto& c : lr) c = (char)std::tolower((unsigned char)c);
-        std::string origin;
         size_t op = lr.find("origin:");
         if (op != std::string::npos)
         {
+            // Only block browser requests whose Origin header doesn't match.
+            // Server-to-server requests (Vercel proxy, health checks) send no
+            // Origin header and are authenticated solely by X-Proxy-Secret.
             size_t vs = op + 7;
             while (vs < req.size() && (req[vs] == ' ' || req[vs] == '\t')) ++vs;
             size_t ve = req.find('\r', vs);
             if (ve == std::string::npos) ve = req.size();
-            // trim trailing whitespace
             while (ve > vs && (req[ve-1] == ' ' || req[ve-1] == '\t')) --ve;
-            origin = req.substr(vs, ve - vs);
-        }
-        if (origin != g_allowedOrigin)
-        {
-            SendApiError(s, 403, "Origin not permitted");
-            return;
+            std::string origin = req.substr(vs, ve - vs);
+            if (origin != g_allowedOrigin)
+            {
+                SendApiError(s, 403, "Origin not permitted");
+                return;
+            }
         }
     }
 
