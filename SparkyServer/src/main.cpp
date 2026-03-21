@@ -646,7 +646,7 @@ static bool SendResendEmail(const std::string& to,
 
     std::string _rk   = g_resendKey.Get();
     std::string _from = g_resendFrom.empty()
-                      ? std::string(XS("Sparky <noreply@spxrky.com>"))
+                      ? std::string(XS("Sparky <noreply@sparky.com>"))
                       : g_resendFrom.Get();
     std::string from  = _from;
 
