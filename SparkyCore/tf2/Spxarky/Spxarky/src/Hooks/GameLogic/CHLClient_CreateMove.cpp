@@ -237,6 +237,7 @@ MAKE_HOOK(CHLClient_CreateMove, U::Memory.GetVirtual(I::Client, 21), void,
 		F::Spectate.CreateMove(pCmd);
 		F::Backtrack.CreateMove(pCmd);
 		F::Spy.Run(pLocal, pWeapon, pCmd);
+		F::Troldier.Run(pLocal, pWeapon, pCmd);
 		F::Optimizations.Run();
 		F::Misc.RunPre(pLocal, pCmd);
 	F::Ticks.Start(pLocal, pCmd);

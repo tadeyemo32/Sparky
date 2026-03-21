@@ -417,6 +417,11 @@ NAMESPACE_BEGIN(Vars)
 			CVar(AutoVaccinatorFireScale, "Auto vaccinator fire scale", 100.f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0.f, 200.f, 10.f, "%g%%");
 			CVar(AutoVaccinatorFlamethrowerDamageOnly, "Auto vaccinator flamethrower damage only", false, NOSAVE | DEBUGVAR);
 		NAMESPACE_END(Healing)
+		NAMESPACE_BEGIN(Troldier, Troldier)
+			CVar(Enabled, "Enabled", false);
+			CVar(AutoSwing, "Auto swing", false);
+			CVar(Silent, "Silent", false);
+		NAMESPACE_END(Troldier)
 	NAMESPACE_END(Aimbot)
 	
 	NAMESPACE_BEGIN(CritHack, Crit Hack)

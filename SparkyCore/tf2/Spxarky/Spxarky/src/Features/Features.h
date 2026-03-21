@@ -13,6 +13,7 @@
 #include "Aimbot/AutoDetonate/AutoDetonate.h"
 #include "Aimbot/AutoHeal/AutoHeal.h"
 #include "Aimbot/AutoRocketJump/AutoRocketJump.h"
+#include "Aimbot/Troldier/Troldier.h"
 
 // --- Combat ---
 #include "Backtrack/Backtrack.h"
