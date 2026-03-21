@@ -135,6 +135,47 @@ jobs:
           cd SparkyServer/bin
           ./SparkyTests
 
+  # ── Module 2b: Spxarky TF2 Core Build (Windows) ──────────────────────
+  spxarky-build:
+    name: Spxarky Build (${{ matrix.platform }} ${{ matrix.configuration }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Release, ReleaseAVX2, ReleaseFreetype, ReleaseFreetypeAVX2]
+        platform: [x64]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Restore NuGet packages
+        run: nuget restore SparkyCore/tf2/Spxarky/Spxarky.sln
+
+      - name: Build
+        run: |
+          msbuild SparkyCore/tf2/Spxarky/Spxarky.sln `
+            /p:Platform=${{ matrix.platform }} `
+            /p:Configuration=${{ matrix.configuration }} `
+            /p:SolutionDir="${{ github.workspace }}\SparkyCore\tf2\Spxarky\" `
+            /m
+
+      - name: Upload DLL artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Spxarky${{ matrix.platform }}${{ matrix.configuration }}
+          path: SparkyCore/tf2/Spxarky/output/${{ matrix.platform }}/${{ matrix.configuration }}/*.dll
+          if-no-files-found: warn
+
+      - name: Upload PDB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Spxarky${{ matrix.platform }}${{ matrix.configuration }}PDB
+          path: SparkyCore/tf2/Spxarky/output/${{ matrix.platform }}/${{ matrix.configuration }}/*.pdb
+          if-no-files-found: warn
+
   # ── Module 3: Production Deployment (gated by Module 1 & 2) ───────────
   deploy:
     name: Production Deployment
