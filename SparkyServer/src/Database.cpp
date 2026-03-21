@@ -3,6 +3,10 @@
 #include <libpq-fe.h>
 #include <ctime>
 #include <iostream>
+#include <array>
+#include <mutex>
+#include <condition_variable>
+#include <vector>
 
 static PGconn* PG(void* p) { return reinterpret_cast<PGconn*>(p); }
 
@@ -86,24 +90,111 @@ static PGresult* PgExec(PGconn* conn, const char* sql,
 }
 
 // ---------------------------------------------------------------------------
+// Connection pool — N=4 connections, condition_variable-based semaphore.
+// All Database methods acquire a connection, run their query, then release.
+// ---------------------------------------------------------------------------
+struct PgPool {
+    static constexpr int N = 4;
+    std::array<PGconn*, N> conns{};
+    std::vector<PGconn*>   free_list;
+    std::mutex             mu;
+    std::condition_variable cv;
+    std::string            connstr;
+
+    bool Init(const std::string& cs)
+    {
+        connstr = cs;
+        for (int i = 0; i < N; ++i)
+        {
+            PGconn* c = PQconnectdb(cs.c_str());
+            if (PQstatus(c) != CONNECTION_OK)
+            {
+                std::cerr << "[DB] Pool init failed: " << PQerrorMessage(c) << "\n";
+                PQfinish(c);
+                // Finish already-opened connections
+                for (int j = 0; j < i; ++j) PQfinish(conns[j]);
+                return false;
+            }
+            conns[i] = c;
+            free_list.push_back(c);
+        }
+        return true;
+    }
+
+    PGconn* Acquire()
+    {
+        std::unique_lock<std::mutex> lk(mu);
+        cv.wait(lk, [this]{ return !free_list.empty(); });
+        PGconn* c = free_list.back();
+        free_list.pop_back();
+        return c;
+    }
+
+    void Release(PGconn* c)
+    {
+        // Heal broken connection before returning to pool
+        if (PQstatus(c) == CONNECTION_BAD)
+        {
+            std::cerr << "[DB] Pool: healing broken connection via PQreset()\n";
+            PQreset(c);
+            if (PQstatus(c) != CONNECTION_OK)
+            {
+                std::cerr << "[DB] Pool: PQreset failed — replacing connection\n";
+                PQfinish(c);
+                c = PQconnectdb(connstr.c_str());
+                if (PQstatus(c) != CONNECTION_OK)
+                {
+                    std::cerr << "[DB] Pool: replacement connection failed!\n";
+                    // Still put the bad connection back so the pool count stays N
+                }
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            free_list.push_back(c);
+        }
+        cv.notify_one();
+    }
+
+    void Close()
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        for (auto* c : conns) { if (c) PQfinish(c); }
+        conns.fill(nullptr);
+        free_list.clear();
+    }
+};
+
+static PgPool g_pool;
+
+// Pool-aware query executor — acquires a connection, runs the query, releases.
+static PGresult* PgExecPool(const char* sql,
+                             const std::vector<std::string>& args = {})
+{
+    PGconn* conn = g_pool.Acquire();
+    PGresult* res = PgExec(conn, sql, args);
+    g_pool.Release(conn);
+    return res;
+}
+
+// ---------------------------------------------------------------------------
 // Open / Close
 // ---------------------------------------------------------------------------
 bool Database::Open(const std::string& connstr)
 {
-    PGconn* conn = PQconnectdb(connstr.c_str());
-    if (PQstatus(conn) != CONNECTION_OK)
-    {
-        std::cerr << "[DB] Connection failed: " << PQerrorMessage(conn) << "\n";
-        PQfinish(conn);
+    if (!g_pool.Init(connstr))
         return false;
-    }
-    m_db = conn;
-    return CreateSchema();
+    // Keep m_db pointing at the first pool connection for CreateSchema only
+    m_db = g_pool.conns[0];
+    bool ok = CreateSchema();
+    m_db = nullptr; // all subsequent access goes through g_pool
+    return ok;
 }
 
 void Database::Close()
 {
-    if (m_db) { PQfinish(PG(m_db)); m_db = nullptr; }
+    g_pool.Close();
+    m_db = nullptr;
 }
 
 bool Database::CreateSchema()
@@ -189,6 +280,7 @@ bool Database::CreateSchema()
         ALTER TABLE web_accounts ADD COLUMN IF NOT EXISTS otp_fail_count INT NOT NULL DEFAULT 0;
     )sql";
 
+    // CreateSchema is called once during Open() while m_db is temporarily set
     PGresult* res = PQexec(PG(m_db), ddl);
     bool ok = PQresultStatus(res) == PGRES_COMMAND_OK;
     if (!ok)
@@ -202,7 +294,7 @@ bool Database::CreateSchema()
 // ---------------------------------------------------------------------------
 bool Database::InsertLicense(const LicenseRow& row)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "INSERT INTO licenses(key,tier,issued_at,expires_at,hwid_hash,note)"
         " VALUES($1,$2,$3,$4,$5,$6)",
         { row.key, std::to_string(row.tier),
@@ -215,7 +307,7 @@ bool Database::InsertLicense(const LicenseRow& row)
 
 std::optional<LicenseRow> Database::GetLicense(const std::string& key) const
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "SELECT key,tier,issued_at,expires_at,hwid_hash,note"
         " FROM licenses WHERE key=$1",
         { key });
@@ -239,7 +331,7 @@ std::optional<LicenseRow> Database::GetLicense(const std::string& key) const
 
 bool Database::BindLicense(const std::string& key, const std::string& hwid_hash)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "UPDATE licenses SET hwid_hash=$1 WHERE key=$2 AND hwid_hash=''",
         { hwid_hash, key });
     if (!res) return false;
@@ -268,7 +360,7 @@ bool Database::ExtendLicense(const std::string& key, int64_t extra_seconds)
     }
 
     const int64_t new_expiry = base + extra_seconds;
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "UPDATE licenses SET expires_at=$1 WHERE key=$2",
         { std::to_string(new_expiry), key });
     if (!res) return false;
@@ -282,7 +374,7 @@ int Database::PruneExpiredLicenses(int64_t now)
     // Remove sessions whose owner's license has expired so those connections
     // are dropped at the next heartbeat / reconnect attempt.
     // IsAuthorised already blocks re-auth, but this cleans up lingering rows.
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "DELETE FROM sessions WHERE hwid_hash IN ("
         "  SELECT u.hwid_hash FROM users u"
         "  JOIN licenses l ON l.key = u.license_key"
@@ -292,7 +384,7 @@ int Database::PruneExpiredLicenses(int64_t now)
     if (res) PQclear(res);
 
     // Return count of expired (non-lifetime) licenses for logging.
-    auto* cnt = PgExec(PG(m_db),
+    auto* cnt = PgExecPool(
         "SELECT COUNT(*) FROM licenses WHERE expires_at != 0 AND expires_at < $1",
         { std::to_string(now) });
     int expired = 0;
@@ -302,7 +394,7 @@ int Database::PruneExpiredLicenses(int64_t now)
 
 bool Database::RevokeExpiry(const std::string& key)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "UPDATE licenses SET expires_at=1 WHERE key=$1",
         { key });
     if (!res) return false;
@@ -313,7 +405,7 @@ bool Database::RevokeExpiry(const std::string& key)
 
 std::vector<LicenseRow> Database::ListLicenses() const
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "SELECT key,tier,issued_at,expires_at,hwid_hash,note"
         " FROM licenses ORDER BY issued_at DESC");
     std::vector<LicenseRow> rows;
@@ -345,7 +437,7 @@ bool Database::TouchUser(const std::string& hwid_hash, int64_t now,
     PGresult* res;
     if (loader_hash.empty())
     {
-        res = PgExec(PG(m_db),
+        res = PgExecPool(
             "INSERT INTO users(hwid_hash,created_at,last_seen)"
             " VALUES($1,$2,$3)"
             " ON CONFLICT(hwid_hash) DO UPDATE SET last_seen=EXCLUDED.last_seen",
@@ -353,7 +445,7 @@ bool Database::TouchUser(const std::string& hwid_hash, int64_t now,
     }
     else
     {
-        res = PgExec(PG(m_db),
+        res = PgExecPool(
             "INSERT INTO users(hwid_hash,created_at,last_seen,loader_hash)"
             " VALUES($1,$2,$3,$4)"
             " ON CONFLICT(hwid_hash) DO UPDATE"
@@ -367,7 +459,7 @@ bool Database::TouchUser(const std::string& hwid_hash, int64_t now,
 
 bool Database::SetUserLicense(const std::string& hwid_hash, const std::string& key)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "UPDATE users SET license_key=$1 WHERE hwid_hash=$2",
         { key, hwid_hash });
     if (!res) return false;
@@ -377,7 +469,7 @@ bool Database::SetUserLicense(const std::string& hwid_hash, const std::string& k
 
 std::optional<UserRow> Database::GetUser(const std::string& hwid_hash) const
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "SELECT hwid_hash,license_key,created_at,last_seen,is_banned,ban_reason,"
         "       loader_hash,username,password_hash,role"
         " FROM users WHERE hwid_hash=$1",
@@ -407,7 +499,7 @@ std::optional<UserRow> Database::GetUser(const std::string& hwid_hash) const
 
 std::optional<UserRow> Database::GetUserByUsername(const std::string& username) const
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "SELECT hwid_hash,license_key,created_at,last_seen,is_banned,ban_reason,"
         "       loader_hash,username,password_hash,role"
         " FROM users WHERE username=$1 LIMIT 1",
@@ -437,7 +529,7 @@ std::optional<UserRow> Database::GetUserByUsername(const std::string& username) 
 
 bool Database::SetUserRole(const std::string& hwid_hash, const std::string& role)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "UPDATE users SET role=$1 WHERE hwid_hash=$2",
         { role, hwid_hash });
     if (!res) return false;
@@ -447,7 +539,7 @@ bool Database::SetUserRole(const std::string& hwid_hash, const std::string& role
 
 std::vector<UserRow> Database::ListAdminUsers() const
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "SELECT hwid_hash,license_key,created_at,last_seen,is_banned,ban_reason,"
         "       loader_hash,username,password_hash,role"
         " FROM users WHERE role IN ('admin','owner') ORDER BY last_seen DESC");
@@ -477,7 +569,7 @@ std::vector<UserRow> Database::ListAdminUsers() const
 
 std::vector<UserRow> Database::ListUsers() const
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "SELECT hwid_hash,license_key,created_at,last_seen,is_banned,ban_reason,"
         "       loader_hash,username,password_hash,role"
         " FROM users ORDER BY last_seen DESC");
@@ -508,7 +600,7 @@ std::vector<UserRow> Database::ListUsers() const
 
 bool Database::BanUser(const std::string& hwid_hash, const std::string& reason)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "UPDATE users SET is_banned=1, ban_reason=$1 WHERE hwid_hash=$2",
         { reason, hwid_hash });
     if (!res) return false;
@@ -518,7 +610,7 @@ bool Database::BanUser(const std::string& hwid_hash, const std::string& reason)
 
 bool Database::UnbanUser(const std::string& hwid_hash)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "UPDATE users SET is_banned=0, ban_reason='' WHERE hwid_hash=$1",
         { hwid_hash });
     if (!res) return false;
@@ -536,7 +628,7 @@ int Database::CheckOrStoreCredentials(const std::string& hwid_hash,
     if (user->username.empty() && user->password_hash.empty())
     {
         // First login from this hardware: store the credentials.
-        auto* res = PgExec(PG(m_db),
+        auto* res = PgExecPool(
             "UPDATE users SET username=$1, password_hash=$2 WHERE hwid_hash=$3",
             { username_in, password_hash_in, hwid_hash });
         if (!res) return -1;
@@ -556,7 +648,7 @@ int Database::CheckOrStoreCredentials(const std::string& hwid_hash,
 // ---------------------------------------------------------------------------
 bool Database::InsertSession(const SessionRow& row)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "INSERT INTO sessions(token_hex,hwid_hash,created_at,last_heartbeat)"
         " VALUES($1,$2,$3,$4)"
         " ON CONFLICT(token_hex) DO UPDATE"
@@ -573,7 +665,7 @@ bool Database::InsertSession(const SessionRow& row)
 
 bool Database::TouchSession(const std::string& token_hex, int64_t now)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "UPDATE sessions SET last_heartbeat=$1 WHERE token_hex=$2",
         { std::to_string(now), token_hex });
     if (!res) return false;
@@ -583,7 +675,7 @@ bool Database::TouchSession(const std::string& token_hex, int64_t now)
 
 bool Database::DeleteSession(const std::string& token_hex)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "DELETE FROM sessions WHERE token_hex=$1",
         { token_hex });
     if (!res) return false;
@@ -593,7 +685,7 @@ bool Database::DeleteSession(const std::string& token_hex)
 
 std::optional<SessionRow> Database::GetSession(const std::string& token_hex) const
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "SELECT token_hex,hwid_hash,created_at,last_heartbeat"
         " FROM sessions WHERE token_hex=$1",
         { token_hex });
@@ -615,7 +707,7 @@ std::optional<SessionRow> Database::GetSession(const std::string& token_hex) con
 
 int Database::PruneSessions(int64_t now, int64_t max_age_sec)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "DELETE FROM sessions WHERE last_heartbeat < $1",
         { std::to_string(now - max_age_sec) });
     if (!res) return 0;
@@ -629,7 +721,7 @@ int Database::PruneSessions(int64_t now, int64_t max_age_sec)
 // ---------------------------------------------------------------------------
 bool Database::InsertPurchase(const PurchaseRow& row)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "INSERT INTO purchases(hwid_hash,license_key,amount_cents,purchased_at,note)"
         " VALUES($1,$2,$3,$4,$5)",
         { row.hwid_hash, row.license_key,
@@ -643,7 +735,7 @@ bool Database::InsertPurchase(const PurchaseRow& row)
 
 std::vector<PurchaseRow> Database::GetPurchases(const std::string& hwid_hash) const
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "SELECT id,hwid_hash,license_key,amount_cents,purchased_at,note"
         " FROM purchases WHERE hwid_hash=$1 ORDER BY purchased_at DESC",
         { hwid_hash });
@@ -672,7 +764,7 @@ std::vector<PurchaseRow> Database::GetPurchases(const std::string& hwid_hash) co
 // ---------------------------------------------------------------------------
 bool Database::AddTrustedHash(const std::string& hash, const std::string& note)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "INSERT INTO trusted_hashes(hash,note,added_at)"
         " VALUES($1,$2,$3)"
         " ON CONFLICT(hash) DO NOTHING",
@@ -684,7 +776,7 @@ bool Database::AddTrustedHash(const std::string& hash, const std::string& note)
 
 bool Database::RemoveTrustedHash(const std::string& hash)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "DELETE FROM trusted_hashes WHERE hash=$1",
         { hash });
     if (!res) return false;
@@ -694,7 +786,7 @@ bool Database::RemoveTrustedHash(const std::string& hash)
 
 bool Database::IsHashTrusted(const std::string& hash) const
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "SELECT 1 FROM trusted_hashes WHERE hash=$1 LIMIT 1",
         { hash });
     if (!res) return false;
@@ -705,7 +797,7 @@ bool Database::IsHashTrusted(const std::string& hash) const
 
 bool Database::TrustedHashesEnabled() const
 {
-    auto* res = PgExec(PG(m_db), "SELECT COUNT(*) FROM trusted_hashes");
+    auto* res = PgExecPool( "SELECT COUNT(*) FROM trusted_hashes");
     if (!res) return false;
     bool enabled = std::atoi(PQgetvalue(res, 0, 0)) > 0;
     PQclear(res);
@@ -714,7 +806,7 @@ bool Database::TrustedHashesEnabled() const
 
 std::vector<TrustedHashRow> Database::ListHashes() const
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "SELECT hash,note,added_at FROM trusted_hashes ORDER BY added_at DESC");
     std::vector<TrustedHashRow> rows;
     if (!res) return rows;
@@ -738,7 +830,7 @@ std::vector<TrustedHashRow> Database::ListHashes() const
 // ---------------------------------------------------------------------------
 bool Database::BanIp(const std::string& ip, const std::string& reason)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "INSERT INTO ip_bans(ip,reason,banned_at) VALUES($1,$2,$3)"
         " ON CONFLICT(ip) DO UPDATE SET reason=EXCLUDED.reason, banned_at=EXCLUDED.banned_at",
         { ip, reason, std::to_string((int64_t)time(nullptr)) });
@@ -749,7 +841,7 @@ bool Database::BanIp(const std::string& ip, const std::string& reason)
 
 bool Database::UnbanIp(const std::string& ip)
 {
-    auto* res = PgExec(PG(m_db), "DELETE FROM ip_bans WHERE ip=$1", { ip });
+    auto* res = PgExecPool( "DELETE FROM ip_bans WHERE ip=$1", { ip });
     if (!res) return false;
     PQclear(res);
     return true;
@@ -757,7 +849,7 @@ bool Database::UnbanIp(const std::string& ip)
 
 bool Database::IsIpBanned(const std::string& ip) const
 {
-    auto* res = PgExec(PG(m_db), "SELECT 1 FROM ip_bans WHERE ip=$1 LIMIT 1", { ip });
+    auto* res = PgExecPool( "SELECT 1 FROM ip_bans WHERE ip=$1 LIMIT 1", { ip });
     if (!res) return false;
     bool found = PQntuples(res) > 0;
     PQclear(res);
@@ -766,7 +858,7 @@ bool Database::IsIpBanned(const std::string& ip) const
 
 std::vector<std::pair<std::string,std::string>> Database::ListIpBans() const
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "SELECT ip, reason FROM ip_bans ORDER BY banned_at DESC");
     std::vector<std::pair<std::string,std::string>> rows;
     if (!res) return rows;
@@ -783,7 +875,7 @@ std::vector<std::pair<std::string,std::string>> Database::ListIpBans() const
 // ---------------------------------------------------------------------------
 bool Database::CreateWebAccount(const WebAccountRow& row)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "INSERT INTO web_accounts(username,password_hash,role,created_at,last_login,email,email_verified)"
         " VALUES($1,$2,$3,$4,$5,$6,$7)"
         " ON CONFLICT(username) DO NOTHING",
@@ -798,7 +890,7 @@ bool Database::CreateWebAccount(const WebAccountRow& row)
 
 std::optional<WebAccountRow> Database::GetWebAccount(const std::string& username) const
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "SELECT username,password_hash,role,created_at,last_login,email,email_verified,otp_code,otp_expires,otp_fail_count"
         " FROM web_accounts WHERE username=$1",
         { username });
@@ -827,7 +919,7 @@ std::optional<WebAccountRow> Database::GetWebAccount(const std::string& username
 
 bool Database::SetWebAccountRole(const std::string& username, const std::string& role)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "UPDATE web_accounts SET role=$1 WHERE username=$2",
         { role, username });
     if (!res) return false;
@@ -837,7 +929,7 @@ bool Database::SetWebAccountRole(const std::string& username, const std::string&
 
 bool Database::UpdateWebAccountLastLogin(const std::string& username, int64_t now)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "UPDATE web_accounts SET last_login=$1 WHERE username=$2",
         { std::to_string(now), username });
     if (!res) return false;
@@ -847,7 +939,7 @@ bool Database::UpdateWebAccountLastLogin(const std::string& username, int64_t no
 
 std::vector<WebAccountRow> Database::ListWebAdmins() const
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "SELECT username,password_hash,role,created_at,last_login"
         " FROM web_accounts WHERE role IN ('admin','owner') ORDER BY username");
     std::vector<WebAccountRow> rows;
@@ -872,7 +964,7 @@ std::vector<WebAccountRow> Database::ListWebAdmins() const
 std::optional<WebAccountRow> Database::GetWebAccountByEmail(const std::string& email) const
 {
     if (email.empty()) return std::nullopt;
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "SELECT username,password_hash,role,created_at,last_login,email,email_verified,otp_code,otp_expires,otp_fail_count"
         " FROM web_accounts WHERE email=$1 LIMIT 1",
         { email });
@@ -903,7 +995,7 @@ bool Database::SetWebAccountOtp(const std::string& username,
                                  const std::string& otp_code,
                                  int64_t            otp_expires)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "UPDATE web_accounts SET otp_code=$1,otp_expires=$2,otp_fail_count=0 WHERE username=$3",
         { otp_code, std::to_string(otp_expires), username });
     if (!res) return false;
@@ -913,7 +1005,7 @@ bool Database::SetWebAccountOtp(const std::string& username,
 
 bool Database::VerifyWebAccountEmail(const std::string& username)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "UPDATE web_accounts SET email_verified=1,otp_code='',otp_expires=0,otp_fail_count=0 WHERE username=$1",
         { username });
     if (!res) return false;
@@ -924,7 +1016,7 @@ bool Database::VerifyWebAccountEmail(const std::string& username)
 bool Database::UpdateWebAccountPassword(const std::string& username,
                                          const std::string& password_hash)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "UPDATE web_accounts SET password_hash=$1,otp_code='',otp_expires=0,otp_fail_count=0 WHERE username=$2",
         { password_hash, username });
     if (!res) return false;
@@ -937,7 +1029,7 @@ bool Database::UpdateWebAccountPassword(const std::string& username,
 // ---------------------------------------------------------------------------
 bool Database::InsertWebSession(const WebSessionRow& row)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "INSERT INTO web_sessions(token,username,role,created_at,expires_at)"
         " VALUES($1,$2,$3,$4,$5)"
         " ON CONFLICT(token) DO UPDATE"
@@ -952,7 +1044,7 @@ bool Database::InsertWebSession(const WebSessionRow& row)
 
 bool Database::DeleteWebSession(const std::string& token)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "DELETE FROM web_sessions WHERE token=$1", { token });
     if (!res) return false;
     PQclear(res);
@@ -961,7 +1053,7 @@ bool Database::DeleteWebSession(const std::string& token)
 
 std::optional<WebSessionRow> Database::GetWebSession(const std::string& token) const
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "SELECT token,username,role,created_at,expires_at"
         " FROM web_sessions WHERE token=$1",
         { token });
@@ -984,7 +1076,7 @@ std::optional<WebSessionRow> Database::GetWebSession(const std::string& token) c
 
 int Database::PruneWebSessions(int64_t now)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "DELETE FROM web_sessions WHERE expires_at < $1",
         { std::to_string(now) });
     if (!res) return 0;
@@ -998,7 +1090,7 @@ int Database::PruneWebSessions(int64_t now)
 // ---------------------------------------------------------------------------
 bool Database::DeleteSessionsByHwid(const std::string& hwid_hash)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "DELETE FROM sessions WHERE hwid_hash=$1", { hwid_hash });
     if (!res) return false;
     PQclear(res);
@@ -1010,7 +1102,7 @@ bool Database::DeleteSessionsByHwid(const std::string& hwid_hash)
 // ---------------------------------------------------------------------------
 bool Database::IncrementOtpFailCount(const std::string& username)
 {
-    auto* res = PgExec(PG(m_db),
+    auto* res = PgExecPool(
         "UPDATE web_accounts"
         " SET otp_fail_count = otp_fail_count + 1,"
         "     otp_code    = CASE WHEN otp_fail_count + 1 >= 5 THEN '' ELSE otp_code END,"

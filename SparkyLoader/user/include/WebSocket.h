@@ -132,6 +132,12 @@ inline bool WsRecvFrame(SOCKET sock, SSL* ssl,
     uint8_t h2[2];
     if (!NetRecv(sock, ssl, h2, 2, ms)) return false;
 
+    const uint8_t opcode = h2[0] & 0x0F;
+    // Close frame (0x08) — server initiated a clean shutdown.
+    // Return false so the caller treats this as a disconnect; the reconnect logic
+    // will decide whether to re-establish the session.
+    if (opcode == 0x08) return false;
+
     bool   masked  = (h2[1] & 0x80) != 0;
     uint64_t paylen = h2[1] & 0x7F;
 

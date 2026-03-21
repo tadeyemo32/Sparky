@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { downloadLoader } from '../api/user';
 import { useAuth } from '../contexts/AuthContext';
 import styles from './Download.module.css';
@@ -17,16 +17,27 @@ export function Download() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   async function handleDownload() {
     if (!user?.token) return;
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     setError(null);
     setSuccess(false);
     setLoading(true);
 
     try {
-      const blob = await downloadLoader(user.token);
+      const blob = await downloadLoader(user.token, controller.signal);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;

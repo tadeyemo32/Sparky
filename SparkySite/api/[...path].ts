@@ -3,6 +3,12 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 export const config = { runtime: 'nodejs' };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // Guard against large payloads before proxying to the backend.
+  const contentLength = req.headers['content-length'];
+  if (contentLength && parseInt(contentLength, 10) > 512 * 1024) {
+    return res.status(413).json({ message: 'Request body too large' });
+  }
+
   const backendUrl = process.env.BACKEND_URL?.replace(/\/$/, '');
   const proxySecret = process.env.SPARKY_PROXY_SECRET;
 
@@ -39,6 +45,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       method: req.method ?? 'GET',
       headers: forwardHeaders,
       body: hasBody ? JSON.stringify(req.body) : undefined,
+      signal: AbortSignal.timeout(30_000),
     });
   } catch {
     return res.status(502).json({ message: 'Backend unreachable' });

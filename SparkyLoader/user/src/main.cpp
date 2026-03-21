@@ -193,6 +193,8 @@ static DWORD FindProcessByName(const char* name)
     if (hSn == INVALID_HANDLE_VALUE) return 0;
     PROCESSENTRY32W pe{ sizeof(pe) };
     wchar_t wname[MAX_PATH]{};
+    // Validate length before conversion to prevent stack buffer overflow.
+    if (strlen(name) >= MAX_PATH) { CloseHandle(hSn); return 0; }
     MultiByteToWideChar(CP_ACP, 0, name, -1, wname, MAX_PATH);
     DWORD pid = 0;
     if (Process32FirstW(hSn, &pe))
@@ -313,18 +315,49 @@ static bool ReceiveDll(ServerSession& ss, std::vector<uint8_t>& dllBuf, UIState&
     if (t == MsgType::Config)
     {
         state.AddLog("[INF] Config received (" + std::to_string(p.size()) + " bytes)");
-        // Log first 64 bytes as hex to aid mismatch diagnostics
+
+        // Parse as JSON key=value blob; apply known keys; log unrecognised ones.
+        if (!p.empty())
         {
-            std::string preview;
-            size_t n = (p.size() < 64) ? p.size() : 64;
-            for (size_t i = 0; i < n; ++i)
+            std::string cfgJson(p.begin(), p.end());
+
+            // Simple extractor for numeric JSON values: "key": N
+            auto getInt = [&](const char* key) -> int {
+                std::string needle = std::string("\"") + key + "\"";
+                size_t pos = cfgJson.find(needle);
+                if (pos == std::string::npos) return -1;
+                pos = cfgJson.find(':', pos + needle.size());
+                if (pos == std::string::npos) return -1;
+                ++pos;
+                while (pos < cfgJson.size() && (cfgJson[pos]==' '||cfgJson[pos]=='\t')) ++pos;
+                try { return std::stoi(cfgJson.substr(pos)); } catch (...) { return -1; }
+            };
+
+            // Known keys — extend as new config options are added server-side.
+            int chunkSize = getInt("chunkSize");
+            if (chunkSize > 0 && chunkSize <= 65536)
+                state.AddLog("[INF] Config: chunkSize=" + std::to_string(chunkSize));
+
+            int hbInterval = getInt("hbInterval");
+            if (hbInterval > 0)
+                state.AddLog("[INF] Config: hbInterval=" + std::to_string(hbInterval));
+
+            // Log any unrecognised top-level keys at debug level so nothing is silently dropped.
+            std::vector<std::string> knownKeys = {"chunkSize", "hbInterval"};
+            size_t pos = 0;
+            while ((pos = cfgJson.find('"', pos)) != std::string::npos)
             {
-                char h[3];
-                std::snprintf(h, sizeof(h), "%02x", p[i]);
-                preview += h;
+                size_t end = cfgJson.find('"', pos + 1);
+                if (end == std::string::npos) break;
+                std::string k = cfgJson.substr(pos + 1, end - pos - 1);
+                bool known = false;
+                for (auto& kk : knownKeys) if (k == kk) { known = true; break; }
+                if (!known && !k.empty() && k[0] != '$')
+                    state.AddLog("[DBG] Config: unrecognised key \"" + k + "\"");
+                pos = end + 1;
             }
-            state.AddLog("[DBG] Config[0:" + std::to_string(n) + "]=" + preview);
         }
+
         if (!RecvMsg(ss, t, p, 30000))
         {
             state.AddLog("[ERR] No BinaryReady after Config");
@@ -428,9 +461,13 @@ struct SessionArgs
     std::vector<uint8_t>* dll;
 };
 
-static DWORD WINAPI SessionThread(LPVOID p)
+// ---------------------------------------------------------------------------
+// SessionOnce — performs a single connect→auth→session attempt.
+// Returns true  → caller must NOT reconnect (Kick, AuthFail, cert-pin failure).
+// Returns false → reconnect eligible (network error, expiry, server restart).
+// ---------------------------------------------------------------------------
+static bool SessionOnce(SessionArgs* a)
 {
-    auto* a     = static_cast<SessionArgs*>(p);
     UIState& state = *a->state;
 
     // Shared cleanup — called on every error path before returning.
@@ -447,7 +484,6 @@ static DWORD WINAPI SessionThread(LPVOID p)
         state.loggedIn   = false;
         state.connecting = false;
         state.loggingIn  = false;
-        delete a;
     };
 
     // ── Phase 1: Connect ──────────────────────────────────────────────────
@@ -467,11 +503,11 @@ static DWORD WINAPI SessionThread(LPVOID p)
     if (getaddrinfo(host, portStr, &hints, &res) != 0 || !res)
     {
         state.AddLog("[ERR] DNS resolution failed for " + std::string(host));
-        done(); return 1;
+        done(); return false; // network error — reconnect eligible
     }
 
     ss.sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (ss.sock == INVALID_SOCKET) { freeaddrinfo(res); done(); return 1; }
+    if (ss.sock == INVALID_SOCKET) { freeaddrinfo(res); done(); return false; }
 
     DWORD connTo = 5000;
     setsockopt(ss.sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&connTo, sizeof(connTo));
@@ -479,7 +515,7 @@ static DWORD WINAPI SessionThread(LPVOID p)
     if (connect(ss.sock, res->ai_addr, (int)res->ai_addrlen) != 0)
     {
         state.AddLog("[ERR] Cannot connect to " + std::string(host));
-        freeaddrinfo(res); done(); return 1;
+        freeaddrinfo(res); done(); return false; // network error — reconnect eligible
     }
     freeaddrinfo(res);
 
@@ -487,7 +523,7 @@ static DWORD WINAPI SessionThread(LPVOID p)
     if (g_loaderSslCtx)
     {
         ss.ssl = SSL_new(g_loaderSslCtx);
-        if (!ss.ssl) { state.AddLog("[ERR] SSL_new failed"); done(); return 1; }
+        if (!ss.ssl) { state.AddLog("[ERR] SSL_new failed"); done(); return false; }
         SSL_set_fd(ss.ssl, (int)ss.sock);
         SSL_set_tlsext_host_name(ss.ssl, host);
 
@@ -502,24 +538,24 @@ static DWORD WINAPI SessionThread(LPVOID p)
         if (SSL_connect(ss.ssl) <= 0)
         {
             state.AddLog("[ERR] TLS handshake failed: " + TlsLastError());
-            done(); return 1;
+            done(); return false;
         }
 
         if (SPARKY_CERT_PIN && *SPARKY_CERT_PIN)
         {
             X509* cert = SSL_get_peer_certificate(ss.ssl);
-            if (!cert) { state.AddLog("[ERR] Server presented no certificate"); done(); return 1; }
+            if (!cert) { state.AddLog("[ERR] Server presented no certificate"); done(); return false; }
             uint8_t digest[32]{}; unsigned int digestLen = 32;
             const int digestOk = X509_digest(cert, EVP_sha256(), digest, &digestLen);
             X509_free(cert);
-            if (!digestOk) { state.AddLog("[ERR] Certificate digest failed"); done(); return 1; }
+            if (!digestOk) { state.AddLog("[ERR] Certificate digest failed"); done(); return false; }
             static const char h[] = "0123456789abcdef";
             char fp[65]{};
             for (int i = 0; i < 32; ++i) { fp[i*2] = h[digest[i]>>4]; fp[i*2+1] = h[digest[i]&0xF]; }
             if (strncmp(fp, SPARKY_CERT_PIN, 64) != 0)
             {
                 state.AddLog("[ERR] Certificate pin mismatch — possible MITM!");
-                done(); return 1;
+                done(); return true; // security failure — do NOT reconnect
             }
             state.AddLog("[INF] Certificate pin OK");
         }
@@ -555,7 +591,7 @@ static DWORD WINAPI SessionThread(LPVOID p)
     if (!NetSend(ss.sock, ss.ssl, httpReq.c_str(), (int)httpReq.size()))
     {
         state.AddLog("[ERR] Send WebSocket upgrade request failed");
-        done(); return 1;
+        done(); return false;
     }
 
     {
@@ -581,7 +617,7 @@ static DWORD WINAPI SessionThread(LPVOID p)
         else
         {
             state.AddLog("[ERR] Cloud Armor / LB rejected the request");
-            done(); return 1;
+            done(); return false;
         }
     }
 
@@ -591,7 +627,7 @@ static DWORD WINAPI SessionThread(LPVOID p)
         if (!RecvMsg(ss, t, pay))
         {
             state.AddLog("[ERR] No auth response from server");
-            done(); return 1;
+            done(); return false; // network error — reconnect eligible
         }
         if (t == MsgType::AuthFail)
         {
@@ -599,12 +635,12 @@ static DWORD WINAPI SessionThread(LPVOID p)
             strncpy_s(state.loginError, sizeof(state.loginError),
                       "Authentication failed \xe2\x80\x94 check your credentials or license key.",
                       _TRUNCATE);
-            done(); return 1;
+            done(); return true; // auth failure — do NOT reconnect
         }
         if (t != MsgType::AuthOk || pay.size() < sizeof(AuthOkPayload))
         {
             state.AddLog("[ERR] Unexpected message during auth");
-            done(); return 1;
+            done(); return false; // could be transient — reconnect eligible
         }
         const auto& aok = *reinterpret_cast<const AuthOkPayload*>(pay.data());
         memcpy(ss.token, aok.SessionToken, 16);
@@ -624,6 +660,7 @@ static DWORD WINAPI SessionThread(LPVOID p)
     // Sends heartbeats every 25 s to keep the server session alive.
     // When state.dllRequested is set (user pressed Inject), sends RequestDll
     // and receives the DLL stream via ReceiveDll().
+    bool kicked = false;
     int hbTicks = 0;
     static constexpr int HB_INTERVAL_TICKS = 25; // 25 × 1 s = 25 s
 
@@ -684,6 +721,7 @@ static DWORD WINAPI SessionThread(LPVOID p)
             if (t == MsgType::Kick)
             {
                 state.AddLog("[INF] Server terminated session (Kick)");
+                kicked = true; // kicked — do NOT reconnect
                 break;
             }
         }
@@ -692,6 +730,37 @@ static DWORD WINAPI SessionThread(LPVOID p)
     // ── Phase 3: Cleanup ─────────────────────────────────────────────────
     state.AddLog("[INF] Session closed");
     done();
+    return kicked; // true = permanent exit, false = reconnect eligible
+}
+
+// ---------------------------------------------------------------------------
+// SessionThread — outer reconnect wrapper around SessionOnce.
+//
+// Retries with exponential backoff after any reconnect-eligible failure.
+// Exits permanently only on Kick, AuthFail, or cert-pin mismatch.
+// ---------------------------------------------------------------------------
+static DWORD WINAPI SessionThread(LPVOID p)
+{
+    auto* a = static_cast<SessionArgs*>(p);
+    UIState& state = *a->state;
+
+    static constexpr int kDelays[] = {1, 2, 4, 8, 16, 30};
+    int reconnectTries = 0;
+
+    while (true)
+    {
+        bool permanent = SessionOnce(a);
+        if (permanent) break; // AuthFail / Kick / cert pin — no reconnect
+
+        int delay = kDelays[std::min(reconnectTries, 5)];
+        reconnectTries++;
+        state.AddLog("[INF] Reconnecting in " + std::to_string(delay) + "s...");
+        state.connecting = true;
+        state.loggingIn  = true;
+        for (int i = 0; i < delay; i++) Sleep(1000);
+    }
+
+    delete a;
     return 0;
 }
 

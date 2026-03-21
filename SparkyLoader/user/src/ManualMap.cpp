@@ -161,6 +161,14 @@ static void __stdcall MappingShellcode(MappingData* d)
 
         while (p->VirtualAddress && p->SizeOfBlock)
         {
+            // Guard against underflow: SizeOfBlock must be at least the struct
+            // header plus one entry (2 bytes) — otherwise count wraps to DWORD_MAX.
+            if (p->SizeOfBlock < sizeof(IMAGE_BASE_RELOCATION) + 2)
+            {
+                p = reinterpret_cast<PIMAGE_BASE_RELOCATION>(
+                    reinterpret_cast<uint8_t*>(p) + p->SizeOfBlock);
+                continue;
+            }
             DWORD  count   = (p->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / 2;
             WORD*  entries = reinterpret_cast<WORD*>(p + 1);
 
@@ -632,6 +640,12 @@ static bool ExecuteShellcode(HANDLE hProcess, uintptr_t imageBase,
     }
 
     // Layout in target: [XorDecryptStub (≤80B)][encrypted shellcode][MappingData]
+    // Guard against integer overflow: reject absurdly large shellcode sizes.
+    if (scSize > 64 * 1024 * 1024)
+    {
+        Logger::Log(LogLevel::Error, "ManualMap: shellcode size overflow guard triggered");
+        return false;
+    }
     SIZE_T allocSize = 80 + scSize + sizeof(MappingData) + 0x100;
     PVOID  pAlloc    = nullptr;
 

@@ -105,7 +105,7 @@ target_compile_definitions(SparkyLoader PRIVATE
 )
 
 if(MSVC)
-    target_compile_options(SparkyLoader PRIVATE /W3 /utf-8)
+    target_compile_options(SparkyLoader PRIVATE /W4 /utf-8)
     # Static CRT: bake the C/C++ runtime into the .exe (no vcruntime140.dll needed)
     set_property(TARGET SparkyLoader PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
@@ -116,7 +116,7 @@ endif()
 
 target_compile_options(SparkyLoader PRIVATE
     $<$<CONFIG:Debug>:$<IF:$<CXX_COMPILER_ID:MSVC>,/Od /Zi,-g -O0>>
-    $<$<CONFIG:Release>:$<IF:$<CXX_COMPILER_ID:MSVC>,/O2,-O2 -DNDEBUG>>
+    $<$<CONFIG:Release>:$<IF:$<CXX_COMPILER_ID:MSVC>,/O2 /sdl /DYNAMICBASE /NXCOMPAT /guard:cf /GS,-O2 -DNDEBUG>>
 )
 
 add_custom_command(TARGET SparkyLoader POST_BUILD

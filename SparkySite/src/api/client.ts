@@ -70,7 +70,7 @@ export async function apiFetch<T>(
   try {
     return (await res.json()) as T;
   } catch {
-    return undefined as T;
+    throw new ApiError(res.status, 'Invalid response from server');
   }
 }
 

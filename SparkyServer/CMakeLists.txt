@@ -72,7 +72,21 @@ target_compile_definitions(SparkyServer PRIVATE
 if(MSVC)
     target_compile_options(SparkyServer PRIVATE /W3 /utf-8)
 else()
-    target_compile_options(SparkyServer PRIVATE -Wall -Wextra)
+    target_compile_options(SparkyServer PRIVATE
+        -O3
+        -flto
+        -march=native
+        -fstack-protector-strong
+        -fPIE
+        -fvisibility=hidden
+        -Wall -Wextra
+    )
+    target_link_options(SparkyServer PRIVATE
+        -pie
+        -Wl,-z,relro,-z,now
+        -Wl,-z,noexecstack
+        -flto
+    )
 endif()
 
 # ---------------------------------------------------------------------------
