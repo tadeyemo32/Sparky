@@ -5,7 +5,7 @@
 
 void CTroldier::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 {
-	if (!Vars::Troldier::Enabled.Value)
+	if (!Vars::Aimbot::Troldier::Enabled.Value)
 		return;
 
 	if (!pLocal || !pLocal->IsAlive() || pLocal->m_iClass() != TF_CLASS_SOLDIER)
@@ -23,7 +23,7 @@ void CTroldier::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 	for (auto pEntity : H::Entities.GetGroup(EntityEnum::PlayerEnemy))
 	{
 		auto pTarget = pEntity->As<CTFPlayer>();
-		if (!pTarget || !pTarget->IsAlive() || pTarget->IsDummy() || pTarget->m_iTeamNum() == pLocal->m_iTeamNum())
+		if (!pTarget || !pTarget->IsAlive() || pTarget->m_iTeamNum() == pLocal->m_iTeamNum())
 			continue;
 
 		// Predict positions
@@ -42,10 +42,10 @@ void CTroldier::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 
 		if (vLocalPos.DistTo(vTargetPos) <= flRange + 15.f) // Buffer for hull size
 		{
-			if (Vars::Troldier::AutoSwing.Value)
+			if (Vars::Aimbot::Troldier::AutoSwing.Value)
 				pCmd->buttons |= IN_ATTACK;
 
-			if (Vars::Troldier::Silent.Value && (pCmd->buttons & IN_ATTACK))
+			if (Vars::Aimbot::Troldier::Silent.Value && (pCmd->buttons & IN_ATTACK))
 			{
 				Vec3 vAngle = Math::CalcAngle(pLocal->GetShootPos(), pTarget->GetCenter());
 				SDK::FixMovement(pCmd, vAngle);

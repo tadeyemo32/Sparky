@@ -4,7 +4,7 @@
 class CSkinChanger
 {
 public:
-	void Run(CBaseEntity* pLocal, int nStage);
+	void Run(CTFPlayer* pLocal, int nStage);
 };
 
 ADD_FEATURE(CSkinChanger, SkinChanger);

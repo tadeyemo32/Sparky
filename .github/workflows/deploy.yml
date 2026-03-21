@@ -138,6 +138,7 @@ jobs:
   # ── Module 2b: Spxarky TF2 Core Build (Windows) ──────────────────────
   spxarky-build:
     name: Spxarky Build (${{ matrix.platform }} ${{ matrix.configuration }})
+    needs: [loader-build-and-tests, site-build-and-tests, server-build-and-tests]
     runs-on: windows-latest
     strategy:
       fail-fast: false

@@ -1,7 +1,7 @@
 #include "SkinChanger.h"
-#include "../../SDK/Definitions/Main/PlayerStats.h"
+#include "../../../SDK/Definitions/Main/PlayerStats.h"
 
-void CSkinChanger::Run(CBaseEntity* pLocal, int nStage)
+void CSkinChanger::Run(CTFPlayer* pLocal, int nStage)
 {
 	if (nStage != FRAME_NET_UPDATE_POSTDATAUPDATE_START)
 		return;
@@ -9,12 +9,10 @@ void CSkinChanger::Run(CBaseEntity* pLocal, int nStage)
 	if (!pLocal || !pLocal->IsAlive())
 		return;
 
-	auto pLocalPlayer = pLocal->As<CTFPlayer>();
-	
 	// Iterate through all weapons
 	for (int i = 0; i < 5; i++)
 	{
-		auto hWeapon = pLocalPlayer->m_hMyWeapons()[i];
+		auto hWeapon = pLocal->m_hMyWeapons()[i];
 		if (!hWeapon) continue;
 
 		auto pWeapon = hWeapon->As<CTFWeaponBase>();
