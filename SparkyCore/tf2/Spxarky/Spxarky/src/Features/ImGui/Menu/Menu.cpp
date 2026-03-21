@@ -214,6 +214,12 @@ void CMenu::MenuAimbot(int iTab)
 						FToggle(Vars::Aimbot::Healing::AutoVaccinatorFlamethrowerDamageOnly);
 					} EndSection();
 				}
+				if (Section("Troldier"))
+				{
+					FToggle(Vars::Aimbot::Troldier::Enabled);
+					FToggle(Vars::Aimbot::Troldier::AutoSwing, FToggleEnum::Left);
+					FToggle(Vars::Aimbot::Troldier::Silent, FToggleEnum::Right);
+				} EndSection();
 			}
 			/* Column 2 */
 			TableNextColumn();

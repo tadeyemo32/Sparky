@@ -135,10 +135,33 @@ jobs:
           cd SparkyServer/bin
           ./SparkyTests
 
-  # ── Module 2b: Spxarky TF2 Core Build (Windows) ──────────────────────
+  # ── Module 2b: Spxarky TF2 Core Tests (Windows) ──────────────────────
+  spxarky-tests:
+    name: Spxarky Build & Tests
+    needs: [loader-build-and-tests, site-build-and-tests, server-build-and-tests]
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure Tests
+        working-directory: SparkyCore/tf2/Spxarky/test
+        run: cmake -B build -S .
+
+      - name: Build Tests
+        working-directory: SparkyCore/tf2/Spxarky/test
+        run: cmake --build build --config Release
+
+      - name: Run Tests
+        working-directory: SparkyCore/tf2/Spxarky/test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  # ── Module 2c: Spxarky TF2 Core Build (Windows) ──────────────────────
   spxarky-build:
     name: Spxarky Build (${{ matrix.platform }} ${{ matrix.configuration }})
-    needs: [loader-build-and-tests, site-build-and-tests, server-build-and-tests]
+    needs: [spxarky-tests]
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -332,6 +355,11 @@ jobs:
         with:
           fetch-depth: 5
 
+      - name: Delete existing latest release
+        run: gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Download Loader Artifact
         uses: actions/download-artifact@v4
         with:
@@ -349,15 +377,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Rename DLLs to include configuration suffix
-        run: |
-          cd release-assets
-          for cfg in Release ReleaseAVX2 ReleaseFreetype ReleaseFreetypeAVX2; do
-            f="Spxarkyx64${cfg}.dll"
-            # the artifact may have any dll name; rename to our convention
-            found=$(find . -maxdepth 1 -name "*.dll" -newer /tmp 2>/dev/null | head -1)
-          done
-          ls -la
+      - name: List release assets
+        run: ls -la release-assets/
 
       - name: Build release body
         run: |
@@ -382,7 +403,7 @@ jobs:
           } >> $GITHUB_ENV
 
       - name: Create or Update GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: release-assets/*
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
