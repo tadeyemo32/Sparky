@@ -2428,7 +2428,9 @@ static void AdminConsole()
             std::string ip, reason;
             ss >> ip;
             std::getline(ss >> std::ws, reason);
-            g_rl.HardBanIp(ip);
+            g_rl_auth.HardBanIp(ip);
+            g_rl_api.HardBanIp(ip);
+            g_rl_loader.HardBanIp(ip);
             std::lock_guard lk(g_dbMu);
             g_db.BanIp(ip, reason.empty() ? "manual ban" : reason);
             std::cout << "[Admin] IP banned (in-memory + DB): " << ip << "\n";
@@ -2436,7 +2438,9 @@ static void AdminConsole()
         else if (cmd == "unban-ip")
         {
             std::string ip; ss >> ip;
-            g_rl.Unban(ip);
+            g_rl_auth.Unban(ip);
+            g_rl_api.Unban(ip);
+            g_rl_loader.Unban(ip);
             std::lock_guard lk(g_dbMu);
             g_db.UnbanIp(ip);
             std::cout << "[Admin] IP unbanned: " << ip << "\n";
@@ -2540,7 +2544,9 @@ static void MaintenanceThread()
             if (n > 0) std::cout << "[S] Pruned " << n << " stale session(s)\n";
             int nw = g_db.PruneWebSessions((int64_t)time(nullptr));
             if (nw > 0) std::cout << "[S] Pruned " << nw << " expired web session(s)\n";
-            g_rl.Prune();
+            g_rl_auth.Prune();
+            g_rl_api.Prune();
+            g_rl_loader.Prune();
         }
 
         if (backupTicks >= 21600)
