@@ -875,6 +875,19 @@ static inline Vec3 PullPoint(Vec3 vPoint, Vec3 vLocalPos, Info_t& tInfo, Vec3 vM
 
 
 
+static bool HasZKick(CTFWeaponBase* pWeapon)
+{
+	if (!pWeapon) return false;
+	switch (pWeapon->GetWeaponID())
+	{
+	case TF_WEAPON_GRENADELAUNCHER:
+	case TF_WEAPON_PIPEBOMBLAUNCHER:
+	case TF_WEAPON_CANNON:
+		return true;
+	default:
+		return false;
+	}
+}
 static inline void SolveProjectileSpeed(CTFWeaponBase* pWeapon, const Vec3& vLocalPos, const Vec3& vTargetPos, float& flVelocity, float& flDragTime, const float flGravity)
 {
 	if (!F::ProjSim.m_pObj->IsDragEnabled() || F::ProjSim.m_pObj->m_dragBasis.IsZero())
@@ -963,6 +976,17 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 				return;
 			flPitch = atan((pow(flVelocity, 2) - sqrt(flRoot)) / (flGrav * flDist));
 		}
+		// Correct pitch for 200 UPS world-space Z kick added at spawn (grenades, stickies, cannon)
+		if (flGrav && HasZKick(m_tInfo.m_pWeapon))
+		{
+			for (int n = 0; n < 3; n++)
+			{
+				const float flT = flDist / (cos(flPitch) * flVelocity);
+				const float flRoot2 = pow(flVelocity, 4) - flGrav * (flGrav * pow(flDist, 2) + 2.f * (vDelta.z - 200.f * flT) * pow(flVelocity, 2));
+				if (flRoot2 < 0.f) break;
+				flPitch = atan((pow(flVelocity, 2) - sqrt(flRoot2)) / (flGrav * flDist));
+			}
+		}
 		tOut.m_flTime = flDist / (cos(flPitch) * flVelocity) - (m_tInfo.m_vOffset.Length() / flVelocity) + flDragTime;
 		tOut.m_flPitch = flPitch = -RAD2DEG(flPitch) - m_tInfo.m_vAngFix.x;
 		tOut.m_flYaw = flYaw = vAngleTo.y - m_tInfo.m_vAngFix.y;
@@ -1031,6 +1055,17 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 			if (tOut.m_iCalculated = flRoot < 0.f ? CalculatedEnum::Bad : CalculatedEnum::Pending)
 				return;
 			tOut.m_flPitch = atan((pow(flVelocity, 2) - sqrt(flRoot)) / (flGrav * flDist));
+		}
+		// Correct pitch for 200 UPS world-space Z kick added at spawn (grenades, stickies, cannon)
+		if (flGrav && HasZKick(m_tInfo.m_pWeapon))
+		{
+			for (int n = 0; n < 3; n++)
+			{
+				const float flT = flDist / (cos(tOut.m_flPitch) * flVelocity);
+				const float flRoot2 = pow(flVelocity, 4) - flGrav * (flGrav * pow(flDist, 2) + 2.f * (vDelta.z - 200.f * flT) * pow(flVelocity, 2));
+				if (flRoot2 < 0.f) break;
+				tOut.m_flPitch = atan((pow(flVelocity, 2) - sqrt(flRoot2)) / (flGrav * flDist));
+			}
 		}
 		tOut.m_flTime = flDist / (cos(tOut.m_flPitch) * flVelocity) + flDragTime;
 	}
