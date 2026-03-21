@@ -229,16 +229,14 @@ void CCritHack::UpdateInfo(CTFPlayer* pLocal, CTFWeaponBase* pWeapon)
 	if (auto pResource = H::Entities.GetResource())
 	{
 		m_iResourceDamage = pResource->m_iDamage(I::EngineClient->GetLocalPlayer());
-		/* // more of a proof of concept for resyncing crit damage
 		if (m_flLastDamageTime < I::GlobalVars->curtime + STATS_SEND_FREQUENCY * 2)
 		{	// attempt to resync damages
 			m_iRangedDamage = m_iResourceDamage - m_iMeleeDamage;
 
 			float flObservedCritChance = pWeapon->m_flObservedCritChance();
 			m_iCritDamage = (TF_DAMAGE_CRIT_MULTIPLIER * flObservedCritChance * m_iResourceDamage) / (1 + 2 * flObservedCritChance);
-			SDK::Output("Info", std::format("{}, {}", m_iRangedDamage, m_iCritDamage).c_str());
+			//SDK::Output("Info", std::format("Resynced: Ranged {}, Crit {}", m_iRangedDamage, m_iCritDamage).c_str());
 		}
-		*/
 		m_iDesyncDamage = m_iRangedDamage + m_iMeleeDamage - m_iResourceDamage;
 	}
 }
@@ -330,9 +328,9 @@ void CCritHack::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd)
 	bool bAttacking = G::Attacking /*== 1*/ || F::Ticks.m_bDoubletap || F::Ticks.m_bSpeedhack;
 	if (m_bMelee)
 	{
-		bAttacking = G::CanPrimaryAttack && pCmd->buttons & IN_ATTACK;
-		if (!bAttacking && pWeapon->GetWeaponID() == TF_WEAPON_FISTS)
-			bAttacking = G::CanPrimaryAttack && pCmd->buttons & IN_ATTACK2;
+		bAttacking |= G::CanPrimaryAttack && pCmd->buttons & IN_ATTACK;
+		if (pWeapon->GetWeaponID() == TF_WEAPON_FISTS)
+			bAttacking |= G::CanPrimaryAttack && pCmd->buttons & IN_ATTACK2;
 	}
 	else if (pWeapon->GetWeaponID() == TF_WEAPON_MINIGUN && !(G::LastUserCmd->buttons & IN_ATTACK))
 		bAttacking = false;
@@ -477,6 +475,7 @@ void CCritHack::Event(IGameEvent* pEvent, uint32_t uHash, CTFPlayer* pLocal)
 		}
 
 		//m_flLastDamageTime = I::GlobalVars->curtime;
+		m_flLastDamageTime = I::GlobalVars->curtime; // Issue #5: Actually update last damage time for resync logic
 
 		CTFWeaponBase* pWeapon = nullptr;
 		for (int i = 0; i < MAX_WEAPONS; i++)

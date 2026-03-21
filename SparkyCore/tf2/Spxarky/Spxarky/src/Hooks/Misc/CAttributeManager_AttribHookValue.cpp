@@ -27,5 +27,14 @@ MAKE_HOOK(CAttributeManager_AttribHookInt, S::CAttributeManager_AttribHookInt(),
 		}
 	}
 
+	if (econent == H::Entities.GetLocal())
+	{
+		const auto uHash = FNV1A::Hash32(name);
+		if (uHash == FNV1A::Hash32Const("killstreak_tier") && Vars::Visuals::Mods::KillstreakTier.Value)
+			return Vars::Visuals::Mods::KillstreakTier.Value;
+		if (uHash == FNV1A::Hash32Const("killstreak_count") && Vars::Visuals::Mods::KillstreakCount.Value)
+			return Vars::Visuals::Mods::KillstreakCount.Value;
+	}
+
 	return CALL_ORIGINAL(value, name, econent, buffer, isGlobalConstString);
 }

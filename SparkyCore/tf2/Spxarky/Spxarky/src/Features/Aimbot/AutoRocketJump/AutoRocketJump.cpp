@@ -16,7 +16,7 @@ bool CAutoRocketJump::SetAngles(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUser
 
 	Vec3 vOrigin = pLocal->m_vecOrigin();
 	Vec3 vLocalPos = pLocal->GetShootPos();
-	Vec3 vOffset = tProjInfo.m_vPos - vLocalPos; vOffset.x = 0; //vOffset.y *= -1;
+	Vec3 vOffset = tProjInfo.m_vPos - vLocalPos; vOffset.x = 0; vOffset.y *= -1; // Correct rocket offset for right-handed Soldier
 	float flVelocity = F::ProjSim.GetVelocity().Length();
 
 	Vec3 vPoint;

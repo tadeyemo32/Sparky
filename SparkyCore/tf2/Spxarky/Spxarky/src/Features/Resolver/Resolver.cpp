@@ -71,8 +71,8 @@ void CResolver::FrameStageNotify()
 		{
 			if (auto flPitch = GetPitchForSniperDot(pPlayer, pResource))
 				tData.m_flPitch = flPitch.value();
-			else if (!tData.m_bFirstOOBPitch && tData.m_bAutoSetPitch || tData.m_bInversePitch)
-				tData.m_flPitch = -pPlayer->m_angEyeAnglesX(); // set to inverse by default
+			else if ((!tData.m_bFirstOOBPitch && tData.m_bAutoSetPitch) || (tData.m_bInversePitch && !tData.m_bAutoSetPitch))
+				tData.m_flPitch = -pPlayer->m_angEyeAnglesX(); // set to inverse; auto-cycle takes over after first detection
 			else
 				tData.m_flPitch = fabsf(tData.m_flPitch) > 45.f ? sign(tData.m_flPitch) * 90 : 0; // limit to 90, 0, -90
 			tData.m_bPitch = true, tData.m_bFirstOOBPitch = true;

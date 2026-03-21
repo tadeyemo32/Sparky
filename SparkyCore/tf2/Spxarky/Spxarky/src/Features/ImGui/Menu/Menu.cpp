@@ -74,8 +74,8 @@ void CMenu::DrawMenu()
 		FTabs(
 			{
 				{ "AIMBOT", "GENERAL", "DRAW" },
-				{ "VISUALS", "ESP", "MISC##", "MENU" },
-				{ "MISC", "MAIN", "HVH" },
+				{ "VISUALS", "ESP", "MISC##", "MENU", "MODS" },
+				{ "MISC", "MAIN", "HVH", "OPT" },
 				{ "LOGS", "PLAYERLIST", "SETTINGS##", "OUTPUT" },
 				{ "SETTINGS", "CONFIG", "BINDS", "MATERIALS", "EXTRA" }
 			},
@@ -334,6 +334,8 @@ void CMenu::MenuAimbot(int iTab)
 				{
 					FToggle(Vars::Aimbot::Melee::AutoBackstab, FToggleEnum::Left);
 					FToggle(Vars::Aimbot::Melee::IgnoreRazorback, FToggleEnum::Right);
+					FToggle(Vars::Aimbot::Melee::BackstabBypassAnimation, FToggleEnum::Left);
+					FToggle(Vars::Aimbot::Melee::Facestab, FToggleEnum::Right);
 					FToggle(Vars::Aimbot::Melee::SwingPrediction, FToggleEnum::Left);
 					FToggle(Vars::Aimbot::Melee::WhipTeam, FToggleEnum::Right);
 				} EndSection();
@@ -998,6 +1000,27 @@ void CMenu::MenuVisuals(int iTab)
 		}
 		break;
 	}
+	// Mods
+	case 3:
+	{
+		if (BeginTable("ModsTable", 2))
+		{
+			TableNextColumn();
+			{
+				if (Section("Weapon Modifications"))
+				{
+					FSlider(Vars::Visuals::Mods::WarPaintID);
+					FSlider(Vars::Visuals::Mods::WeaponSkinID);
+					FSlider(Vars::Visuals::Mods::UnusualEffectID);
+					FInputText("Custom Name", Vars::Visuals::Mods::CustomName.Value, H::Draw.Scale(284));
+					FSlider(Vars::Visuals::Mods::KillstreakCount, FSliderEnum::Left);
+					FSlider(Vars::Visuals::Mods::KillstreakTier, FSliderEnum::Right);
+				} EndSection();
+			}
+			EndTable();
+		}
+		break;
+	}
 	}
 }
 
@@ -1084,6 +1107,8 @@ void CMenu::MenuMisc(int iTab)
 						FSlider(Vars::Misc::Exploits::PingTarget, FSliderEnum::Right);
 					}
 					PopTransparent();
+					if (FButton("Unlock Achievements"))
+						Vars::Misc::Exploits::UnlockAchievements.Value = true;
 				} EndSection();
 				if (Section("Game", 8))
 				{
@@ -1111,6 +1136,11 @@ void CMenu::MenuMisc(int iTab)
 					FToggle(Vars::Misc::Sound::HitsoundAlways, FToggleEnum::Left);
 					FToggle(Vars::Misc::Sound::RemoveDSP, FToggleEnum::Right);
 					FToggle(Vars::Misc::Sound::GiantWeaponSounds);
+				} EndSection();
+				if (Section("Spy"))
+				{
+					FToggle(Vars::Misc::Spy::FastCloak, FToggleEnum::Left);
+					FToggle(Vars::Misc::Spy::FastUncloak, FToggleEnum::Right);
 				} EndSection();
 			}
 			EndTable();
@@ -1256,6 +1286,27 @@ void CMenu::MenuMisc(int iTab)
 						FSlider(Vars::Speedhack::Amount);
 					}
 					PopTransparent();
+				} EndSection();
+			}
+			EndTable();
+		}
+		break;
+	}
+	// Optimizations
+	case 2:
+	{
+		if (BeginTable("OptTable", 2))
+		{
+			TableNextColumn();
+			{
+				if (Section("Performance"))
+				{
+					FToggle(Vars::Misc::Optimizations::DisableGibs, FToggleEnum::Left);
+					FToggle(Vars::Misc::Optimizations::DisableRagdolls, FToggleEnum::Right);
+					FToggle(Vars::Misc::Optimizations::DisableDecals, FToggleEnum::Left);
+					FToggle(Vars::Misc::Optimizations::DisableFoliage, FToggleEnum::Right);
+					FToggle(Vars::Misc::Optimizations::LowDetailModels, FToggleEnum::Left);
+					FToggle(Vars::Misc::Optimizations::NoProps, FToggleEnum::Right);
 				} EndSection();
 			}
 			EndTable();

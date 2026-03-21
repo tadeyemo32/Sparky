@@ -5,6 +5,7 @@
 #include "../../EnginePrediction/EnginePrediction.h"
 #include "../../Ticks/Ticks.h"
 #include "../../Visuals/Visuals.h"
+#include "../../../SDK/Definitions/Main/CGameTrace.h"
 
 static inline bool AimFriendlyBuilding(CBaseObject* pBuilding)
 {
@@ -290,6 +291,9 @@ bool CAimbotMelee::CanBackstab(CBaseEntity* pTarget, CTFPlayer* pLocal, Vec3 vEy
 			const float flPosVsOwnerViewDot = vToTarget.Dot(vOwnerForward); // Facing?
 			const float flViewAnglesDot = vTargetForward.Dot(vOwnerForward); // Facestab?
 
+			if (Vars::Aimbot::Melee::Facestab.Value)
+				return flPosVsTargetViewDot > flPosVsTargetViewMinDot && flPosVsOwnerViewDot > flPosVsOwnerViewMinDot;
+
 			return flPosVsTargetViewDot > flPosVsTargetViewMinDot && flPosVsOwnerViewDot > flPosVsOwnerViewMinDot && flViewAnglesDot > flViewAnglesMinDot;
 		};
 
@@ -383,7 +387,12 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 		}
 
 		if (bReturn && Vars::Aimbot::Melee::AutoBackstab.Value && pWeapon->GetWeaponID() == TF_WEAPON_KNIFE)
-			bReturn = CanBackstab(tTarget.m_pEntity, pLocal, tTarget.m_vAngleTo);
+		{
+			if (Vars::Aimbot::Melee::BackstabBypassAnimation.Value || pWeapon->As<CTFKnife>()->m_bReadyToBackstab())
+				bReturn = CanBackstab(tTarget.m_pEntity, pLocal, tTarget.m_vAngleTo);
+			else
+				bReturn = false;
+		}
 		
 		tTarget.m_pEntity->SetAbsOrigin(vRestoreOrigin);
 		tTarget.m_pEntity->m_vecMins() = vRestoreMins;
@@ -591,7 +600,7 @@ void CAimbotMelee::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd
 		if (G::Attacking == 1)
 		{
 			if (tTarget.m_bBacktrack)
-				pCmd->tick_count = TIME_TO_TICKS(tTarget.m_pRecord->m_flSimTime) + TIME_TO_TICKS(F::Backtrack.GetFakeInterp());
+				pCmd->tick_count = TIME_TO_TICKS(tTarget.m_pRecord->m_flSimTime + 0.5f * TICK_INTERVAL) + TIME_TO_TICKS(F::Backtrack.GetFakeInterp()); // Use 0.5f epsilon to prevent truncation drift on fast targets
 			// bug: fast old records seem to be progressively more unreliable ?
 		}
 		else

@@ -1,0 +1,30 @@
+{
+    "Binds": {},
+    "Vars": {
+        "Vars::Aimbot::General::AimType": "3",
+        "Vars::Aimbot::General::Target": "1",
+        "Vars::Aimbot::General::Ignore": "264",
+        "Vars::Aimbot::General::AimFOV": "180",
+        "Vars::Aimbot::General::MaxTargets": "1",
+        "Vars::Aimbot::General::AutoShoot": "true",
+        "Vars::Aimbot::General::FOVCircle": "false",
+        "Vars::Aimbot::Hitscan::Hitboxes": "3",
+        "Vars::Aimbot::Hitscan::Modifiers": "0",
+        "Vars::Aimbot::Melee::AutoBackstab": "true",
+        "Vars::Aimbot::Melee::IgnoreRazorback": "true",
+        "Vars::Aimbot::Melee::SwingPrediction": "true",
+        "Vars::CritHack::ForceCrits": "false",
+        "Vars::CritHack::AlwaysMeleeCrit": "true",
+        "Vars::Backtrack::Window": "185",
+        "Vars::Backtrack::PreferOnShot": "true",
+        "Vars::Doubletap::Doubletap": "false",
+        "Vars::Fakelag::Fakelag": "0",
+        "Vars::AntiAim::Enabled": "false",
+        "Vars::Resolver::Enabled": "false",
+        "Vars::Visuals::Removals::Disguises": "true",
+        "Vars::Visuals::Removals::Lerp": "true",
+        "Vars::Visuals::Removals::ViewPunch": "true",
+        "Vars::Visuals::UI::RevealScoreboard": "true"
+    },
+    "Groups": {}
+}

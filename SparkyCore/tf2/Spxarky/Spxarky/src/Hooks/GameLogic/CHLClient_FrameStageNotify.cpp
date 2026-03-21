@@ -14,6 +14,7 @@
 #include "../../Features/Visuals/Glow/Glow.h"
 #include "../../Features/Visuals/Groups/Groups.h"
 #include "../../Features/Visuals/OffscreenArrows/OffscreenArrows.h"
+#include "../../Features/Visuals/SkinChanger/SkinChanger.h"
 
 MAKE_HOOK(CHLClient_FrameStageNotify, U::Memory.GetVirtual(I::Client, 35), void,
 	void* rcx, ClientFrameStage_t curStage)
@@ -33,6 +34,12 @@ MAKE_HOOK(CHLClient_FrameStageNotify, U::Memory.GetVirtual(I::Client, 35), void,
 		F::Spectate.NetUpdateStart(pLocal);
 
 		H::Entities.Clear();
+		break;
+	}
+	case FRAME_NET_UPDATE_POSTDATAUPDATE_START:
+	{
+		auto pLocal = H::Entities.GetLocal();
+		F::SkinChanger.Run(pLocal, curStage);
 		break;
 	}
 	case FRAME_NET_UPDATE_END:

@@ -821,7 +821,15 @@ void CAimbotHitscan::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 				&& m_vEyePos.DistTo(tTarget.m_vPos) > Vars::Aimbot::Hitscan::TapfireDistance.Value)
 			{
 				const float flTimeSinceLastShot = (pLocal->m_nTickBase() * TICK_INTERVAL) - pWeapon->m_flLastFireTime();
-				if (flTimeSinceLastShot <= (pWeapon->GetBulletsPerShot() > 1 ? 0.25f : 1.25f))
+				float flWaitTime = (pWeapon->GetBulletsPerShot() > 1 ? 0.25f : 1.25f);
+				
+				// Scout specific tapfire recovery
+				if (nWeaponID == TF_WEAPON_REVOLVER && pWeapon->m_iItemDefinitionIndex() == Scout_m_TheShortstop)
+					flWaitTime = 0.5f; // Shortstop recovers slower but needs precision
+				else if (nWeaponID == TF_WEAPON_PISTOL_SCOUT && pWeapon->m_iItemDefinitionIndex() == Scout_s_TheWinger)
+					flWaitTime = 0.15f;
+
+				if (flTimeSinceLastShot <= flWaitTime)
 					pCmd->buttons &= ~IN_ATTACK;
 			}
 		}
@@ -833,7 +841,7 @@ void CAimbotHitscan::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 				F::Resolver.HitscanRan(pLocal, tTarget.m_pEntity->As<CTFPlayer>(), pWeapon, tTarget.m_nAimedHitbox);
 
 			if (tTarget.m_bBacktrack)
-				pCmd->tick_count = TIME_TO_TICKS(tTarget.m_pRecord->m_flSimTime) + TIME_TO_TICKS(F::Backtrack.GetFakeInterp());
+				pCmd->tick_count = TIME_TO_TICKS(tTarget.m_pRecord->m_flSimTime + 0.5f * TICK_INTERVAL) + TIME_TO_TICKS(F::Backtrack.GetFakeInterp()); // Use 0.5f epsilon for hitscan too
 		}
 		DrawVisuals(pLocal, tTarget, nWeaponID);
 

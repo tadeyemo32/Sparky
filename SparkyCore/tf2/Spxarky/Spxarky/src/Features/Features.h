@@ -45,6 +45,7 @@
 #include "Visuals/Notifications/Notifications.h"
 #include "Visuals/OffscreenArrows/OffscreenArrows.h"
 #include "Visuals/PlayerConditions/PlayerConditions.h"
+#include "Visuals/SkinChanger/SkinChanger.h"
 #include "Visuals/SpectatorList/SpectatorList.h"
 
 // --- Players ---
@@ -57,8 +58,10 @@
 #include "Commands/Commands.h"
 #include "Configs/Configs.h"
 #include "Misc/Misc.h"
+#include "Spy/Spy.h"
 #include "Misc/AutoQueue/AutoQueue.h"
 #include "Misc/AutoVote/AutoVote.h"
+#include "Misc/Optimizations/Optimizations.h"
 #include "Output/Output.h"
 #include "Spectate/Spectate.h"
 #include "Ticks/Ticks.h"

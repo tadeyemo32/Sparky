@@ -53,7 +53,7 @@ private:
 	float m_flCritChance = 0.f;
 	float m_flMultCritChance = 1.f;
 
-	//float m_flLastDamageTime = 0.f;
+	float m_flLastDamageTime = 0.f;
 
 public:
 	void Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd);

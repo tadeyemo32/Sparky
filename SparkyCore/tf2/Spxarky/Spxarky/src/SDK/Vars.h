@@ -194,10 +194,10 @@ NAMESPACE_BEGIN(Vars)
 		CVar(CheapText, "Cheap text", false);
 
 		NAMESPACE_BEGIN(Theme)
-			CVar(Accent, "Accent color", Color_t(175, 150, 255, 255), VISUAL);
-			CVar(Background, "Background color", Color_t(0, 0, 0, 250), VISUAL);
-			CVar(Active, "Active color", Color_t(255, 255, 255, 255), VISUAL);
-			CVar(Inactive, "Inactive color", Color_t(150, 150, 150, 255), VISUAL);
+			CVar(Accent, "Accent color", Color_t(255, 255, 255, 255), VISUAL);
+			CVar(Background, "Background color", Color_t(10, 10, 12, 255), VISUAL);
+			CVar(Active, "Active color", Color_t(240, 240, 245, 255), VISUAL);
+			CVar(Inactive, "Inactive color", Color_t(136, 136, 136, 255), VISUAL);
 		NAMESPACE_END(Theme)
 	NAMESPACE_END(Menu)
 
@@ -389,6 +389,8 @@ NAMESPACE_BEGIN(Vars)
 
 		NAMESPACE_BEGIN(Melee)
 			CVar(AutoBackstab, "Auto backstab", true);
+			CVar(BackstabBypassAnimation, "Bypass animation", false);
+			CVar(Facestab, "Facestab", false);
 			CVar(IgnoreRazorback, "Ignore razorback", true);
 			CVar(SwingPrediction, "Swing prediction", false);
 			CVar(WhipTeam, "Whip team", false);
@@ -695,6 +697,16 @@ NAMESPACE_BEGIN(Vars)
 			CVar(MaxVelocity, "Max velocity", 2000.f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0.f, 4000.f, 50.f);
 			CVar(MaxAngularVelocity, "Max angular velocity", 3600.f, NOSAVE | DEBUGVAR | SLIDER_MIN | SLIDER_PRECISION, 0.f, 7200.f, 50.f);
 		NAMESPACE_END(ProjectileTrajectory)
+		NAMESPACE_BEGIN(Mods)
+			CVar(WarPaintID, "War paint ID", 0, NONE, 0, 1000);
+			CVar(WeaponSkinID, "Weapon skin ID", 0, NONE, 0, 1000);
+			CVar(UnusualEffectID, "Unusual effect ID", 0, NONE, 0, 1000);
+			CVar(CustomName, "Custom name", std::string(""), VISUAL);
+			CVar(KillstreakCount, "Killstreak count", 0, NONE, 0, 1000);
+			CVarEnum(KillstreakTier, "Killstreak tier", 0, NONE, nullptr,
+				VA_LIST("None", "Standard", "Specialized", "Professional"),
+				None, Standard, Specialized, Professional);
+		NAMESPACE_END(Mods)
 	NAMESPACE_END(Visuals)
 
 	NAMESPACE_BEGIN(Misc)
@@ -747,6 +759,7 @@ NAMESPACE_BEGIN(Vars)
 			CVar(NoisemakerSpam, "Noisemaker spam", false);
 			CVar(PingReducer, "Ping reducer", false);
 			CVar(PingTarget, "cl_cmdrate", 1, SLIDER_CLAMP, 1, 66);
+			CVar(UnlockAchievements, "Unlock achievements", false, NOBIND);
 		NAMESPACE_END(Exploits)
 
 		NAMESPACE_BEGIN(Game)
@@ -805,7 +818,7 @@ NAMESPACE_BEGIN(Vars)
 			CVar(InstantRespawn, "Instant respawn", false);
 			CVar(InstantRevive, "Instant revive", false);
 			CVar(AllowInspect, "Allow inspect", false);
-		NAMESPACE_END(Sound)
+		NAMESPACE_END(MannVsMachine)
 
 		NAMESPACE_BEGIN(Sound)
 			CVarEnum(Block, VA_LIST("Block", "Sound block"), 0b0000, DROPDOWN_MULTI, nullptr,
@@ -815,6 +828,19 @@ NAMESPACE_BEGIN(Vars)
 			CVar(RemoveDSP, "Remove DSP", false);
 			CVar(GiantWeaponSounds, "Giant weapon sounds", false);
 		NAMESPACE_END(Sound)
+		
+		NAMESPACE_BEGIN(Spy)
+			CVar(FastCloak, "Fast cloak", false);
+			CVar(FastUncloak, "Fast uncloak", false);
+		NAMESPACE_END(Spy)
+		NAMESPACE_BEGIN(Optimizations)
+			CVar(DisableGibs, "Disable gibs", false);
+			CVar(DisableRagdolls, "Disable ragdolls", false);
+			CVar(DisableDecals, "Disable decals", false);
+			CVar(DisableFoliage, "Disable foliage", false);
+			CVar(LowDetailModels, "Low detail models", false);
+			CVar(NoProps, "No props", false);
+		NAMESPACE_END(Optimizations)
 	NAMESPACE_END(Misc)
 
 	NAMESPACE_BEGIN(Logging)

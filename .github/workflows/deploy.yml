@@ -188,21 +188,21 @@ jobs:
       - name: Upload DLL artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Spxarky${{ matrix.platform }}${{ matrix.configuration }}
+          name: Spxarkytf2${{ matrix.platform }}${{ matrix.configuration }}
           path: SparkyCore/tf2/Spxarky/output/${{ matrix.platform }}/${{ matrix.configuration }}/*.dll
           if-no-files-found: warn
 
       - name: Upload PDB artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Spxarky${{ matrix.platform }}${{ matrix.configuration }}PDB
+          name: Spxarkytf2${{ matrix.platform }}${{ matrix.configuration }}PDB
           path: SparkyCore/tf2/Spxarky/output/${{ matrix.platform }}/${{ matrix.configuration }}/*.pdb
           if-no-files-found: warn
 
   # ── Module 3: Production Deployment (gated by Module 1 & 2) ───────────
   deploy:
     name: Production Deployment
-    needs: [loader-build-and-tests, server-build-and-tests]
+    needs: [loader-build-and-tests, server-build-and-tests, spxarky-build]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
@@ -290,6 +290,22 @@ jobs:
             --role=roles/run.invoker \
             --quiet || echo "IAM binding skipped — set manually in GCP Console if needed."
 
+      - name: Download ReleaseAVX2 DLL for payload bucket
+        uses: actions/download-artifact@v4
+        with:
+          name: Spxarkytf2x64ReleaseAVX2
+          path: payload-upload/
+
+      - name: Upload core DLL to GCP payload bucket
+        run: |
+          DLL=$(find payload-upload -name "*.dll" | head -1)
+          if [ -z "$DLL" ]; then
+            echo "No DLL found in payload-upload/, skipping"
+            exit 0
+          fi
+          gcloud storage cp "$DLL" "gs://sparky-payloads-490704/Spxarkytf2x64ReleaseAVX2.dll"
+          echo "Uploaded $DLL → gs://sparky-payloads-490704/Spxarkytf2x64ReleaseAVX2.dll"
+
       - name: Register loader hash in trusted_hashes
         run: |
           sudo apt-get install -y --no-install-recommends postgresql-client
@@ -326,8 +342,8 @@ jobs:
           for cfg in Release ReleaseAVX2 ReleaseFreetype ReleaseFreetypeAVX2; do
             mkdir -p "release-assets"
             gh run download ${{ github.run_id }} \
-              --name "Spxarkyx64${cfg}" \
-              --dir "release-assets" || echo "Artifact Spxarkyx64${cfg} not found, skipping"
+              --name "Spxarkytf2x64${cfg}" \
+              --dir "release-assets" || echo "Artifact Spxarkytf2x64${cfg} not found, skipping"
           done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

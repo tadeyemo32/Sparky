@@ -19,6 +19,9 @@ struct Info_t
 	Vec3 m_vTargetEye = {};
 
 	float m_flLatency = 0.f;
+	float m_flLatencyIn = 0.f;
+	float m_flLatencyOut = 0.f;
+	float m_flLerpTime = 0.f;
 
 	Vec3 m_vHull = {};
 	Vec3 m_vOffset = {};
@@ -51,6 +54,8 @@ struct History_t
 {
 	Vec3 m_vOrigin;
 	int m_iSimtime;
+	int m_iScore = 0;
+	History_t(const Vec3& vOrigin, int iSimtime, int iScore = 0) : m_vOrigin(vOrigin), m_iSimtime(iSimtime), m_iScore(iScore) {}
 };
 struct Direct_t : History_t
 {
@@ -59,10 +64,12 @@ struct Direct_t : History_t
 	float m_flTime;
 	Vec3 m_vPoint;
 	int m_iPriority;
+	Direct_t(const History_t& tHistory, float flPitch, float flYaw, float flTime, const Vec3& vPoint, int iPriority) : History_t(tHistory), m_flPitch(flPitch), m_flYaw(flYaw), m_flTime(flTime), m_vPoint(vPoint), m_iPriority(iPriority) {}
 };
 struct Splash_t : History_t
 {
 	float m_flTimeTo;
+	Splash_t(const History_t& tHistory, float flTimeTo) : History_t(tHistory), m_flTimeTo(flTimeTo) {}
 };
 
 class CAimbotProjectile

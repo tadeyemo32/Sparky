@@ -404,9 +404,9 @@ namespace Math
 		float q = 2 * powf(b, 3) / 27 - b * c / 3 + d;
 
 		if (p == 0.f)
-			return pow(q, 1.f / 3);
+			return pow(q, 1.f / 3) - b / 3;
 		if (q == 0.f)
-			return 0.f;
+			return -b / 3;
 
 		float t = sqrt(fabs(p) / 3);
 		float g = q / (2.f / 3) / (p * t);

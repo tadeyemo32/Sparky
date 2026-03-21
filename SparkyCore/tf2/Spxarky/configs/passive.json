@@ -1,0 +1,30 @@
+{
+    "Binds": {},
+    "Vars": {
+        "Vars::Aimbot::General::AimType": "0",
+        "Vars::Aimbot::General::AutoShoot": "false",
+        "Vars::Aimbot::General::FOVCircle": "false",
+        "Vars::CritHack::ForceCrits": "false",
+        "Vars::CritHack::AvoidRandomCrits": "false",
+        "Vars::CritHack::AlwaysMeleeCrit": "false",
+        "Vars::Backtrack::Window": "0",
+        "Vars::Doubletap::Doubletap": "false",
+        "Vars::Fakelag::Fakelag": "0",
+        "Vars::AntiAim::Enabled": "false",
+        "Vars::Resolver::Enabled": "false",
+        "Vars::Visuals::Removals::Scope": "true",
+        "Vars::Visuals::Removals::PostProcessing": "true",
+        "Vars::Visuals::Removals::ViewPunch": "true",
+        "Vars::Visuals::Removals::AngleForcing": "true",
+        "Vars::Visuals::Removals::Disguises": "true",
+        "Vars::Visuals::UI::RevealScoreboard": "true",
+        "Vars::Visuals::UI::ScoreboardColors": "true",
+        "Vars::Visuals::UI::ScoreboardUtility": "true",
+        "Vars::Visuals::Simulation::ProjectilePath": "1",
+        "Vars::Visuals::Simulation::SplashRadius": "15",
+        "Vars::Visuals::UI::FieldOfView": "0",
+        "Vars::Menu::Indicators": "31",
+        "Vars::Menu::BindWindow": "true"
+    },
+    "Groups": {}
+}

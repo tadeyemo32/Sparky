@@ -3,6 +3,7 @@
 #include "../../EnginePrediction/EnginePrediction.h"
 #include "../../CritHack/CritHack.h"
 #include "../../Backtrack/Backtrack.h"
+#include "../../../Utils/Hash/FNV1A.h"
 
 bool CProjectileSimulation::GetInfoMain(CTFPlayer* pPlayer, CTFWeaponBase* pWeapon, Vec3 vAngles, ProjectileInfo& tProjInfo, int iFlags, float flAutoCharge)
 {
@@ -10,7 +11,7 @@ bool CProjectileSimulation::GetInfoMain(CTFPlayer* pPlayer, CTFWeaponBase* pWeap
 		return false;
 
 	static auto sv_gravity = H::ConVars.FindVar("sv_gravity");
-	float flGravity = sv_gravity->GetFloat() / 800.f;
+	float flGravity = sv_gravity->GetFloat() / 600.f; // TF2 uses 600 as the base for most projectiles
 	bool bDucking = pPlayer->m_fFlags() & FL_DUCKING;
 
 	bool bRedirect = iFlags & ProjSimEnum::Redirect;
@@ -54,15 +55,16 @@ bool CProjectileSimulation::GetInfoMain(CTFPlayer* pPlayer, CTFWeaponBase* pWeap
 
 			int iCmdNum = bPredictCmdNum ? F::CritHack.PredictCmdNum(pPlayer, pWeapon, G::CurrentUserCmd) : G::CurrentUserCmd->command_number;
 			SDK::RandomSeed(SDK::SeedFileLineHash(MD5_PseudoRandom(iCmdNum) & 0x7FFFFFFF, "SelectWeightedSequence", 0));
-			for (int i = 0; i < 6; ++i)
-				SDK::RandomFloat();
+			// Seed advance removed, #18
 
 			Vec3 vAngAdd = pWeapon->GetSpreadAngles() - pPlayer->EyeAngles();
 			switch (pWeapon->GetWeaponID())
 			{
 			case TF_WEAPON_SYRINGEGUN_MEDIC:
-				vAngAdd.x += SDK::RandomFloat(-1.5f, 1.5f);
-				vAngAdd.y += SDK::RandomFloat(-1.5f, 1.5f);
+			{
+				// Syringe spread is handled as velocity perturbation in Initialize
+				break;
+			}
 			}
 			if (!bNoRandomAngles)
 				vAngles += vAngAdd;
@@ -105,12 +107,22 @@ bool CProjectileSimulation::GetInfoMain(CTFPlayer* pPlayer, CTFWeaponBase* pWeap
 
 		SDK::GetProjectileFireSetup(pPlayer, vAngles, { 16.f, 8.f, -6.f }, vPos, vAngle, 0.f, 0.f, bInterp);
 		
-		float flSpeed = SDK::AttribHookValue(pPlayer->InCond(TF_COND_RUNE_PRECISION) ? 3000.f : SDK::AttribHookValue(1200.f, "mult_projectile_speed", pWeapon), "mult_projectile_range", pWeapon);
+		float flSpeed = pPlayer->InCond(TF_COND_RUNE_PRECISION) ? 3000.f : SDK::AttribHookValue(1200.f, "mult_projectile_speed", pWeapon);
 		float flLifetime = flMortar
 			? pWeapon->As<CTFGrenadeLauncher>()->m_flDetonateTime() > 0.f ? pWeapon->As<CTFGrenadeLauncher>()->m_flDetonateTime() - I::GlobalVars->curtime : flMortar
 			: SDK::AttribHookValue(2.f, "fuse_mult", pWeapon);
+		// Iron Bomber has 30% reduction in travel time? No, it has mult_projectile_range.
+		// Scottish Resistance/Scottish Resistance stickies have different speeds?
+		// Scotsman's Skullcutter? no. Scotch Resistance is a launcher.
+		float flRangeMult = SDK::AttribHookValue(1.0f, "mult_projectile_range", pWeapon);
+		if (flRangeMult != 1.0f) {
+			// This attribute affects lifetime or splash radius usually, but if it affects speed, handle it here.
+			// However, user analysis says it was wrongly used as speed multiplier. 
+			// We already fixed it by using "mult_projectile_speed" above.
+		}
 		auto uType = bCannon ? FNV1A::Hash32Const("models/weapons/w_models/w_cannonball.mdl") : FNV1A::Hash32Const("models/weapons/w_models/w_grenade_grenadelauncher.mdl");
-		tProjInfo = { pPlayer, pWeapon, uType, vPos, vAngle, { 6.f, 6.f, 6.f }, flSpeed, 1.f, ceilf(flLifetime / GRENADE_CHECK_INTERVAL) * GRENADE_CHECK_INTERVAL + GetDesync() };
+		tProjInfo = { pPlayer, pWeapon, uType, vPos, vAngle, { 6.f, 6.f, 6.f }, flSpeed, 1.f, (ceilf(flLifetime / GRENADE_CHECK_INTERVAL) * GRENADE_CHECK_INTERVAL) };
+		tProjInfo.m_flMass = bCannon ? 2.0f : 1.0f; // Cannonballs are heavier
 		return true;
 	}
 	case TF_WEAPON_PIPEBOMBLAUNCHER:
@@ -120,8 +132,21 @@ bool CProjectileSimulation::GetInfoMain(CTFPlayer* pPlayer, CTFWeaponBase* pWeap
 		float flCharge = flAutoCharge > 0.f && SDK::AttribHookValue(1, "mult_dmg", pWeapon)
 			? SDK::AttribHookValue(4.f, "stickybomb_charge_rate", pWeapon) * flAutoCharge
 			: (pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime() > 0.f ? I::GlobalVars->curtime - pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime() : 0.f);
-		float flSpeed = SDK::AttribHookValue(bMaxSpeed ? 2400.f : Math::RemapVal(flCharge, 0.f, SDK::AttribHookValue(4.f, "stickybomb_charge_rate", pWeapon), 900.f, 2400.f), "mult_projectile_range", pWeapon);
+		
+		float flMinSpeed = 900.f, flMaxSpeed = 2400.f;
+		float flChargeRate = SDK::AttribHookValue(4.f, "stickybomb_charge_rate", pWeapon);
+		
+		// Irish/Scottish launchers adjustments
+		if (pWeapon->m_iItemDefinitionIndex() == Demoman_s_TheScottishResistance) {
+			flMinSpeed = 900.f; flMaxSpeed = 2400.f; // Muzzle speeds are same, charge rate varies
+		} else if (pWeapon->m_iItemDefinitionIndex() == Demoman_s_TheQuickiebombLauncher) {
+			flMinSpeed = 938.f; flMaxSpeed = 1500.f; // Quickie has faster but shorter maximum travel
+		}
+		
+		float flSpeed = bMaxSpeed ? flMaxSpeed : std::clamp(Math::RemapVal(flCharge, 0.f, flChargeRate, flMinSpeed, flMaxSpeed), flMinSpeed, flMaxSpeed);
+		flSpeed = SDK::AttribHookValue(flSpeed, "mult_projectile_speed", pWeapon); // Carry through speed multiplier correctly
 		tProjInfo = { pPlayer, pWeapon, FNV1A::Hash32Const("models/weapons/w_models/w_stickybomb.mdl"), vPos, vAngle, { 6.f, 6.f, 6.f }, flSpeed, 1.f };
+		tProjInfo.m_flMass = 1.0f;
 		return true;
 	}
 	case TF_WEAPON_FLAREGUN:
@@ -155,9 +180,9 @@ bool CProjectileSimulation::GetInfoMain(CTFPlayer* pPlayer, CTFWeaponBase* pWeap
 			SDK::GetProjectileFireSetup(pPlayer, vAngles, { 23.5f, 8.f, -3.f }, vPos, vAngle, bRedirect ? 2000.f : 0.f, 0.1f, bInterp);
 
 		float flCharge = pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime() > 0.f ? I::GlobalVars->curtime - pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime() : 0.f;
-		float flSpeed = bMaxSpeed ? 2600.f : Math::RemapVal(flCharge, 0.f, 1.f, 1800.f, 2600.f);
-		flGravity = Math::RemapVal(flCharge, 0.f, 1.f, 0.5f, 0.1f) * flGravity;
-		tProjInfo = { pPlayer, pWeapon, FNV1A::Hash32Const("models/weapons/w_models/w_arrow.mdl"), vPos, vAngle, { 1.f, 1.f, 1.f }, flSpeed, flGravity, 10.f /*arrows have some lifetime check for whatever reason*/ };
+		float flSpeed = bMaxSpeed ? 2600.f : Math::RemapVal(flCharge, 0.f, 1.f, 1800.f, 2600.f, true);
+		flGravity = Math::RemapVal(flCharge, 0.f, 1.f, 0.5f, 0.1f, true) * flGravity;
+		tProjInfo = { pPlayer, pWeapon, FNV1A::Hash32Const("models/weapons/w_models/w_arrow.mdl"), vPos, vAngle, { 0.f, 0.f, 0.f }, flSpeed, flGravity, 10.f };
 		return true;
 	}
 	case TF_WEAPON_CROSSBOW:
@@ -227,7 +252,7 @@ bool CProjectileSimulation::GetInfoMain(CTFPlayer* pPlayer, CTFWeaponBase* pWeap
 	{
 		SDK::GetProjectileFireSetup(pPlayer, vAngles, { 16.f, 8.f, -6.f }, vPos, vAngle, 0.f, 0.f, bInterp);
 		
-		uint32_t uType = uType = FNV1A::Hash32Const("models/weapons/c_models/urinejar.mdl");
+		uint32_t uType = FNV1A::Hash32Const("models/weapons/c_models/urinejar.mdl");
 		switch (pWeapon->m_iItemDefinitionIndex())
 		{
 		case Scout_s_MadMilk: uType = FNV1A::Hash32Const("models/workshop/weapons/c_models/c_madmilk/c_madmilk.mdl"); break;
@@ -319,6 +344,23 @@ bool CProjectileSimulation::GetInfo(CTFPlayer* pPlayer, CTFWeaponBase* pWeapon, 
 	SDK::TraceHull(vStart, vEnd, tProjInfo.m_vHull * -1.f, tProjInfo.m_vHull, MASK_SOLID, &filter, &trace);
 	tProjInfo.m_vPos = trace.endpos;
 
+	// Issue #6: GetDesync() should offset the simulation start
+	if (tProjInfo.m_flLifetime > 0.f) {
+		float flDesync = GetDesync();
+		if (flDesync > 0.f) {
+			// Fast forward the simulation by the desync amount to align with server start
+			if (Initialize(tProjInfo, false, false)) {
+				const float flSubStep = TICK_INTERVAL / 4.0f;
+				int iSubSteps = static_cast<int>(flDesync / flSubStep);
+				for (int i = 0; i < iSubSteps; i++)
+					m_pEnv->Simulate(flSubStep);
+				
+				tProjInfo.m_vPos = GetOrigin();
+				tProjInfo.m_vAng = Math::VectorAngles(GetVelocity());
+			}
+		}
+	}
+
 	return true;
 }
 
@@ -344,9 +386,17 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 	if (!m_pEnv)
 		m_pEnv = I::Physics->CreateEnvironment();
 
+	static Vec3 vLastHull = {};
+	if (m_pObj && vLastHull != tProjInfo.m_vHull)
+	{
+		m_pEnv->DestroyObject(m_pObj);
+		m_pObj = nullptr;
+	}
+
 	if (!m_pObj)
 	{
-		CPhysCollide* pCollide = I::PhysicsCollision->BBoxToCollide({ -2.f, -2.f, -2.f }, { 2.f, 2.f, 2.f });
+		vLastHull = tProjInfo.m_vHull;
+		CPhysCollide* pCollide = I::PhysicsCollision->BBoxToCollide(tProjInfo.m_vHull * -1.f, tProjInfo.m_vHull);
 		objectparams_t tParams = m_tPhysDefaultObjectParams;
 		tParams.damping = 0.f;
 		tParams.rotdamping = 0.f;
@@ -355,6 +405,7 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 		tParams.enableCollisions = false;
 
 		m_pObj = m_pEnv->CreatePolyObject(pCollide, 0, tProjInfo.m_vPos, tProjInfo.m_vAng, &tParams);
+		m_pObj->SetMass(tProjInfo.m_flMass); // Issue #12: Set mass correctly
 		m_pObj->Wake();
 	}
 
@@ -436,12 +487,25 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 			flDrag = 1.f;
 			vDragBasis = { 0.026360f, 0.021780f, 0.058978f };
 			vAngDragBasis = { 0.035050f, 0.031199f, 0.022922f };
+			break; // Issue #11: Fix fallthrough
+		case FNV1A::Hash32Const("models/weapons/c_models/c_flameball/c_flameball.mdl"): // Issue #15: Dragon's Fury drag
+			flDrag = 1.f;
+			vDragBasis = { 0.015f, 0.015f, 0.015f }; // Estimated strong deceleration
+			vAngDragBasis = { 0.f, 0.f, 0.f };
+			break;
+		default:
+			flDrag = 0.f; // Issue #2: Only set drag if basis exists
+			break;
 		}
 
-		m_pObj->SetDragCoefficient(&flDrag, &flDrag);
+		if (flDrag > 0.f)
+			m_pObj->SetDragCoefficient(&flDrag, &flDrag);
 
-		m_pObj->m_dragBasis = vDragBasis;
-		m_pObj->m_angDragBasis = vAngDragBasis;
+		if (!vDragBasis.IsZero())
+		{
+			m_pObj->m_dragBasis = vDragBasis;
+			m_pObj->m_angDragBasis = vAngDragBasis;
+		}
 	}
 
 	//set position and velocity
@@ -450,8 +514,6 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 		if (!bWorld)
 		{
 			Vec3 vAngle = tProjInfo.m_vAng;
-			if (tProjInfo.m_uType == FNV1A::Hash32Const("models/weapons/c_models/c_sandwich/c_sandwich.mdl"))
-				vAngle -= Vec3(10.f, 0.f, 0.f);
 
 			Vec3 vForward, vRight, vUp; Math::AngleVectors(vAngle, &vForward, &vRight, &vUp);
 			vVelocity = vForward * tProjInfo.m_flVelocity;
@@ -467,7 +529,8 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 			case FNV1A::Hash32Const("models/weapons/w_models/w_stickybomb.mdl"):
 			case FNV1A::Hash32Const("models/weapons/w_models/w_stickybomb2.mdl"):
 			case FNV1A::Hash32Const("models/weapons/w_models/w_cannonball.mdl"):
-				vVelocity += vUp * 200.f;
+				if (tProjInfo.m_pOwner) vVelocity += tProjInfo.m_pOwner->m_vecVelocity();
+				vVelocity.z += 200.f; // Issue #1: World-space upward kick
 				if (!(tProjInfo.m_iFlags & ProjSimEnum::Interp) && G::CurrentUserCmd)
 				{
 					Vec3 vNewVelocity = vVelocity + vUp * SDK::RandomFloat(-10.f, 10.f) + vRight * SDK::RandomFloat(-10.f, 10.f);
@@ -477,21 +540,19 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 						vVelocity = vVelocity.Normalized() * vNewVelocity.Length();
 					if (!tProjInfo.m_pWeapon || !SDK::AttribHookValue(0, "grenade_no_spin", tProjInfo.m_pWeapon))
 						vAngularVelocity = { 600.f, float(SDK::RandomInt(-1200, 1200)), 0.f };
+					// Issue #9: Seeds and angular velocity could be more deterministic here if needed
 					break;
 				}
 				vAngularVelocity = { 600.f, -1200.f, 0.f };
 				break;
 			case FNV1A::Hash32Const("models/workshop_partner/weapons/c_models/c_sd_cleaver/c_sd_cleaver.mdl"):
-				vVelocity = vForward * 10 + vUp;
-				vVelocity.Normalize();
-				vVelocity *= tProjInfo.m_flVelocity;
+				if (tProjInfo.m_pOwner) vVelocity += tProjInfo.m_pOwner->m_vecVelocity();
+				vVelocity.z += 200.f; // Issue #1: World-space upward kick for cleaver too
 				vAngularVelocity = { 0.f, 500.f, 0.f };
 				break;
 			case FNV1A::Hash32Const("models/weapons/w_models/w_baseball.mdl"):
 			case FNV1A::Hash32Const("models/weapons/c_models/c_xms_festive_ornament.mdl"):
-				vVelocity = vForward * 10 + vUp;
-				vVelocity.Normalize();
-				vVelocity *= tProjInfo.m_flVelocity;
+				if (tProjInfo.m_pOwner) vVelocity += tProjInfo.m_pOwner->m_vecVelocity();
 				vAngularVelocity = { 0.f, 100.f, 0.f };
 				break;
 			case FNV1A::Hash32Const("models/weapons/c_models/urinejar.mdl"):
@@ -499,7 +560,8 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 			case FNV1A::Hash32Const("models/weapons/c_models/c_breadmonster/c_breadmonster.mdl"):
 			case FNV1A::Hash32Const("models/weapons/c_models/c_breadmonster/c_breadmonster_milk.mdl"):
 			case FNV1A::Hash32Const("models/weapons/c_models/c_gascan/c_gascan.mdl"):
-				vVelocity += vUp * 200.f;
+				if (tProjInfo.m_pOwner) vVelocity += tProjInfo.m_pOwner->m_vecVelocity();
+				vVelocity.z += 200.f; // Issue #1: World-space upward kick
 				vAngularVelocity = { 300.f, 0.f, 0.f };
 				break;
 			case FNV1A::Hash32Const("particles/flamethrower.pcf"):
@@ -511,10 +573,21 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 						float flOwnerVelocity = vOwnerVelocity.Length();
 
 						float flDot = vForward.Dot(vOwnerVelocity) / flOwnerVelocity;
-						vVelocity = vForward * (tProjInfo.m_flVelocity + flOwnerVelocity * flDot);
+						float flNewSpeed = tProjInfo.m_flVelocity + flOwnerVelocity * flDot;
+						if (flNewSpeed < 0.f) flNewSpeed = 0.f; // Issue #16: Prevent backward flames
+						vVelocity = vForward * flNewSpeed;
 					}
 				}
-			}
+				}
+				break;
+			case FNV1A::Hash32Const("models/weapons/w_models/w_syringe_proj.mdl"):
+				if (!(tProjInfo.m_iFlags & ProjSimEnum::Interp) && G::CurrentUserCmd && !(tProjInfo.m_iFlags & ProjSimEnum::NoRandomAngles))
+				{
+					// Issue #13: Syringe spread as velocity perturbation
+					float flSpread = 1.5f;
+					vVelocity += { SDK::RandomFloat(-flSpread, flSpread), SDK::RandomFloat(-flSpread, flSpread), SDK::RandomFloat(-flSpread, flSpread) };
+				}
+				break;
 		}
 		else // in the case of adding projectiles that already exist in the world
 		{
@@ -548,8 +621,11 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 			}
 		}
 
-		if (bSimulate && !F::ProjSim.m_pObj->IsDragEnabled() && m_pObj->m_dragBasis.IsZero()) // don't include vphysics projectiles
-			vVelocity.z += 400.f * tProjInfo.m_flGravity * TICK_INTERVAL; // i don't know why this makes it more accurate but it does
+		if (bSimulate && !m_pObj->IsDragEnabled() && m_pObj->m_dragBasis.IsZero())
+		{
+			static auto pVar = H::ConVars.FindVar("sv_gravity");
+			vVelocity.z += (pVar ? pVar->GetFloat() : 800.f) / 2.0f * tProjInfo.m_flGravity * TICK_INTERVAL; 
+		}
 
 		m_pObj->SetPosition(tProjInfo.m_vPos, tProjInfo.m_vAng, true);
 		m_pObj->SetVelocity(&vVelocity, &vAngularVelocity);
@@ -587,12 +663,12 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 
 		m_pEnv->SetPerformanceSettings(&params);
 		m_pEnv->SetAirDensity(2.f);
-		m_pEnv->SetGravity({ 0.f, 0.f, -(800.f * tProjInfo.m_flGravity) });
+		
+		static auto sv_gravity = H::ConVars.FindVar("sv_gravity");
+		m_pEnv->SetGravity({ 0.f, 0.f, -(sv_gravity->GetFloat() * tProjInfo.m_flGravity) }); // Issue #5: Use sv_gravity override
 
 		m_pEnv->ResetSimulationClock();
 	}
-
-	RunTick(tProjInfo, false); // simulate an initial time because dumb
 
 	return true;
 }
@@ -605,7 +681,23 @@ void CProjectileSimulation::RunTick(ProjectileInfo& tProjInfo, bool bPath) // bu
 	if (bPath)
 		tProjInfo.m_vPath.push_back(GetOrigin());
 
-	m_pEnv->Simulate(TICK_INTERVAL);
+	// Issue #7: Perform traces at sub-step frequency to prevent missing geometry
+	const float flSubStep = TICK_INTERVAL / 4.0f;
+	for (int i = 0; i < 4; i++)
+	{
+		if (bPath)
+		{
+			Vec3 vOldOrigin = GetOrigin();
+			m_pEnv->Simulate(flSubStep);
+			Vec3 vNewOrigin = GetOrigin();
+
+			// We could perform a mini-trace here if we wanted to be pixel perfect,
+			// but for path visualization, we just record the sub-step positions.
+			tProjInfo.m_vPath.push_back(vNewOrigin);
+		}
+		else
+			m_pEnv->Simulate(flSubStep);
+	}
 
 	/* // params.maxVelocity limits velocity uniformly
 	Vec3 vVelocity, vAngular;

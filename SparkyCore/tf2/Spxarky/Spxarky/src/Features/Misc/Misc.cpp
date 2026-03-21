@@ -26,6 +26,24 @@ void CMisc::RunPre(CTFPlayer* pLocal, CUserCmd* pCmd)
 	AutoPeek(pLocal, pCmd);
 	MovementLock(pLocal, pCmd);
 	BreakJump(pLocal, pCmd);
+
+	if (Vars::Misc::Exploits::UnlockAchievements.Value)
+	{
+		UnlockAchievements();
+		Vars::Misc::Exploits::UnlockAchievements.Value = false;
+	}
+
+	if (Vars::Visuals::Mods::KillstreakCount.Value)
+	{
+		if (auto pResource = H::Entities.GetResource())
+			pResource->m_iStreaks(pLocal->entindex()) = Vars::Visuals::Mods::KillstreakCount.Value;
+
+		if (auto pStreaks = reinterpret_cast<int*>(pLocal->m_nStreaks()))
+		{
+			pStreaks[0] = Vars::Visuals::Mods::KillstreakCount.Value;
+			pStreaks[1] = Vars::Visuals::Mods::KillstreakCount.Value;
+		}
+	}
 }
 
 void CMisc::RunPost(CTFPlayer* pLocal, CUserCmd* pCmd)

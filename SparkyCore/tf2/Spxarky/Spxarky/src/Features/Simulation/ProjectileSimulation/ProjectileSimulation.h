@@ -11,7 +11,7 @@ Enum(ProjSim,
 	MaxSpeed = 1 << 5 // default projectile speeds to their maximum
 )
 
-#define GRENADE_CHECK_INTERVAL 0.195f
+#define GRENADE_CHECK_INTERVAL 0.2f // exactly 3 ticks at 66-tick
 
 struct ProjectileInfo
 {
@@ -25,6 +25,7 @@ struct ProjectileInfo
 
 	float m_flVelocity = 0.f;
 	float m_flGravity = 0.f;
+	float m_flMass = 1.0f;
 	float m_flLifetime = 60.f;
 
 	std::vector<Vec3> m_vPath = {};
@@ -150,14 +151,10 @@ public:
 		case ETFClassID::CTFProjectile_HealingBolt:
 		case ETFClassID::CTFProjectile_Flare:
 			if (!pProjectile->As<CTFBaseRocket>()->m_iDeflected())
-				return {
-					pProjectile->As<CTFBaseRocket>()->m_vInitialVelocity().x,
-					pProjectile->As<CTFBaseRocket>()->m_vInitialVelocity().y,
-					pProjectile->GetAbsVelocity().z
-				};
+				return pProjectile->m_vecVelocity();
 			break;
 		}
-		return pProjectile->GetAbsVelocity();
+		return pProjectile->m_vecVelocity();
 	}
 	inline float GetGravity(CBaseEntity* pProjectile, CTFWeaponBase* pWeapon = nullptr)
 	{
@@ -200,7 +197,7 @@ public:
 			break;
 		case ETFClassID::CTFProjectile_Arrow:
 			flReturn = pProjectile->As<CTFProjectile_Arrow>()->CanHeadshot()
-				? Math::RemapVal(pProjectile->As<CTFProjectile_Arrow>()->m_vInitialVelocity().Length(), 1800.f, 2600.f, 0.5f, 0.1f) * flGravity
+				? Math::RemapVal(pProjectile->As<CTFProjectile_Arrow>()->m_vInitialVelocity().Length(), 1800.f, 2600.f, 0.5f, 0.1f, false) * flGravity
 				: 0.2f * flGravity;
 			break;
 		}
