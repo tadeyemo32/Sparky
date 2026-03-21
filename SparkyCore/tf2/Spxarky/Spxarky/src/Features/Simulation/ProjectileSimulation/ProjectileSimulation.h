@@ -151,10 +151,10 @@ public:
 		case ETFClassID::CTFProjectile_HealingBolt:
 		case ETFClassID::CTFProjectile_Flare:
 			if (!pProjectile->As<CTFBaseRocket>()->m_iDeflected())
-				return pProjectile->m_vecVelocity();
+				return pProjectile->GetAbsVelocity();
 			break;
 		}
-		return pProjectile->m_vecVelocity();
+		return pProjectile->GetAbsVelocity();
 	}
 	inline float GetGravity(CBaseEntity* pProjectile, CTFWeaponBase* pWeapon = nullptr)
 	{

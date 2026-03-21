@@ -529,7 +529,7 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 			case FNV1A::Hash32Const("models/weapons/w_models/w_stickybomb.mdl"):
 			case FNV1A::Hash32Const("models/weapons/w_models/w_stickybomb2.mdl"):
 			case FNV1A::Hash32Const("models/weapons/w_models/w_cannonball.mdl"):
-				if (tProjInfo.m_pOwner) vVelocity += tProjInfo.m_pOwner->m_vecVelocity();
+				if (tProjInfo.m_pOwner) vVelocity += tProjInfo.m_pOwner->GetAbsVelocity();
 				vVelocity.z += 200.f; // Issue #1: World-space upward kick
 				if (!(tProjInfo.m_iFlags & ProjSimEnum::Interp) && G::CurrentUserCmd)
 				{
@@ -546,13 +546,13 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 				vAngularVelocity = { 600.f, -1200.f, 0.f };
 				break;
 			case FNV1A::Hash32Const("models/workshop_partner/weapons/c_models/c_sd_cleaver/c_sd_cleaver.mdl"):
-				if (tProjInfo.m_pOwner) vVelocity += tProjInfo.m_pOwner->m_vecVelocity();
+				if (tProjInfo.m_pOwner) vVelocity += tProjInfo.m_pOwner->GetAbsVelocity();
 				vVelocity.z += 200.f; // Issue #1: World-space upward kick for cleaver too
 				vAngularVelocity = { 0.f, 500.f, 0.f };
 				break;
 			case FNV1A::Hash32Const("models/weapons/w_models/w_baseball.mdl"):
 			case FNV1A::Hash32Const("models/weapons/c_models/c_xms_festive_ornament.mdl"):
-				if (tProjInfo.m_pOwner) vVelocity += tProjInfo.m_pOwner->m_vecVelocity();
+				if (tProjInfo.m_pOwner) vVelocity += tProjInfo.m_pOwner->GetAbsVelocity();
 				vAngularVelocity = { 0.f, 100.f, 0.f };
 				break;
 			case FNV1A::Hash32Const("models/weapons/c_models/urinejar.mdl"):
@@ -560,14 +560,14 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 			case FNV1A::Hash32Const("models/weapons/c_models/c_breadmonster/c_breadmonster.mdl"):
 			case FNV1A::Hash32Const("models/weapons/c_models/c_breadmonster/c_breadmonster_milk.mdl"):
 			case FNV1A::Hash32Const("models/weapons/c_models/c_gascan/c_gascan.mdl"):
-				if (tProjInfo.m_pOwner) vVelocity += tProjInfo.m_pOwner->m_vecVelocity();
+				if (tProjInfo.m_pOwner) vVelocity += tProjInfo.m_pOwner->GetAbsVelocity();
 				vVelocity.z += 200.f; // Issue #1: World-space upward kick
 				vAngularVelocity = { 300.f, 0.f, 0.f };
 				break;
 			case FNV1A::Hash32Const("particles/flamethrower.pcf"):
 				if (bSimulate && tProjInfo.m_pOwner)
 				{
-					Vec3 vOwnerVelocity = tProjInfo.m_pOwner->m_vecVelocity();
+					Vec3 vOwnerVelocity = tProjInfo.m_pOwner->GetAbsVelocity();
 					if (!vOwnerVelocity.IsZero())
 					{
 						float flOwnerVelocity = vOwnerVelocity.Length();

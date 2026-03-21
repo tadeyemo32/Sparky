@@ -1514,20 +1514,12 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 		if (iSplash)
 		{
 			Solution_t tSolution; CalculateAngle(m_tInfo.m_vLocalEye, tTarget.m_vPos, i, tSolution, false);
-				// Monte Carlo Scoring: How many vignettes does this splash/angle hit?
-				int iMCScore = 0;
-				for (auto& vignette : vVignettes) {
-					Vec3 vVignettePos = tTarget.m_vPos + vignette.vVelOffset * TICKS_TO_TIME(i);
-					if (vVignettePos.DistTo(tTarget.m_vPos) < (m_tInfo.m_flRadius > 0 ? m_tInfo.m_flRadius : 24.f))
-						iMCScore++;
-				}
-
-				if (flTimeTo < m_tInfo.m_flBoundingTime)
-				{
-					bDirectBreaks = flTimeTo < -m_tInfo.m_flBoundingTime && (!m_tInfo.m_iArmTime || m_tInfo.m_iArmTime < i);
-					if (!bDirectBreaks)
-						vSplashHistory.emplace_back(History_t(tTarget.m_vPos, i, iMCScore), fabsf(flTimeTo));
-				}
+			const float flTimeTo = tSolution.m_flTime - TICKS_TO_TIME(i);
+			if (flTimeTo < m_tInfo.m_flBoundingTime)
+			{
+				bDirectBreaks = flTimeTo < -m_tInfo.m_flBoundingTime && (!m_tInfo.m_iArmTime || m_tInfo.m_iArmTime < i);
+				if (!bDirectBreaks)
+					vSplashHistory.emplace_back(History_t(tTarget.m_vPos, i), fabsf(flTimeTo));
 			}
 		}
 

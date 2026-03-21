@@ -9,13 +9,16 @@ jobs:
     - uses: actions/checkout@v4
 
     - name: Configure Tests
-      run: cmake -S test -B test/build
+      working-directory: test
+      run: cmake -B build -S .
 
     - name: Build Tests
-      run: cmake --build test/build --config Debug
+      working-directory: test
+      run: cmake --build build --config Release
 
     - name: Run Tests
-      run: ctest --test-dir test/build -C Debug --output-on-failure
+      working-directory: test
+      run: ctest --test-dir build -C Release --output-on-failure
 
   build:
     needs: test
@@ -33,9 +36,11 @@ jobs:
       uses: microsoft/setup-msbuild@v2
 
     - name: Restore NuGet packages
+      working-directory: .
       run: nuget restore Spxarky.sln
 
     - name: Build
+      working-directory: .
       run: msbuild Spxarky.sln /p:Platform=${{ matrix.platform }} /p:Configuration=${{ matrix.configuration }}
     
     - uses: actions/upload-artifact@v4
