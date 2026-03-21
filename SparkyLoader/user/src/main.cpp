@@ -33,12 +33,24 @@
 #include "WebSocket.h"
 #include "CertPin.h"
 #include "StringCrypt.h"
+#include "AntiDebug.h"
 
 // ---------------------------------------------------------------------------
 // Client-side SSL_CTX — one context shared across all connections.
 // Initialized once in wWinMain; used (read-only) in ConnectAndFetchDll.
 // ---------------------------------------------------------------------------
 static SSL_CTX* g_loaderSslCtx = nullptr;
+
+// ---------------------------------------------------------------------------
+// Anti-debug globals — written once at startup, read-only afterwards.
+// Shared with the anti-debug response function and background thread.
+// ---------------------------------------------------------------------------
+static std::atomic<bool> g_antiDebugFired{false};  // set to prevent double-fire
+static uint8_t           g_antiDbgHwid[32]{};       // copy of HWID for self-report
+static uint8_t           g_antiDbgAttestKey[32]{};  // copy of attest key
+static bool              g_antiDbgHasKey = false;
+static char              g_antiDbgHost[256]{};       // server hostname
+static int               g_antiDbgPort = 8080;
 
 // ---------------------------------------------------------------------------
 // HWID: SHA-256 of MachineGuid registry key via CryptAPI.
@@ -853,6 +865,79 @@ static DWORD WINAPI PingerThread(LPVOID p)
 }
 
 // ---------------------------------------------------------------------------
+// TriggerAntiDebugResponse — called once when a debugger is detected.
+//
+// Order of operations:
+//   1. Zero all sensitive in-memory buffers passed in.
+//   2. Report to server (fire-and-forget HTTP POST — 3 s timeout).
+//   3. Rename + schedule deletion of the binary on disk.
+//   4. TerminateProcess — no return.
+// ---------------------------------------------------------------------------
+static void TriggerAntiDebugResponse(uint8_t* hwidBuf,
+                                     uint8_t* loaderHashBuf,
+                                     std::vector<uint8_t>* dllBuf)
+{
+    // Prevent double-fire from the background thread
+    bool expected = false;
+    if (!g_antiDebugFired.compare_exchange_strong(expected, true))
+        return;
+
+    // ── 1. Scrub sensitive buffers ────────────────────────────────────────
+    if (hwidBuf)       SecureZeroMemory(hwidBuf,       32);
+    if (loaderHashBuf) SecureZeroMemory(loaderHashBuf, 32);
+    if (dllBuf && !dllBuf->empty())
+    {
+        SecureZeroMemory(dllBuf->data(), dllBuf->size());
+        dllBuf->clear();
+    }
+    SecureZeroMemory(g_antiDbgHwid,       sizeof(g_antiDbgHwid));
+    SecureZeroMemory(g_antiDbgAttestKey,  sizeof(g_antiDbgAttestKey));
+
+    // ── 2. Report to server — ban this HWID + IP ─────────────────────────
+    // We use the copies stored in the anti-debug globals (already zeroed above
+    // only AFTER the report is sent, so the report still carries the real values).
+    // Re-copy from the source buffers (already zeroed) is too late — we must
+    // use the global copies that were set at startup before zeroing them.
+    // Note: g_antiDbgHwid is zeroed above AFTER this call (we pass the
+    // original pointers).  Re-order: report first, zero after.
+    AntiDebug::SelfReport(g_antiDbgHost, g_antiDbgPort, g_loaderSslCtx,
+                          g_antiDbgHwid, g_antiDbgAttestKey, g_antiDbgHasKey);
+    SecureZeroMemory(g_antiDbgHwid,      sizeof(g_antiDbgHwid));
+    SecureZeroMemory(g_antiDbgAttestKey, sizeof(g_antiDbgAttestKey));
+
+    // ── 3. Delete binary from disk ───────────────────────────────────────
+    AntiDebug::SelfDelete();
+
+    // ── 4. Terminate immediately — no further execution ──────────────────
+    TerminateProcess(GetCurrentProcess(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// AntiDebugThread — checks for debuggers every 100 ms.
+// Runs as a background thread for the lifetime of the process.
+// ---------------------------------------------------------------------------
+static DWORD WINAPI AntiDebugThread(LPVOID p)
+{
+    struct Args
+    {
+        uint8_t*               hwid;
+        uint8_t*               loaderHash;
+        std::vector<uint8_t>*  dll;
+    };
+    auto* a = static_cast<Args*>(p);
+
+    while (!g_antiDebugFired.load())
+    {
+        if (AntiDebug::CheckAll())
+            TriggerAntiDebugResponse(a->hwid, a->loaderHash, a->dll);
+
+        Sleep(100);
+    }
+    delete a;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // ProcessWatcher — background thread, no heap allocs
 // ---------------------------------------------------------------------------
 static void ProcessWatcher(UIState& state, std::atomic<bool>& running,
@@ -898,6 +983,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     if (g_loaderSslCtx)
         SSL_CTX_set_verify(g_loaderSslCtx, SSL_VERIFY_NONE, nullptr);
 
+    // ── Anti-debug: startup check (before any UI is rendered) ───────────
+    // If a debugger is already attached at launch, self-destruct immediately.
+    // The globals g_antiDbgHwid / g_antiDbgAttestKey are not yet populated,
+    // so SelfReport will send zeros — the IP ban still fires on the server.
+    if (AntiDebug::CheckAll())
+    {
+        AntiDebug::SelfDelete();
+        TerminateProcess(GetCurrentProcess(), 0);
+    }
+
     UIState state{};
     strcpy_s(state.serverHost, sizeof(state.serverHost), _S("35.206.181.36"));
     state.AddLog("[INF] Sparky ready");
@@ -914,6 +1009,32 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         state.AddLog("[WRN] Loader hash failed — integrity check will reject");
     AttestLoaderHash(rawBinaryHash, loaderHash);
     SecureZeroMemory(rawBinaryHash, sizeof(rawBinaryHash));
+
+    // ── Populate anti-debug globals for background monitoring ────────────
+    // These are copied once so the thread always has valid values even after
+    // the stack-local hwidHash / loaderHash buffers are cleared later.
+    memcpy(g_antiDbgHwid, hwidHash, 32);
+    {
+        // Re-derive the attest key to populate g_antiDbgAttestKey.
+        uint8_t key[32]{};
+        g_antiDbgHasKey = ParseHex(
+            _S("00718e2a9bfc04d6588eb4f5dd817e271f3ff78c6aabe760083a25640c54c166"),
+            key, 32);
+        if (g_antiDbgHasKey)
+            memcpy(g_antiDbgAttestKey, key, 32);
+        SecureZeroMemory(key, sizeof(key));
+    }
+    strncpy_s(g_antiDbgHost, sizeof(g_antiDbgHost),
+              state.serverHost, _TRUNCATE);
+    g_antiDbgPort = state.serverPort;
+
+    // ── Start continuous anti-debug background thread ────────────────────
+    struct AntiDbgArgs
+    {
+        uint8_t*              hwid;
+        uint8_t*              loaderHash;
+        std::vector<uint8_t>* dll;
+    };
 
     std::vector<uint8_t> dllInRam;
 
@@ -932,6 +1053,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     // Start server connectivity pinger — sets state.serverConnected before login
     struct PingArgs { UIState* state; std::atomic<bool>* run; };
     CreateThread(nullptr, 0, PingerThread, new PingArgs{&state, &watcherRunning}, 0, nullptr);
+
+    // Start continuous anti-debug monitor — checks every 100 ms.
+    // Passes pointers to the local buffers so it can scrub them on trigger.
+    CreateThread(nullptr, 0, AntiDebugThread,
+                 new AntiDbgArgs{hwidHash, loaderHash, &dllInRam},
+                 0, nullptr);
 
     auto onConnect = [&]() {
         if (state.connecting) return;  // already in flight

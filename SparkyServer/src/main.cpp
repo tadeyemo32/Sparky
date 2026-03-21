@@ -142,6 +142,12 @@ static bool    g_attestKeySet = false;
 // Set SPARKY_PROXY_SECRET to a 32+ byte random hex string on both sides.
 static SecureString g_proxySecret;
 
+// Owner account identity — loaded once from env at startup, cleared from the
+// environment immediately, and kept in SecureString so they are never visible
+// as plaintext in /proc/<pid>/environ after initialisation.
+static SecureString g_ownerUser;
+static SecureString g_ownerEmail;
+
 // Per-HWID concurrent session guard.
 // Prevents one user from opening multiple simultaneous sessions.
 // Protected by g_hwidMu (separate from g_dbMu to avoid deadlocks).
@@ -152,6 +158,11 @@ static std::mutex                       g_hwidMu;
 // within rate-limit windows.  Max 20 simultaneous sockets per IP.
 static std::unordered_map<std::string, int> g_connCount;
 static std::mutex                            g_connMu;
+
+// Global concurrent connection counter — hard cap across all IPs.
+// Prevents thread-pool exhaustion under distributed connection floods.
+static std::atomic<int> g_totalConns{0};
+static constexpr int    MAX_TOTAL_CONNS = 1000;
 
 #ifdef _WIN32
 static BOOL WINAPI CtrlHandler(DWORD)
@@ -947,12 +958,13 @@ static void HandleWebApi(ClientSession& s,
             { SendApiError(s, 409, "Email already registered"); return; }
         }
 
-        // Determine role
+        // Determine role — compare against in-memory SecureString (env already cleared).
         std::string role = "user";
         {
-            const char* ownerEnv = std::getenv("SPARKY_WEB_OWNER_USERNAME");
-            if (ownerEnv && std::string(ownerEnv) == username)
+            std::string _ou = g_ownerUser.Get();
+            if (!_ou.empty() && _ou == username)
                 role = "owner";
+            OPENSSL_cleanse(_ou.data(), _ou.size());
         }
 
         WebAccountRow acct{};
@@ -1181,6 +1193,82 @@ static void HandleWebApi(ClientSession& s,
                                + JStr("licenseKey", "") + ","
                                + JStr("expiresAt", "0") + "}";
         SendJson(s, 200, resp);
+        return;
+    }
+
+    // ── POST /api/tamper-report ───────────────────────────────────────────
+    // Called by a loader that detected a debugger. No session token required —
+    // the HMAC-SHA256(hwid, attest_key) is the proof that this is a genuine
+    // loader binary.  The server bans the HWID (peppered) and the caller's IP.
+    if (method == "POST" && path == "/api/tamper-report")
+    {
+        std::string hwidHex = ParseJsonStr(body, "hwid");
+        std::string hmacHex = ParseJsonStr(body, "hmac");
+
+        if (hwidHex.size() != 64 || hmacHex.size() != 64)
+        { SendApiError(s, 400, "hwid and hmac must each be 64 hex chars"); return; }
+
+        uint8_t hwidBytes[32]{}, provided[32]{};
+        if (!ParseHex(hwidHex, hwidBytes, 32) || !ParseHex(hmacHex, provided, 32))
+        { SendApiError(s, 400, "hex decode failed"); return; }
+
+        // Verify HMAC-SHA256(hwid_bytes, attest_key) if the key is loaded.
+        // Reject requests that fail verification — prevents abuse of this
+        // endpoint to mass-ban other users.
+        if (g_attestKeySet)
+        {
+            uint8_t expected[32]{};
+            unsigned elen = 32;
+            HMAC(EVP_sha256(), g_attestKey, 32,
+                 hwidBytes, 32, expected, &elen);
+
+            bool hmacOk = (CRYPTO_memcmp(provided, expected, 32) == 0);
+            OPENSSL_cleanse(expected, sizeof(expected));
+            OPENSSL_cleanse(provided, sizeof(provided));
+
+            if (!hmacOk)
+            { SendApiError(s, 403, "HMAC verification failed"); return; }
+        }
+
+        // Apply pepper to get the DB key: SHA-256(hwidBytes || pepper).
+        uint8_t peppered[32]{};
+        {
+            EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+            EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
+            EVP_DigestUpdate(ctx, hwidBytes, 32);
+            if (g_pepperSet)
+                EVP_DigestUpdate(ctx, g_hwidPepper, 32);
+            unsigned dl = 32;
+            EVP_DigestFinal_ex(ctx, peppered, &dl);
+            EVP_MD_CTX_free(ctx);
+        }
+        OPENSSL_cleanse(hwidBytes, sizeof(hwidBytes));
+
+        // Convert peppered bytes to hex for DB lookup / ban.
+        char pepperedHex[65]{};
+        static const char kHex[] = "0123456789abcdef";
+        for (int i = 0; i < 32; ++i)
+        {
+            pepperedHex[i * 2]     = kHex[peppered[i] >> 4];
+            pepperedHex[i * 2 + 1] = kHex[peppered[i] & 0xF];
+        }
+        OPENSSL_cleanse(peppered, sizeof(peppered));
+
+        // Ban HWID + IP in both the DB (persistent) and the in-memory
+        // rate limiters (immediate effect on this running instance).
+        {
+            std::lock_guard lk(g_dbMu);
+            g_db.BanUser(std::string(pepperedHex), "anti-debug triggered");
+            g_db.BanIp(s.ip, "anti-debug triggered");
+        }
+        g_rl_loader.HardBanIp(s.ip);
+        g_rl_auth.HardBanIp(s.ip);
+        g_rl_api.HardBanIp(s.ip);
+
+        std::cout << std::format(
+            "[S] Tamper-report from {} — HWID+IP banned\n", s.ip);
+
+        SendJson(s, 200, "{}");
         return;
     }
 
@@ -1552,7 +1640,7 @@ static void HandleClient(int csock, SSL* ssl, std::string clientIp)
 #else
         ::close(csock);
 #endif
-        // Decrement per-IP connection counter
+        // Decrement per-IP and global connection counters.
         if (!clientIp.empty())
         {
             std::lock_guard lk(g_connMu);
@@ -1562,6 +1650,7 @@ static void HandleClient(int csock, SSL* ssl, std::string clientIp)
                 if (--(it->second) == 0) g_connCount.erase(it);
             }
         }
+        g_totalConns.fetch_sub(1, std::memory_order_relaxed);
     };
 
     // ---- 1. Receive Hello (or HTTP Health Check) ----
@@ -2720,6 +2809,18 @@ int main(int argc, char** argv)
         ClearEnv(XS("RESEND_FROM_EMAIL"));
     }
 
+    // ---- Load owner account identity (obfuscated — cleared from env immediately) ----
+    if (const char* ou = std::getenv(XS("SPARKY_WEB_OWNER_USERNAME")))
+    {
+        g_ownerUser.Set(ou);
+        ClearEnv(XS("SPARKY_WEB_OWNER_USERNAME"));
+    }
+    if (const char* oe = std::getenv(XS("SPARKY_WEB_OWNER_EMAIL")))
+    {
+        g_ownerEmail.Set(oe);
+        ClearEnv(XS("SPARKY_WEB_OWNER_EMAIL"));
+    }
+
     // ---- GCP Cloud Run: honour $PORT env var (default 8080 on Cloud Run) ----
     // If PORT is set (e.g. by Cloud Run), listen on that port instead of 7777.
     if (const char* portEnv = std::getenv(XS("PORT")))
@@ -2797,6 +2898,22 @@ int main(int argc, char** argv)
         }
         if (!ipBans.empty())
             std::cout << "[S] Restored " << ipBans.size() << " persistent IP ban(s)\n";
+
+        // Seed / enforce owner account on every startup.
+        // Credentials come from SecureStrings (already loaded + env-cleared above).
+        {
+            std::string _ou = g_ownerUser.Get();
+            std::string _oe = g_ownerEmail.Get();
+            if (!_ou.empty() && !_oe.empty())
+            {
+                if (g_db.EnsureOwnerAccount(_ou, _oe))
+                    std::cout << "[S] Owner account ensured: " << _ou << "\n";
+                else
+                    std::cerr << "[S] WARNING: could not seed owner account\n";
+            }
+            OPENSSL_cleanse(_ou.data(), _ou.size());
+            OPENSSL_cleanse(_oe.data(), _oe.size());
+        }
     }
 
     LicenseManager lm(g_db);
@@ -2918,6 +3035,20 @@ int main(int argc, char** argv)
 
         char ip[INET_ADDRSTRLEN]{}; inet_ntop(AF_INET, &ca.sin_addr, ip, sizeof(ip));
 
+        // Set a 10-second OS-level receive timeout immediately after accept.
+        // This kills connections that open TCP but then send nothing (pre-data
+        // slowloris / zero-window probing / SYN-flood variants from idle sockets).
+        // The HTTP handler tightens this to 5 s once headers start arriving.
+        {
+#ifdef _WIN32
+            DWORD rcvTo = 10000;
+            setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, (char*)&rcvTo, sizeof(rcvTo));
+#else
+            struct timeval rcvTo{10, 0};
+            setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, &rcvTo, sizeof(rcvTo));
+#endif
+        }
+
         // Skip rate-limiting for GCP internal IPs (169.254.x.x link-local) used
         // by Cloud Run GFE health probes — banning these breaks all HTTP traffic.
         const bool isGcpInternal = (strncmp(ip, "169.254.", 8) == 0);
@@ -2938,11 +3069,23 @@ int main(int argc, char** argv)
             continue;
         }
 
+        // Global concurrent connection cap — stop thread exhaustion under DDoS floods.
+        if (g_totalConns.load(std::memory_order_relaxed) >= MAX_TOTAL_CONNS)
+        {
+#ifdef _WIN32
+            closesocket(cs);
+#else
+            ::close(cs);
+#endif
+            continue;
+        }
+
         // Per-IP concurrent connection cap — reject if already at 20 open sockets.
         {
             std::lock_guard lk(g_connMu);
             if (g_connCount[ip] >= 20)
             {
+                std::cout << std::format("[S] Per-IP conn cap hit for {}\n", ip);
 #ifdef _WIN32
                 closesocket(cs);
 #else
@@ -2952,6 +3095,7 @@ int main(int argc, char** argv)
             }
             g_connCount[ip]++;
         }
+        g_totalConns.fetch_add(1, std::memory_order_relaxed);
 
         // Set TCP options:
         //   TCP_NODELAY — disable Nagle; heartbeat acks are tiny and latency-sensitive.

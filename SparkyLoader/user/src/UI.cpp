@@ -199,6 +199,37 @@ static float PulseValue(float speed = 2.f)
     return 0.5f + 0.5f * std::sinf((float)ImGui::GetTime() * speed);
 }
 
+// ---------------------------------------------------------------------------
+// DrawSparkyStar — vector polygon matching the SVG path from the website:
+//   M8 0 L10 6 H16 L11 9.5 L13 16 L8 12 L3 16 L5 9.5 L0 6 H6 Z
+// Rendered as a triangle fan from the star's centroid so it works on any
+// ImGui build without needing AddConcavePolyFilled (added in 1.90+).
+// origin = top-left corner of the star's 16×16 bounding box.
+// size   = bounding box side length in pixels (e.g. 18.f for the masthead).
+// ---------------------------------------------------------------------------
+static void DrawSparkyStar(ImDrawList* dl, ImVec2 origin, float size, ImU32 color)
+{
+    const float k = size / 16.f;
+    // 10 polygon vertices in order (from the SVG path)
+    const ImVec2 pts[10] = {
+        { origin.x +  8.f * k, origin.y +  0.f  * k },
+        { origin.x + 10.f * k, origin.y +  6.f  * k },
+        { origin.x + 16.f * k, origin.y +  6.f  * k },
+        { origin.x + 11.f * k, origin.y +  9.5f * k },
+        { origin.x + 13.f * k, origin.y + 16.f  * k },
+        { origin.x +  8.f * k, origin.y + 12.f  * k },
+        { origin.x +  3.f * k, origin.y + 16.f  * k },
+        { origin.x +  5.f * k, origin.y +  9.5f * k },
+        { origin.x +  0.f * k, origin.y +  6.f  * k },
+        { origin.x +  6.f * k, origin.y +  6.f  * k },
+    };
+    // Centroid of the star — used as the hub of the triangle fan.
+    // The shape is star-convex w.r.t. (8,8) so all triangles stay interior.
+    const ImVec2 center = { origin.x + 8.f * k, origin.y + 8.f * k };
+    for (int i = 0; i < 10; ++i)
+        dl->AddTriangleFilled(center, pts[i], pts[(i + 1) % 10], color);
+}
+
 // Status dot + label on one line
 static void StatusRow(const char* label, bool active, bool pending,
                       const char* activeText, const char* pendingText, const char* offText)
@@ -286,12 +317,29 @@ static void DrawMasthead(bool showStatusDot, bool connected, bool pending)
 
     ImGui::Spacing();
 
-    // Logo — white, no emoji, clean typographic mark
-    ImGui::PushStyleColor(ImGuiCol_Text, Col::TextMain);
-    ImGui::SetWindowFontScale(1.6f);
-    ImGui::Text("  \xe2\x98\x85 SPARKY");
-    ImGui::SetWindowFontScale(1.f);
-    ImGui::PopStyleColor();
+    // Logo — vector star polygon (exact match to website SVG) + "SPARKY" wordmark
+    {
+        ImGui::SetWindowFontScale(1.6f);
+        const float lineH   = ImGui::GetTextLineHeight();          // height at 1.6× scale
+        const float starSz  = lineH * 0.85f;                       // star ~85% of line height
+        const float padL    = ImGui::GetStyle().WindowPadding.x;   // left indent
+
+        // Reserve horizontal space: left pad + star + 6px gap + text
+        ImGui::SetCursorPosX(padL);
+        ImVec2 starPos = ImGui::GetCursorScreenPos();
+        // Vertically center star within the line
+        starPos.y += (lineH - starSz) * 0.5f;
+
+        DrawSparkyStar(ImGui::GetWindowDrawList(), starPos,
+                       starSz, U32(Col::TextMain));
+
+        // Advance cursor past the star
+        ImGui::SetCursorPosX(padL + starSz + 6.f);
+        ImGui::PushStyleColor(ImGuiCol_Text, Col::TextMain);
+        ImGui::Text("SPARKY");
+        ImGui::PopStyleColor();
+        ImGui::SetWindowFontScale(1.f);
+    }
 
     // Version + optional status dot to the right
     {

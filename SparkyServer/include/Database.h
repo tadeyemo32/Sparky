@@ -185,6 +185,9 @@ public:
 
     // ---------- Web accounts (React site — no HWID/license required) ----------
     bool CreateWebAccount(const WebAccountRow& row);
+    // Upsert owner account: inserts with empty password_hash if new, or updates
+    // role/email/email_verified if already exists — never overwrites password_hash.
+    bool EnsureOwnerAccount(const std::string& username, const std::string& email);
     std::optional<WebAccountRow> GetWebAccount(const std::string& username) const;
     std::optional<WebAccountRow> GetWebAccountByEmail(const std::string& email) const;
     bool SetWebAccountRole(const std::string& username, const std::string& role);

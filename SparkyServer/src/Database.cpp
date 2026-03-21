@@ -888,6 +888,20 @@ bool Database::CreateWebAccount(const WebAccountRow& row)
     return created;
 }
 
+bool Database::EnsureOwnerAccount(const std::string& username, const std::string& email)
+{
+    int64_t now = (int64_t)time(nullptr);
+    auto* res = PgExecPool(
+        "INSERT INTO web_accounts(username,password_hash,role,created_at,last_login,email,email_verified)"
+        " VALUES($1,'',$2,$3,$3,$4,1)"
+        " ON CONFLICT(username) DO UPDATE"
+        "   SET role='owner', email=EXCLUDED.email, email_verified=1",
+        { username, "owner", std::to_string(now), email });
+    if (!res) return false;
+    PQclear(res);
+    return true;
+}
+
 std::optional<WebAccountRow> Database::GetWebAccount(const std::string& username) const
 {
     auto* res = PgExecPool(
