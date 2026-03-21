@@ -4,6 +4,7 @@
 #include "../Features/ImGui/Menu/Menu.h"
 #include "../Features/EnginePrediction/EnginePrediction.h"
 #include <random>
+#include <algorithm>
 
 #pragma warning (disable : 6385)
 
@@ -834,4 +835,28 @@ void SDK::GetProjectileFireSetup(CTFPlayer* pPlayer, const Vec3& vAngIn, Vec3 vO
 bool SDK::CleanScreenshot()
 {
 	return Vars::Visuals::UI::CleanScreenshots.Value && I::EngineClient->IsTakingScreenshot();
+}
+
+float SDK::GetLerpTime()
+{
+	static auto cl_interp = I::CVar->FindVar("cl_interp");
+	static auto cl_interp_ratio = I::CVar->FindVar("cl_interp_ratio");
+	static auto cl_updaterate = I::CVar->FindVar("cl_updaterate");
+	static auto sv_client_min_interp_ratio = I::CVar->FindVar("sv_client_min_interp_ratio");
+	static auto sv_client_max_interp_ratio = I::CVar->FindVar("sv_client_max_interp_ratio");
+	static auto sv_minupdaterate = I::CVar->FindVar("sv_minupdaterate");
+	static auto sv_maxupdaterate = I::CVar->FindVar("sv_maxupdaterate");
+
+	if (!cl_interp || !cl_interp_ratio || !cl_updaterate)
+		return 0.015f;
+
+	float flInterpRatio = cl_interp_ratio->GetFloat();
+	if (sv_client_min_interp_ratio && sv_client_max_interp_ratio && sv_client_min_interp_ratio->GetFloat() != -1)
+		flInterpRatio = std::clamp(flInterpRatio, sv_client_min_interp_ratio->GetFloat(), sv_client_max_interp_ratio->GetFloat());
+
+	float flUpdateRate = cl_updaterate->GetFloat();
+	if (sv_minupdaterate && sv_maxupdaterate)
+		flUpdateRate = std::clamp(flUpdateRate, sv_minupdaterate->GetFloat(), sv_maxupdaterate->GetFloat());
+
+	return std::max(cl_interp->GetFloat(), flInterpRatio / flUpdateRate);
 }

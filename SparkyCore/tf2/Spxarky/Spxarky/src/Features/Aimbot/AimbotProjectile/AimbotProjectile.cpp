@@ -2113,7 +2113,7 @@ bool CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBa
 	// Issue #1: Separate Incoming/Outgoing latency for Tick-Perfect Sync
 	float flLatencyIn = I::EngineClient->GetNetChannelInfo()->GetAvgLatency(FLOW_INCOMING);
 	float flLatencyOut = I::EngineClient->GetNetChannelInfo()->GetAvgLatency(FLOW_OUTGOING);
-	float flLerpTime = SDK::GetLerpTime(); // Server-side interpolation
+	float flLerpTime = ::SDK::GetLerpTime(); // Server-side interpolation
 	
 	m_tInfo.m_flLatency = flLatencyIn + flLatencyOut + flLerpTime;
 	m_tInfo.m_flLatencyIn = flLatencyIn;
@@ -2158,18 +2158,6 @@ bool CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBa
 	std::vector<Direct_t> vDirectHistory = {};
 	std::vector<Splash_t> vSplashHistory = {};
 
-	// Issue #2: Monte Carlo Simulation
-	// We'll simulate 5 "vignettes" of the target's future paths (straight, strafe left, strafe right, jump, crouch)
-	// and score the aim angle based on how many it hits.
-	struct PathVignette { Vec3 vVelOffset; float flGravMult; };
-	std::vector<PathVignette> vVignettes = {
-		{ {0,0,0}, 1.f },      // Straight
-		{ {400,0,0}, 1.f },    // Hypothetical strafe left
-		{ {-400,0,0}, 1.f },   // Hypothetical strafe right
-		{ {0,0,200}, 1.f },    // Hypothetical jump
-		{ {0,0,0}, 0.5f }      // Hypothetical crouch/air-strafe
-	};
-
 	for (int i = 1 - TIME_TO_TICKS(m_tInfo.m_flLatency); i <= iMaxTime; i++)
 	{
 		if (!m_tMoveStorage.m_bFailed)
@@ -2184,27 +2172,12 @@ bool CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBa
 		if (iSplash)
 		{
 			Solution_t tSolution; CalculateAngle(m_tInfo.m_vLocalEye, tTarget.m_vPos, i, tSolution, false);
-			if (tSolution.m_iCalculated != CalculatedEnum::Bad)
+			const float flTimeTo = tSolution.m_flTime - TICKS_TO_TIME(i);
+			if (flTimeTo < m_tInfo.m_flBoundingTime)
 			{
-				const float flTimeTo = tSolution.m_flTime - TICKS_TO_TIME(i);
-
-				bDirectBreaks = false;
-
-				// Monte Carlo Scoring: How many vignettes does this splash/angle hit?
-				int iMCScore = 0;
-				for (auto& vignette : vVignettes) {
-					Vec3 vVignettePos = tTarget.m_vPos + vignette.vVelOffset * TICKS_TO_TIME(i);
-					// Simple distance check as a heuristic for hit probability
-					if (vVignettePos.DistTo(tTarget.m_vPos) < (m_tInfo.m_flRadius > 0 ? m_tInfo.m_flRadius : 24.f))
-						iMCScore++;
-				}
-
-				if (flTimeTo < m_tInfo.m_flBoundingTime)
-				{
-					bDirectBreaks = flTimeTo < -m_tInfo.m_flBoundingTime;
-					if (!bDirectBreaks)
-						vSplashHistory.emplace_back(History_t(tTarget.m_vPos, i), fabsf(flTimeTo));
-				}
+				bDirectBreaks = flTimeTo < -m_tInfo.m_flBoundingTime;
+				if (!bDirectBreaks)
+					vSplashHistory.emplace_back(History_t(tTarget.m_vPos, i), fabsf(flTimeTo));
 			}
 		}
 
@@ -2218,19 +2191,18 @@ bool CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBa
 					vPoint.z = tTarget.m_vPos.z + vOffset.z;
 			}
 
-				// Monte Carlo Scoring: How many vignettes does this angle hit?
-				int iMCScore = 0;
-				for (auto& vignette : vVignettes) {
-					Vec3 vVignettePos = tTarget.m_vPos + vignette.vVelOffset * TICKS_TO_TIME(i);
-					if (vVignettePos.DistTo(tTarget.m_vPos) < (m_tInfo.m_flRadius > 0 ? m_tInfo.m_flRadius : 24.f))
-						iMCScore++;
+				Solution_t tSolution = {};
+				CalculateAngle(m_tInfo.m_vLocalEye, vPoint, i, tSolution);
+				switch (tSolution.m_iCalculated)
+				{
+				case CalculatedEnum::Good:
+					if (m_tInfo.m_iArmTime && m_tInfo.m_iArmTime > i && !m_tMoveStorage.m_MoveData.m_vecVelocity.IsZero())
+						break;
+					vDirectHistory.emplace_back(History_t(tTarget.m_vPos, i), tSolution.m_flPitch, tSolution.m_flYaw, tSolution.m_flTime, vPoint, iIndex);
+					[[fallthrough]];
+				case CalculatedEnum::Bad:
+					mDirectPoints.erase(iIndex);
 				}
-
-				vDirectHistory.emplace_back(History_t(tTarget.m_vPos, i, iMCScore), tSolution.m_flPitch, tSolution.m_flYaw, tSolution.m_flTime, vPoint, iIndex);
-				[[fallthrough]];
-			case CalculatedEnum::Bad:
-				mDirectPoints.erase(iIndex);
-			}
 		}
 		if (bDirectBreaks && mDirectPoints.empty())
 			break;

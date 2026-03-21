@@ -141,5 +141,7 @@ namespace SDK
 
 	void GetProjectileFireSetup(CTFPlayer* pPlayer, const Vec3& vAngIn, Vec3 vOffset, Vec3& vPosOut, Vec3& vAngOut, float flForward = 0.f, float flCutoff = 0.1f, bool bInterp = false, bool bAllowFlip = true);
 
+	float GetLerpTime();
+
 	bool CleanScreenshot();
 }

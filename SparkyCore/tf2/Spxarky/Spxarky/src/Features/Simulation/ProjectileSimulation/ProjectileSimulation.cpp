@@ -578,7 +578,6 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 						vVelocity = vForward * flNewSpeed;
 					}
 				}
-				}
 				break;
 			case FNV1A::Hash32Const("models/weapons/w_models/w_syringe_proj.mdl"):
 				if (!(tProjInfo.m_iFlags & ProjSimEnum::Interp) && G::CurrentUserCmd && !(tProjInfo.m_iFlags & ProjSimEnum::NoRandomAngles))
@@ -589,8 +588,9 @@ bool CProjectileSimulation::Initialize(ProjectileInfo& tProjInfo, bool bSimulate
 				}
 				break;
 		}
-		else // in the case of adding projectiles that already exist in the world
-		{
+	}
+	else // in the case of adding projectiles that already exist in the world
+	{
 			Vec3 vForward, vRight, vUp; Math::AngleVectors(tProjInfo.m_vAng, &vForward, &vRight, &vUp);
 			vVelocity = vForward * tProjInfo.m_flVelocity;
 
