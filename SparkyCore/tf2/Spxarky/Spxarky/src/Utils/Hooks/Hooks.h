@@ -46,7 +46,7 @@ public:
 	void Hooks::name::Init() { Hook.Create(reinterpret_cast<void*>(address), Func); } \
 	type __fastcall Hooks::name::Func(__VA_ARGS__)
 
-	#define DEBUG_RETURN()
+	#define DEBUG_RETURN(...)
 #else
 	#define MAKE_HOOK(name, address, type, ...) \
 	namespace Vars { \
