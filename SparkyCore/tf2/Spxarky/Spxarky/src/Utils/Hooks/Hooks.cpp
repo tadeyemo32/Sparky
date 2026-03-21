@@ -1,7 +1,7 @@
 #include "Hooks.h"
 
 #include "../../Core/Core.h"
-#include "../../Hooks/Direct3DDevice9.h"
+#include "../../Hooks/Rendering/Direct3DDevice9.h"
 
 CHook::CHook(const std::string& sName, void* pInitFunc)
 {

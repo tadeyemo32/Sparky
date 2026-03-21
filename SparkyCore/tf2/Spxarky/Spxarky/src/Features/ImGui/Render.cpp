@@ -1,6 +1,6 @@
 #include "Render.h"
 
-#include "../../Hooks/Direct3DDevice9.h"
+#include "../../Hooks/Rendering/Direct3DDevice9.h"
 #include <ImGui/imgui_impl_win32.h>
 #include "Fonts/MaterialDesign/MaterialIcons.h"
 #include "Fonts/MaterialDesign/IconDefinitions.h"
