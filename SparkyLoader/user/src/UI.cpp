@@ -61,34 +61,40 @@ static constexpr PresetInfo kPresets[5] = {
 // ---------------------------------------------------------------------------
 namespace Col
 {
-    static constexpr ImVec4 Bg          = {0.04f,  0.04f,  0.08f,  1.f};
-    static constexpr ImVec4 BgDeep      = {0.02f,  0.02f,  0.05f,  1.f};
-    static constexpr ImVec4 BgPanel     = {0.06f,  0.06f,  0.12f,  1.f};
-    static constexpr ImVec4 BgCard      = {0.06f,  0.07f,  0.14f,  1.f};
-    static constexpr ImVec4 BgCardSel   = {0.04f,  0.22f,  0.34f,  1.f};
-    static constexpr ImVec4 BgCardHov   = {0.08f,  0.12f,  0.24f,  1.f};
-    static constexpr ImVec4 BgInput     = {0.07f,  0.08f,  0.16f,  1.f};
+    // ── Backgrounds — #0a0a0c base, matching the website ──────────────────
+    static constexpr ImVec4 Bg          = {0.039f, 0.039f, 0.047f, 1.f};  // #0a0a0c
+    static constexpr ImVec4 BgDeep      = {0.027f, 0.027f, 0.031f, 1.f};  // #070708
+    static constexpr ImVec4 BgPanel     = {0.055f, 0.055f, 0.063f, 1.f};  // #0e0e10
+    static constexpr ImVec4 BgCard      = {0.067f, 0.067f, 0.075f, 1.f};  // #111113
+    static constexpr ImVec4 BgCardSel   = {0.098f, 0.098f, 0.110f, 1.f};  // #19191c selected
+    static constexpr ImVec4 BgCardHov   = {0.082f, 0.082f, 0.094f, 1.f};  // #151518 hover
+    static constexpr ImVec4 BgInput     = {0.055f, 0.055f, 0.063f, 1.f};  // #0e0e10
 
-    static constexpr ImVec4 Border      = {0.15f,  0.18f,  0.32f,  1.f};
-    static constexpr ImVec4 BorderDim   = {0.10f,  0.12f,  0.22f,  0.6f};
-    static constexpr ImVec4 BorderGlow  = {0.00f,  0.60f,  0.90f,  0.5f};
+    // ── Borders — white with low alpha, matching rgba(255,255,255,0.08) ───
+    static constexpr ImVec4 Border      = {1.f,    1.f,    1.f,    0.08f};
+    static constexpr ImVec4 BorderDim   = {1.f,    1.f,    1.f,    0.05f};
+    static constexpr ImVec4 BorderHi    = {1.f,    1.f,    1.f,    0.18f};
 
-    static constexpr ImVec4 Accent      = {0.00f,  0.78f,  1.00f,  1.f};
-    static constexpr ImVec4 AccentDim   = {0.00f,  0.52f,  0.70f,  1.f};
-    static constexpr ImVec4 AccentDeep  = {0.00f,  0.30f,  0.42f,  1.f};
+    // ── Accent — white, site uses #ffffff as the primary accent ───────────
+    static constexpr ImVec4 Accent      = {1.f,    1.f,    1.f,    1.f};   // #ffffff
+    static constexpr ImVec4 AccentDim   = {0.878f, 0.878f, 0.878f, 1.f};   // #e0e0e0
+    static constexpr ImVec4 AccentDeep  = {1.f,    1.f,    1.f,    0.10f}; // rgba hover layer
 
-    static constexpr ImVec4 Green       = {0.12f,  0.88f,  0.50f,  1.f};
-    static constexpr ImVec4 GreenDim    = {0.06f,  0.55f,  0.30f,  1.f};
+    // ── Status — keep semantic colours readable on dark bg ─────────────────
+    static constexpr ImVec4 Green       = {0.20f,  0.85f,  0.45f,  1.f};
+    static constexpr ImVec4 GreenDim    = {0.10f,  0.55f,  0.28f,  1.f};
     static constexpr ImVec4 Red         = {0.92f,  0.26f,  0.26f,  1.f};
     static constexpr ImVec4 Orange      = {1.00f,  0.65f,  0.12f,  1.f};
 
+    // ── Discord ────────────────────────────────────────────────────────────
     static constexpr ImVec4 Discord     = {0.35f,  0.40f,  0.95f,  1.f};
     static constexpr ImVec4 DiscordHov  = {0.45f,  0.50f,  1.00f,  1.f};
 
-    static constexpr ImVec4 TextMain    = {0.90f,  0.90f,  0.95f,  1.f};
-    static constexpr ImVec4 TextDim     = {0.45f,  0.47f,  0.62f,  1.f};
-    static constexpr ImVec4 TextLabel   = {0.56f,  0.60f,  0.78f,  1.f};
-    static constexpr ImVec4 TextDisable = {0.28f,  0.28f,  0.38f,  1.f};
+    // ── Text — #f0f0f5 primary, #888 secondary (website values) ───────────
+    static constexpr ImVec4 TextMain    = {0.941f, 0.941f, 0.961f, 1.f};  // #f0f0f5
+    static constexpr ImVec4 TextDim     = {0.533f, 0.533f, 0.533f, 1.f};  // #888888
+    static constexpr ImVec4 TextLabel   = {0.690f, 0.690f, 0.710f, 1.f};  // #b0b0b5
+    static constexpr ImVec4 TextDisable = {0.350f, 0.350f, 0.360f, 1.f};  // #595960
 }
 
 static ImU32 U32(const ImVec4& v)
@@ -130,7 +136,7 @@ static void ApplyTheme()
     ImVec4* c = s.Colors;
     c[ImGuiCol_WindowBg]             = Col::Bg;
     c[ImGuiCol_PopupBg]              = Col::BgPanel;
-    c[ImGuiCol_ChildBg]              = {0.05f, 0.05f, 0.10f, 1.f};
+    c[ImGuiCol_ChildBg]              = Col::BgPanel;
     c[ImGuiCol_Border]               = Col::Border;
     c[ImGuiCol_BorderShadow]         = {0.f, 0.f, 0.f, 0.f};
     c[ImGuiCol_TitleBg]              = Col::BgDeep;
@@ -139,28 +145,28 @@ static void ApplyTheme()
     c[ImGuiCol_Text]                 = Col::TextMain;
     c[ImGuiCol_TextDisabled]         = Col::TextDisable;
     c[ImGuiCol_FrameBg]              = Col::BgInput;
-    c[ImGuiCol_FrameBgHovered]       = {0.10f, 0.12f, 0.22f, 1.f};
-    c[ImGuiCol_FrameBgActive]        = {0.13f, 0.16f, 0.28f, 1.f};
+    c[ImGuiCol_FrameBgHovered]       = {0.082f, 0.082f, 0.094f, 1.f};
+    c[ImGuiCol_FrameBgActive]        = {0.098f, 0.098f, 0.110f, 1.f};
     c[ImGuiCol_CheckMark]            = Col::Accent;
-    c[ImGuiCol_Button]               = {0.08f, 0.10f, 0.20f, 1.f};
-    c[ImGuiCol_ButtonHovered]        = Col::AccentDeep;
-    c[ImGuiCol_ButtonActive]         = Col::AccentDim;
-    c[ImGuiCol_Header]               = {0.08f, 0.10f, 0.20f, 1.f};
-    c[ImGuiCol_HeaderHovered]        = {0.10f, 0.14f, 0.26f, 1.f};
-    c[ImGuiCol_HeaderActive]         = Col::AccentDim;
+    c[ImGuiCol_Button]               = Col::BgCard;
+    c[ImGuiCol_ButtonHovered]        = Col::BgCardHov;
+    c[ImGuiCol_ButtonActive]         = Col::BgCardSel;
+    c[ImGuiCol_Header]               = Col::BgCard;
+    c[ImGuiCol_HeaderHovered]        = Col::BgCardHov;
+    c[ImGuiCol_HeaderActive]         = Col::BgCardSel;
     c[ImGuiCol_Separator]            = Col::BorderDim;
-    c[ImGuiCol_SeparatorHovered]     = Col::AccentDim;
-    c[ImGuiCol_SeparatorActive]      = Col::Accent;
+    c[ImGuiCol_SeparatorHovered]     = Col::Border;
+    c[ImGuiCol_SeparatorActive]      = Col::BorderHi;
     c[ImGuiCol_ResizeGrip]           = {0.f, 0.f, 0.f, 0.f};
     c[ImGuiCol_ScrollbarBg]          = Col::BgDeep;
-    c[ImGuiCol_ScrollbarGrab]        = Col::Border;
-    c[ImGuiCol_ScrollbarGrabHovered] = Col::AccentDim;
-    c[ImGuiCol_ScrollbarGrabActive]  = Col::Accent;
-    c[ImGuiCol_Tab]                  = {0.05f, 0.07f, 0.14f, 1.f};
-    c[ImGuiCol_TabHovered]           = Col::AccentDeep;
-    c[ImGuiCol_TabActive]            = {0.04f, 0.22f, 0.34f, 1.f};
-    c[ImGuiCol_TabUnfocused]         = {0.04f, 0.06f, 0.12f, 1.f};
-    c[ImGuiCol_TabUnfocusedActive]   = {0.04f, 0.18f, 0.28f, 1.f};
+    c[ImGuiCol_ScrollbarGrab]        = {1.f, 1.f, 1.f, 0.12f};
+    c[ImGuiCol_ScrollbarGrabHovered] = {1.f, 1.f, 1.f, 0.20f};
+    c[ImGuiCol_ScrollbarGrabActive]  = {1.f, 1.f, 1.f, 0.30f};
+    c[ImGuiCol_Tab]                  = Col::BgPanel;
+    c[ImGuiCol_TabHovered]           = Col::BgCardHov;
+    c[ImGuiCol_TabActive]            = Col::BgCard;
+    c[ImGuiCol_TabUnfocused]         = Col::BgDeep;
+    c[ImGuiCol_TabUnfocusedActive]   = Col::BgPanel;
     c[ImGuiCol_PlotHistogram]        = Col::AccentDim;
 }
 
@@ -273,20 +279,17 @@ static void DrawMasthead(bool showStatusDot, bool connected, bool pending)
 {
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
-    // Accent gradient bar at top of window
+    // Hairline border at top — subtle white, matches site card borders
     ImVec2 wpos = ImGui::GetWindowPos();
     float  ww   = ImGui::GetWindowWidth();
-    dl->AddRectFilledMultiColor(
-        wpos, {wpos.x + ww, wpos.y + 3.f},
-        U32(Col::AccentDim), U32(Col::Accent),
-        U32(Col::AccentDim), U32(Col::BgDeep));
+    dl->AddLine(wpos, {wpos.x + ww, wpos.y}, U32({1.f, 1.f, 1.f, 0.18f}), 1.f);
 
     ImGui::Spacing();
 
-    // Logo
-    ImGui::PushStyleColor(ImGuiCol_Text, Col::Accent);
+    // Logo — white, no emoji, clean typographic mark
+    ImGui::PushStyleColor(ImGuiCol_Text, Col::TextMain);
     ImGui::SetWindowFontScale(1.6f);
-    ImGui::Text("  \xe2\x9a\xa1 SPARKY");
+    ImGui::Text("  \xe2\x98\x85 SPARKY");
     ImGui::SetWindowFontScale(1.f);
     ImGui::PopStyleColor();
 
@@ -327,32 +330,35 @@ static void LoginScreen(UIState& state, std::function<void()>& onConnect)
         const float btnW = (ImGui::GetContentRegionAvail().x - 8.f) * 0.5f;
         const float btnH = 30.f;
 
-        ImVec4 loginBg  = !state.signUpMode ? ImVec4{0.04f,0.22f,0.34f,1.f}
-                                             : ImVec4{0.06f,0.08f,0.16f,1.f};
-        ImVec4 signupBg =  state.signUpMode ? ImVec4{0.04f,0.22f,0.34f,1.f}
-                                            : ImVec4{0.06f,0.08f,0.16f,1.f};
+        // Active tab: white bg + black text. Inactive: dark bg + muted text.
+        ImVec4 loginBg    = !state.signUpMode ? Col::Accent    : Col::BgCard;
+        ImVec4 loginTxt   = !state.signUpMode ? ImVec4{0.f,0.f,0.f,1.f} : Col::TextDim;
+        ImVec4 signupBg   =  state.signUpMode ? Col::Accent    : Col::BgCard;
+        ImVec4 signupTxt  =  state.signUpMode ? ImVec4{0.f,0.f,0.f,1.f} : Col::TextDim;
 
         ImGui::PushStyleColor(ImGuiCol_Button,        loginBg);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Col::AccentDeep);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  Col::AccentDim);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, !state.signUpMode ? Col::AccentDim : Col::BgCardHov);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  !state.signUpMode ? Col::AccentDim : Col::BgCardSel);
+        ImGui::PushStyleColor(ImGuiCol_Text,          loginTxt);
         if (ImGui::Button("Login", {btnW, btnH}))
         {
             state.signUpMode = false;
             state.loginError[0] = '\0';
         }
-        ImGui::PopStyleColor(3);
+        ImGui::PopStyleColor(4);
 
         ImGui::SameLine(0.f, 8.f);
 
         ImGui::PushStyleColor(ImGuiCol_Button,        signupBg);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Col::AccentDeep);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  Col::AccentDim);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, state.signUpMode ? Col::AccentDim : Col::BgCardHov);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  state.signUpMode ? Col::AccentDim : Col::BgCardSel);
+        ImGui::PushStyleColor(ImGuiCol_Text,          signupTxt);
         if (ImGui::Button("Sign Up", {btnW, btnH}))
         {
             state.signUpMode = true;
             state.loginError[0] = '\0';
         }
-        ImGui::PopStyleColor(3);
+        ImGui::PopStyleColor(4);
     }
 
     ImGui::Spacing();
@@ -415,14 +421,17 @@ static void LoginScreen(UIState& state, std::function<void()>& onConnect)
         bool canTry  = !busy && state.username[0] != '\0' && state.password[0] != '\0'
                        && (!state.signUpMode || state.licenseKey[0] != '\0');
 
-        ImVec4 btnBg = busy     ? ImVec4{0.05f,0.14f,0.20f,1.f}
-                     : canTry   ? ImVec4{0.00f,0.42f,0.58f,1.f}
-                                : ImVec4{0.07f,0.09f,0.18f,1.f};
+        // White when ready (primary action = site's white button style)
+        ImVec4 btnBg  = busy    ? Col::BgCard
+                      : canTry  ? Col::Accent
+                                : Col::BgCard;
+        ImVec4 btnTxt = (canTry && !busy) ? ImVec4{0.f,0.f,0.f,1.f} : Col::TextDim;
 
         ImGui::BeginDisabled(!canTry);
         ImGui::PushStyleColor(ImGuiCol_Button,        btnBg);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {0.00f,0.62f,0.82f,1.f});
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  Col::Accent);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, canTry ? Col::AccentDim : Col::BgCardHov);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  Col::AccentDim);
+        ImGui::PushStyleColor(ImGuiCol_Text,          btnTxt);
 
         char lbl[48];
         snprintf(lbl, sizeof(lbl), "%s  %s",
@@ -445,7 +454,7 @@ static void LoginScreen(UIState& state, std::function<void()>& onConnect)
                 onConnect();
             }
         }
-        ImGui::PopStyleColor(3);
+        ImGui::PopStyleColor(4);
         ImGui::EndDisabled();
     }
 
@@ -528,33 +537,32 @@ static bool PresetCard(int idx, const PresetInfo& p, bool selected, bool disable
     ImDrawList* dl = ImGui::GetWindowDrawList();
     float t        = (float)ImGui::GetTime();
 
-    // Animated glow when selected
+    // Subtle white glow when selected
     if (selected)
     {
-        float glow = 0.10f + 0.08f * std::sinf(t * 2.5f);
+        float glow = 0.06f + 0.04f * std::sinf(t * 2.5f);
         dl->AddRectFilled(pos, {pos.x+cardW, pos.y+cardH},
-                          U32({Col::Accent.x, Col::Accent.y, Col::Accent.z, glow}), 9.f);
+                          U32({1.f, 1.f, 1.f, glow}), 9.f);
     }
 
     ImVec4 bg     = selected ? Col::BgCardSel : hovered ? Col::BgCardHov : Col::BgCard;
-    ImVec4 border = selected ? Col::Accent    : hovered ? Col::AccentDim : Col::Border;
-    float  bw     = selected ? 1.8f : 1.f;
+    ImVec4 border = selected ? Col::BorderHi  : hovered ? Col::Border    : Col::BorderDim;
+    float  bw     = selected ? 1.5f : 1.f;
 
     dl->AddRectFilled(pos, {pos.x+cardW, pos.y+cardH}, U32(bg), 8.f);
     dl->AddRect(pos, {pos.x+cardW, pos.y+cardH}, U32(border), 8.f, 0, bw);
 
-    // Left accent stripe when selected
+    // Left white stripe when selected
     if (selected)
-        dl->AddRectFilled({pos.x, pos.y+10.f}, {pos.x+3.f, pos.y+cardH-10.f},
+        dl->AddRectFilled({pos.x, pos.y+10.f}, {pos.x+2.f, pos.y+cardH-10.f},
                           U32(Col::Accent), 2.f);
 
     float lineH = ImGui::GetTextLineHeight();
     float iconY = pos.y + (cardH * 0.5f) - lineH;
-    ImVec4 iconCol = selected ? Lerp4(Col::AccentDim, Col::Accent,
-                                       0.5f+0.5f*std::sinf(t*2.f))
-                              : hovered ? Col::AccentDim : Col::Border;
+    ImVec4 iconCol = selected ? Col::TextMain
+                              : hovered ? Col::TextLabel : Col::TextDisable;
     dl->AddText({pos.x + 14.f, iconY},  U32(iconCol), p.icon);
-    dl->AddText({pos.x + 38.f, pos.y + 14.f}, U32(selected ? Col::Accent : Col::TextMain), p.name);
+    dl->AddText({pos.x + 38.f, pos.y + 14.f}, U32(Col::TextMain), p.name);
     dl->AddText({pos.x + 38.f, pos.y + 14.f + lineH + 4.f}, U32(Col::TextDim), p.desc);
 
     if (selected)
@@ -668,9 +676,9 @@ static void InjectTab(UIState& state, std::function<void()>& onConnect)
     ImGui::TextUnformatted("Running Processes");
     ImGui::PopStyleColor();
     ImGui::SameLine(ImGui::GetContentRegionAvail().x - 62.f);
-    ImGui::PushStyleColor(ImGuiCol_Button,        {0.07f,0.09f,0.18f,1.f});
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Col::AccentDeep);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  Col::AccentDim);
+    ImGui::PushStyleColor(ImGuiCol_Button,        Col::BgCard);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Col::BgCardHov);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  Col::BgCardSel);
     if (ImGui::SmallButton(" Refresh ")) RefreshProcessList(state);
     ImGui::PopStyleColor(3);
     ImGui::Spacing();
@@ -695,8 +703,8 @@ static void InjectTab(UIState& state, std::function<void()>& onConnect)
             char label[320];
             snprintf(label, sizeof(label), "  %-6u  %s", p.pid, p.name);
 
-            ImGui::PushStyleColor(ImGuiCol_Header,        {0.05f,0.20f,0.30f,1.f});
-            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, {0.06f,0.26f,0.38f,1.f});
+            ImGui::PushStyleColor(ImGuiCol_Header,        Col::BgCard);
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, Col::BgCardHov);
             if (ImGui::Selectable(label, sel, ImGuiSelectableFlags_SpanAllColumns))
                 state.selectedProcessIdx = i;
             ImGui::PopStyleColor(2);
@@ -739,13 +747,16 @@ static void InjectTab(UIState& state, std::function<void()>& onConnect)
     bool busy      = state.connecting || state.injecting;
 
     ImGui::BeginDisabled(!canInject || busy);
-    ImVec4 btnBg = state.injected ? ImVec4{0.02f,0.28f,0.18f,1.f} :
-                   busy           ? ImVec4{0.05f,0.14f,0.22f,1.f} :
-                   canInject      ? ImVec4{0.00f,0.40f,0.55f,1.f} :
-                                    ImVec4{0.07f,0.09f,0.18f,1.f};
+    ImVec4 btnBg  = state.injected ? Col::BgCardSel
+                  : busy           ? Col::BgCard
+                  : canInject      ? Col::Accent
+                                   : Col::BgCard;
+    ImVec4 btnTxt = (canInject && !busy && !state.injected)
+                  ? ImVec4{0.f,0.f,0.f,1.f} : Col::TextDim;
     ImGui::PushStyleColor(ImGuiCol_Button,        btnBg);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {0.00f,0.62f,0.78f,1.f});
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  Col::Accent);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, canInject ? Col::AccentDim : Col::BgCardHov);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  Col::AccentDim);
+    ImGui::PushStyleColor(ImGuiCol_Text,          btnTxt);
 
     char injLabel[48];
     snprintf(injLabel, sizeof(injLabel), "%s  %s",
@@ -765,7 +776,7 @@ static void InjectTab(UIState& state, std::function<void()>& onConnect)
         state.downloadProgress  = 0.f;
         onConnect();
     }
-    ImGui::PopStyleColor(3);
+    ImGui::PopStyleColor(4);
     ImGui::EndDisabled();
 }
 
@@ -857,8 +868,8 @@ static void RenderFrame(UIState& state,
     ImGui::SetNextWindowSize({W, H}, ImGuiCond_Always);
     ImGui::SetNextWindowSizeConstraints({W, H}, {W, H});
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.5f);
-    ImGui::PushStyleColor(ImGuiCol_Border, Col::AccentDim);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+    ImGui::PushStyleColor(ImGuiCol_Border, Col::BorderHi);
 
     ImGui::Begin("##main", nullptr,
         ImGuiWindowFlags_NoCollapse  | ImGuiWindowFlags_NoResize |
