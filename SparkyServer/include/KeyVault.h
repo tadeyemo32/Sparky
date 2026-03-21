@@ -27,6 +27,7 @@
 #include <stdexcept>
 #include <iostream>
 #include "XorStr.h"
+#include "SecureString.h"
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -47,11 +48,13 @@ public:
         if (const char* env = std::getenv(XS("SPARKY_PG_CONNSTR")))
         {
             connstr = env;
+            ClearEnv(XS("SPARKY_PG_CONNSTR"));
         }
         // 2. Env var — path to file containing the connection string
         else if (const char* kf = std::getenv(XS("SPARKY_PG_CONNFILE")))
         {
             connstr = ReadFile(kf);
+            ClearEnv(XS("SPARKY_PG_CONNFILE"));
         }
         // 3. Default file next to binary
         else

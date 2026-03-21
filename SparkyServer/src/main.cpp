@@ -51,6 +51,7 @@
 #include "../include/RateLimiter.h"
 #include "../include/KeyVault.h"
 #include "../include/XorStr.h"
+#include "../include/SecureString.h"
 #include "../../SparkyLoader/user/include/Protocol.h"
 #include "../../SparkyLoader/user/include/TlsLayer.h"
 #include "../../SparkyLoader/user/include/WebSocket.h"
@@ -104,10 +105,13 @@ static SSL_CTX* g_sslCtx = nullptr;
 // Generate one: openssl rand -hex 32
 static uint8_t g_hwidPepper[32]{};
 static bool    g_pepperSet = false;
-static std::string g_sparkyKey;
+
+// SecureString globals — contents are XOR'd with a per-instance random key so
+// secrets never sit as plaintext in a heap allocation.  Get() decrypts transiently.
+static SecureString g_sparkyKey;
 
 // Connection string stored globally for RunBackup()
-static std::string g_connstr;
+static SecureString g_connstr;
 
 // Server start time — used for uptime reporting in /api/owner/metrics
 static int64_t g_startTime = 0;
@@ -116,12 +120,14 @@ static int64_t g_startTime = 0;
 // (e.g. https://sparky.vercel.app).  When set, all /api/ requests must carry
 // an Origin header matching this value; CORS responses use the specific origin
 // instead of *.  If unset, origin checking is skipped (dev mode).
+// Not stored as SecureString — the origin is a public domain, not a secret,
+// and it is compared on every request in the hot path.
 static std::string g_allowedOrigin;
 
 // Resend API — set RESEND_API_KEY to enable transactional email (OTP, forgot-password).
 // Set RESEND_FROM_EMAIL to your verified sender address (e.g. "Sparky <noreply@yourdomain.com>").
-static std::string g_resendKey;
-static std::string g_resendFrom;
+static SecureString g_resendKey;
+static SecureString g_resendFrom;
 
 // Loader attestation key — 32 raw bytes loaded from SPARKY_ATTEST_KEY (64 hex chars).
 // When set, the loader sends HMAC-SHA256(SHA-256(binary), attest_key) instead of the
@@ -134,7 +140,7 @@ static bool    g_attestKeySet = false;
 // The proxy injects it as X-Proxy-Secret; the server rejects web API requests that
 // lack it. Prevents anyone who discovers the backend IP from calling /api/* directly.
 // Set SPARKY_PROXY_SECRET to a 32+ byte random hex string on both sides.
-static std::string g_proxySecret;
+static SecureString g_proxySecret;
 
 // Per-HWID concurrent session guard.
 // Prevents one user from opening multiple simultaneous sessions.
@@ -329,7 +335,9 @@ static void RunBackup()
 
 #ifdef _WIN32
     // Build command for CreateProcessA (no shell involved — safe)
-    std::string cmd = std::string(XS("pg_dump -d \"")) + g_connstr + XS("\" -f \"") + fname + XS("\"");
+    std::string _cs = g_connstr.Get();
+    std::string cmd = std::string(XS("pg_dump -d \"")) + _cs + XS("\" -f \"") + fname + XS("\"");
+    OPENSSL_cleanse(_cs.data(), _cs.size());
 
     STARTUPINFOA si{};
     si.cb = sizeof(si);
@@ -367,7 +375,8 @@ static void RunBackup()
     if (pid == 0)
     {
         // Child: exec pg_dump directly — no shell, no injection
-        const char* args[] = { "pg_dump", "-d", g_connstr.c_str(), "-f", fname, nullptr };
+        std::string _cs2 = g_connstr.Get();
+        const char* args[] = { "pg_dump", "-d", _cs2.c_str(), "-f", fname, nullptr };
         execvp("pg_dump", const_cast<char* const*>(args));
         _exit(127); // exec failed
     }
@@ -635,9 +644,11 @@ static bool SendResendEmail(const std::string& to,
         return false;
     }
 
-    std::string from = g_resendFrom.empty()
-                     ? std::string("Sparky <onboarding@resend.dev>")
-                     : g_resendFrom;
+    std::string _rk   = g_resendKey.Get();
+    std::string _from = g_resendFrom.empty()
+                      ? std::string(XS("Sparky <onboarding@resend.dev>"))
+                      : g_resendFrom.Get();
+    std::string from  = _from;
 
     std::string payload = "{"
         "\"from\":\""    + JEscape(from)     + "\","
@@ -680,12 +691,15 @@ static bool SendResendEmail(const std::string& to,
                     std::string req =
                         "POST /emails HTTP/1.1\r\n"
                         "Host: api.resend.com\r\n"
-                        "Authorization: Bearer " + g_resendKey + "\r\n"
+                        "Authorization: Bearer " + _rk + "\r\n"
                         "Content-Type: application/json\r\n"
                         "Content-Length: " + std::to_string(payload.size()) + "\r\n"
                         "Connection: close\r\n"
                         "\r\n" + payload;
+                    OPENSSL_cleanse(_rk.data(), _rk.size());
+                    OPENSSL_cleanse(_from.data(), _from.size());
                     SSL_write(ssl, req.c_str(), (int)req.size());
+                    OPENSSL_cleanse(req.data(), req.size());
                     char buf[2048]{};
                     SSL_read(ssl, buf, sizeof(buf) - 1);
                     ok = std::strstr(buf, "HTTP/1.1 2") != nullptr;
@@ -823,8 +837,10 @@ static void HandleWebApi(ClientSession& s,
             while (ve > vs && (req[ve-1] == ' ' || req[ve-1] == '\t')) --ve;
             sent = req.substr(vs, ve - vs);
         }
-        bool secretOk = sent.size() == g_proxySecret.size() &&
-                        CRYPTO_memcmp(sent.data(), g_proxySecret.data(), sent.size()) == 0;
+        std::string _ps = g_proxySecret.Get();
+        bool secretOk = sent.size() == _ps.size() &&
+                        CRYPTO_memcmp(sent.data(), _ps.data(), _ps.size()) == 0;
+        OPENSSL_cleanse(_ps.data(), _ps.size());
         if (!secretOk)
         {
             SendApiError(s, 403, "Forbidden");
@@ -1623,6 +1639,7 @@ static void HandleClient(int csock, SSL* ssl, std::string clientIp)
                                    httpPath.compare(0, 5, "/api/") == 0);
 
         bool authorized = g_sparkyKey.empty() || isWebApiPath;
+        std::string _sk; // decrypted only once per request if needed
         std::string authHex;
 
         if (true) // always parse headers if it's HTTP
@@ -1642,11 +1659,12 @@ static void HandleClient(int csock, SSL* ssl, std::string clientIp)
                     while (end < req.size() && req[end] != '\r' && req[end] != '\n') end++;
 
                     std::string submittedKey = req.substr(start, end - start);
-                    if (submittedKey.size() == g_sparkyKey.size()) {
-                        volatile uint8_t diff = 0;
-                        for (size_t i = 0; i < submittedKey.size(); ++i) diff |= (uint8_t)(submittedKey[i] ^ g_sparkyKey[i]);
-                        if (diff == 0) authorized = true;
-                    }
+                    _sk = g_sparkyKey.Get();
+                    bool keyOk = submittedKey.size() == _sk.size() &&
+                                 CRYPTO_memcmp(submittedKey.data(), _sk.data(), _sk.size()) == 0;
+                    OPENSSL_cleanse(_sk.data(), _sk.size());
+                    _sk.clear();
+                    if (keyOk) authorized = true;
                 }
             }
 
@@ -2652,11 +2670,12 @@ int main(int argc, char** argv)
 
     if (const char* k = std::getenv(XS("SPARKY_KEY")))
     {
-        g_sparkyKey = k;
+        g_sparkyKey.Set(k);
+        ClearEnv(XS("SPARKY_KEY"));
         std::cout << "[S] Loaded SPARKY_KEY from environment.\n";
     }
 
-    if (const char* ak = std::getenv("SPARKY_ATTEST_KEY"))
+    if (const char* ak = std::getenv(XS("SPARKY_ATTEST_KEY")))
     {
         if (std::strlen(ak) == 64 && ParseHex(std::string(ak), g_attestKey, 32))
         {
@@ -2667,15 +2686,17 @@ int main(int argc, char** argv)
         {
             std::cerr << "[S] SPARKY_ATTEST_KEY must be exactly 64 hex chars — ignored\n";
         }
+        ClearEnv(XS("SPARKY_ATTEST_KEY"));
     }
     else
     {
         std::cout << "[S] Loader attestation: disabled (set SPARKY_ATTEST_KEY in production)\n";
     }
 
-    if (const char* ps = std::getenv("SPARKY_PROXY_SECRET"))
+    if (const char* ps = std::getenv(XS("SPARKY_PROXY_SECRET")))
     {
-        g_proxySecret = ps;
+        g_proxySecret.Set(ps);
+        ClearEnv(XS("SPARKY_PROXY_SECRET"));
         std::cout << "[S] Proxy secret: set (web API restricted to Vercel proxy)\n";
     }
     else
@@ -2683,17 +2704,21 @@ int main(int argc, char** argv)
         std::cout << "[S] Proxy secret: not set (web API open — set SPARKY_PROXY_SECRET in production)\n";
     }
 
-    if (const char* rk = std::getenv("RESEND_API_KEY"))
+    if (const char* rk = std::getenv(XS("RESEND_API_KEY")))
     {
-        g_resendKey = rk;
+        g_resendKey.Set(rk);
+        ClearEnv(XS("RESEND_API_KEY"));
         std::cout << "[S] Resend email: enabled\n";
     }
     else
     {
         std::cout << "[S] Resend email: disabled (set RESEND_API_KEY to enable)\n";
     }
-    if (const char* rf = std::getenv("RESEND_FROM_EMAIL"))
-        g_resendFrom = rf;
+    if (const char* rf = std::getenv(XS("RESEND_FROM_EMAIL")))
+    {
+        g_resendFrom.Set(rf);
+        ClearEnv(XS("RESEND_FROM_EMAIL"));
+    }
 
     // ---- GCP Cloud Run: honour $PORT env var (default 8080 on Cloud Run) ----
     // If PORT is set (e.g. by Cloud Run), listen on that port instead of 7777.
@@ -2708,7 +2733,13 @@ int main(int argc, char** argv)
     }
 
     // ---- Load PostgreSQL connection string ----
-    try { g_connstr = KeyVault::LoadConnStr(); }
+    try
+    {
+        std::string _connstr = KeyVault::LoadConnStr();
+        g_connstr.Set(_connstr);
+        OPENSSL_cleanse(_connstr.data(), _connstr.size());
+        // KeyVault already calls ClearEnv internally if reading from env var
+    }
     catch (const std::exception& e)
     {
         std::cerr << "[S] FATAL: " << e.what() << "\n";
@@ -2730,6 +2761,7 @@ int main(int argc, char** argv)
             for (int i = 0; i < 32; ++i)
                 g_hwidPepper[i] = (h2(ps[i*2]) << 4) | h2(ps[i*2+1]);
             g_pepperSet = true;
+            ClearEnv(XS("SPARKY_HWID_PEPPER"));
             std::cout << "[S] HWID pepper: loaded\n";
         }
         else
@@ -2743,7 +2775,10 @@ int main(int argc, char** argv)
     // ---- Open database ----
     {
         std::lock_guard lk(g_dbMu);
-        if (!g_db.Open(g_connstr))
+        std::string _dbc = g_connstr.Get();
+        bool dbOk = g_db.Open(_dbc);
+        OPENSSL_cleanse(_dbc.data(), _dbc.size());
+        if (!dbOk)
         { std::cerr << "[S] FATAL: cannot connect to PostgreSQL\n"; return 1; }
         std::cout << "[S] PostgreSQL: connected\n";
         if (g_db.TrustedHashesEnabled())
