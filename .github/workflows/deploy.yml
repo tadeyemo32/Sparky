@@ -154,20 +154,28 @@ jobs:
       - name: Restore NuGet packages
         run: nuget restore SparkyCore/tf2/Spxarky/Spxarky.sln
 
-      - name: Provide FreeType static lib (Freetype configurations only)
+      - name: Build FreeType static lib (Freetype configurations only)
         if: contains(matrix.configuration, 'Freetype')
         shell: pwsh
         run: |
-          vcpkg install freetype:x64-windows-static
-          $vcpkgLib = "C:\vcpkg\installed\x64-windows-static\lib\freetype.lib"
-          $destLib  = "SparkyCore\tf2\Spxarky\Spxarky\include\freetype\freetype.lib"
-          if (Test-Path $vcpkgLib) {
-            Copy-Item $vcpkgLib $destLib
-            Write-Host "freetype.lib copied from vcpkg"
-          } else {
-            Write-Error "freetype.lib not found at $vcpkgLib"
-            exit 1
-          }
+          # Clone FreeType source (shallow)
+          git clone --depth 1 --branch VER-2-13-3 https://github.com/freetype/freetype.git freetype_src
+          # Build standalone — disable all external deps so the .lib has no transitive requirements
+          cmake -S freetype_src -B freetype_src/build `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DFT_DISABLE_ZLIB=ON `
+            -DFT_DISABLE_BZIP2=ON `
+            -DFT_DISABLE_PNG=ON `
+            -DFT_DISABLE_HARFBUZZ=ON `
+            -DFT_DISABLE_BROTLI=ON `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
+          cmake --build freetype_src/build --config Release
+          # Locate and copy the built lib
+          $built = Get-ChildItem -Recurse -Filter "freetype.lib" freetype_src/build | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $built) { Write-Error "freetype.lib not found after build"; exit 1 }
+          Copy-Item $built "SparkyCore\tf2\Spxarky\Spxarky\include\freetype\freetype.lib"
+          Write-Host "freetype.lib built and copied from $built"
 
       - name: Build
         run: |
