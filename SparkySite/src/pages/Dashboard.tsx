@@ -22,15 +22,17 @@ export function Dashboard() {
     return () => controller.abort();
   }, [user?.token]);
 
-  function formatDate(iso: string) {
+  function formatDate(value: string) {
     try {
-      return new Date(iso).toLocaleDateString(undefined, {
+      const n = Number(value);
+      if (!n) return 'Never';
+      return new Date(n * 1000).toLocaleDateString(undefined, {
         year: 'numeric',
         month: 'long',
         day: 'numeric',
       });
     } catch {
-      return iso;
+      return value;
     }
   }
 

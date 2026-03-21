@@ -13,14 +13,12 @@ export function useServerStatus(): ServerStatus {
 
     async function check() {
       try {
-        // Probe a backend-only route. A 401 means the server responded (online);
-        // a 5xx means the proxy/backend is down; a thrown error means no connection.
+        // Probe a backend-only route. Any <500 response means the server (or its
+        // proxy) is reachable: 401 = unauthenticated, 403 = proxy secret check
+        // passed to backend. 5xx = backend/proxy down; thrown = no connection.
         const res = await fetch(`${API_BASE}/api/auth/me`, { method: 'GET' });
         if (!cancelled) {
-          // 401 = backend responded (not authed, but alive)
-          // 2xx = also fine; anything else (404 from dev server, 5xx from proxy) = offline
-          const alive = res.status === 401 || (res.status >= 200 && res.status < 300);
-          setStatus(alive ? 'online' : 'offline');
+          setStatus(res.status < 500 ? 'online' : 'offline');
         }
       } catch {
         if (!cancelled) {
