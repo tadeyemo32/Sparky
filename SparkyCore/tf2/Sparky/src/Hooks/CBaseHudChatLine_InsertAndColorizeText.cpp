@@ -21,7 +21,7 @@ MAKE_HOOK(CBaseHudChatLine_InsertAndColorizeText, S::CBaseHudChatLine_InsertAndC
 	if (const char* sReplace = F::PlayerUtils.GetPlayerName(clientIndex, nullptr, &iType))
 	{
 		if (iFind != std::string::npos)
-			sMessage = sMessage.replace(std::max(int(iFind) - 1, 0), strlen(sName) + 1, std::format(XS("\x3{}\x1"), sReplace));
+			sMessage = sMessage.replace(std::max(int(iFind) - 1, 0), strlen(sName) + 1, std::vformat(XS("\x3{}\x1"), std::make_format_args( sReplace)));
 		sName = sReplace;
 	}
 
@@ -43,8 +43,8 @@ MAKE_HOOK(CBaseHudChatLine_InsertAndColorizeText, S::CBaseHudChatLine_InsertAndC
 		if (!sTag.empty())
 		{
 			if (iFind != std::string::npos && iType == NameTypeEnum::None)
-				sMessage = sMessage.replace(std::max(int(iFind) - 1, 0), strlen(sName) + 1, std::format(XS("\x3{}\x1"), sName));
-			sMessage.insert(0, std::format(XS("{}[{}] "), cColor, sTag));
+				sMessage = sMessage.replace(std::max(int(iFind) - 1, 0), strlen(sName) + 1, std::vformat(XS("\x3{}\x1"), std::make_format_args( sName)));
+			sMessage.insert(0, std::vformat(XS("{}[{}] "), std::make_format_args( cColor, sTag)));
 		}
 	}
 

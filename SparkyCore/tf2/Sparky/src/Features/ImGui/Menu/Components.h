@@ -364,7 +364,7 @@ namespace ImGui
 
 		std::string sTruncated = "";
 		size_t i = 0;
-		while (FCalcTextSize(std::format(XS("{}{}{}"), sTruncated, sText[i + 1], sEnd).c_str(), pFont).x < iPixels)
+		while (FCalcTextSize(std::vformat(XS("{}{}{}"), std::make_format_args( sTruncated, sText[i + 1], sEnd)).c_str(), pFont).x < iPixels)
 		{
 			sTruncated += sText[i++];
 			if (i >= sText.length())
@@ -408,9 +408,9 @@ namespace ImGui
 			auto sSeparator = iWord ? std::string(1, sWord[0]) : "";
 			if (sWord[0] == ' ' || sWord[0] == '\n' || sWord[0] == '\t')
 				sWord.erase(0, 1);
-			if (sSeparator != XS("\n") && FCalcTextSize(std::format(XS("{}{}{}"), vWrapped.back(), sSeparator, sWord).c_str(), pFont).x < iPixels)
+			if (sSeparator != XS("\n") && FCalcTextSize(std::vformat(XS("{}{}{}"), std::make_format_args( vWrapped.back(), sSeparator, sWord)).c_str(), pFont).x < iPixels)
 			{
-				vWrapped.back() += std::format(XS("{}{}"), sSeparator, sWord);
+				vWrapped.back() += std::vformat(XS("{}{}"), std::make_format_args( sSeparator, sWord));
 				iWord++;
 			}
 			else
@@ -524,7 +524,7 @@ namespace ImGui
 		PushItemWidth(flWidth);
 		ImVec2 vDrawPos = GetCursorPos() + GetDrawPos();
 
-		bool bReturn = InputText(std::format(XS("##{}"), sLabel).c_str(), &sText, iFlags | ImGuiInputTextFlags_NoKeyboardNavigate, fCallback);
+		bool bReturn = InputText(std::vformat(XS("##{}"), std::make_format_args( sLabel)).c_str(), &sText, iFlags | ImGuiInputTextFlags_NoKeyboardNavigate, fCallback);
 		ImVec2 vSize = GetItemRectSize();
 		float flInset = H::Draw.Scale(0.5f) - 0.5f;
 		GetWindowDrawList()->AddRect({ vDrawPos.x + flInset, vDrawPos.y + flInset }, { vDrawPos.x - flInset + vSize.x, vDrawPos.y - flInset + vSize.y }, F::Render.Background2, H::Draw.Scale(4), ImDrawFlags_None, H::Draw.Scale());
@@ -566,7 +566,7 @@ namespace ImGui
 		PushFont(F::Render.IconFont);
 
 		ImVec2 vOriginalPos = GetCursorPos();
-		bool bReturn = Button(std::format(XS("{}##{}:{}"), sIcon, vOriginalPos.x, vOriginalPos.y).c_str(), { flSize, flSize });
+		bool bReturn = Button(std::vformat(XS("{}##{}:{}"), std::make_format_args( sIcon, vOriginalPos.x, vOriginalPos.y)).c_str(), { flSize, flSize });
 
 		if (!Disabled && IsItemHovered() && GetMouseCursor() != ImGuiMouseCursor_Hand)
 		{
@@ -750,7 +750,7 @@ namespace ImGui
 		{
 			float flWidth = vWidths[i] + GetStyle().WindowPadding.x * (iCount - 1) / iCount;
 			vReturn.emplace_back(
-				std::format(XS("{}"), i),
+				std::vformat(XS("{}"), std::make_format_args( i)),
 				ImVec2(flTotalWidth - GetStyle().WindowPadding.x / 2, GetCursorPos().y - H::Draw.Scale(8)),
 				ImVec2(flWidth, flHeight),
 				iWindowFlags,
@@ -887,7 +887,7 @@ namespace ImGui
 				}
 
 				SetCursorPos(vOffset);
-				if (Button(std::format(XS("##{}"), sEntry).c_str(), vNewSize) && !iTabState && pVar)
+				if (Button(std::vformat(XS("##{}"), std::make_format_args( sEntry)).c_str(), vNewSize) && !iTabState && pVar)
 				{
 					*pVar = int(!j ? i : j - 1);
 					bChanged = true;
@@ -1107,7 +1107,7 @@ namespace ImGui
 		int iWraps = std::min(int(vWrapped.size()), 2); // prevent too many wraps
 		vSize.y = H::Draw.Scale(6 + 18 * iWraps);
 
-		bool bReturn = Button(std::format(XS("##{}"), sLabel).c_str(), vSize);
+		bool bReturn = Button(std::vformat(XS("##{}"), std::make_format_args( sLabel)).c_str(), vSize);
 		if (pHovered)
 			*pHovered = IsItemHovered();
 
@@ -1219,7 +1219,7 @@ namespace ImGui
 		float flTextY = vOriginalPos.y + H::Draw.Scale(-15 + 18 * iWraps);
 #endif
 		{
-			auto uHash2 = FNV1A::Hash32Const(std::format(XS("{}## Text"), sLabel).c_str());
+			auto uHash2 = FNV1A::Hash32Const(std::vformat(XS("{}## Text"), std::make_format_args( sLabel)).c_str());
 
 			static std::string sText, sInput;
 			if (!mActiveMap[uHash2])
@@ -1286,7 +1286,7 @@ namespace ImGui
 				else if (IsItemClicked())
 				{
 					float* pVar = !pVar2 || GetMousePos().x - vDrawPos.x - vOriginalPos2.x < flWidth / 2 ? pVar1 : pVar2;
-					sInput = std::format(XS("{}"), *pVar); // would use to_string but i don't like its formatting
+					sInput = std::vformat(XS("{}"), std::make_format_args( *pVar)); // would use to_string but i don't like its formatting
 					mActiveMap[uHash2] = pVar == pVar1 ? 1 : 2;
 				}
 			}
@@ -1483,9 +1483,9 @@ namespace ImGui
 					i++;
 
 				if (iFlags & FDropdownEnum::Multi && *pVar & iValue)
-					sPreview += std::format(XS("{}, "), StripDoubleHash(vEntries[i]).c_str());
+					sPreview += std::vformat(XS("{}, "), std::make_format_args( StripDoubleHash(vEntries[i]).c_str()));
 				else if (!(iFlags & FDropdownEnum::Multi) && *pVar == iValue)
-					sPreview = std::format(XS("{}##"), StripDoubleHash(vEntries[i]).c_str());
+					sPreview = std::vformat(XS("{}##"), std::make_format_args( StripDoubleHash(vEntries[i]).c_str()));
 				i++;
 			}
 			if (sPreview.length() > 1)
@@ -1519,7 +1519,7 @@ namespace ImGui
 		PushStyleVar(ImGuiStyleVar_FramePadding, { 0.f, H::Draw.Scale(bTitle ? 13.5f : 5.5f) });
 		PushItemWidth(vSize.x);
 
-		bool bActive = BeginCombo(std::format(XS("##{}"), sLabel).c_str(), "", ImGuiComboFlags_CustomPreview | ImGuiComboFlags_NoArrowButton | ImGuiComboFlags_HeightLarge);
+		bool bActive = BeginCombo(std::vformat(XS("##{}"), std::make_format_args( sLabel)).c_str(), "", ImGuiComboFlags_CustomPreview | ImGuiComboFlags_NoArrowButton | ImGuiComboFlags_HeightLarge);
 		if (bActive)
 		{
 			DebugDummy({ 0, H::Draw.Scale(8) });
@@ -1542,7 +1542,7 @@ namespace ImGui
 					bool bFlagActive = *pVar & vValues[i];
 
 					ImVec2 vOriginalPos2 = GetCursorPos();
-					if (FSelectable(std::format(XS("##{}{}"), sEntry, i).c_str(), nullptr, 0, bFlagActive, ImGuiSelectableFlags_DontClosePopups))
+					if (FSelectable(std::vformat(XS("##{}{}"), std::make_format_args( sEntry, i)).c_str(), nullptr, 0, bFlagActive, ImGuiSelectableFlags_DontClosePopups))
 					{
 						if (bFlagActive)
 							*pVar &= ~vValues[i];
@@ -1571,7 +1571,7 @@ namespace ImGui
 						SetCursorPos(vOriginalPos2);
 					}
 
-					if (FSelectable(std::format(XS("##{}{}"), sEntry, i).c_str(), nullptr, 0, *pVar == vValues[i]))
+					if (FSelectable(std::vformat(XS("##{}{}"), std::make_format_args( sEntry, i)).c_str(), nullptr, 0, *pVar == vValues[i]))
 						*pVar = vValues[i], bReturn = true;
 
 					ImVec2 vOriginalPos3 = GetCursorPos();
@@ -1679,7 +1679,7 @@ namespace ImGui
 		PushItemWidth(vSize.x);
 
 		static std::string sPreview = "", sInput = "", sTab = XS("\n");
-		if (BeginCombo(std::format(XS("##{}"), sLabel).c_str(), "", ImGuiComboFlags_CustomPreview | ImGuiComboFlags_NoArrowButton | ImGuiComboFlags_HeightLarge))
+		if (BeginCombo(std::vformat(XS("##{}"), std::make_format_args( sLabel)).c_str(), "", ImGuiComboFlags_CustomPreview | ImGuiComboFlags_NoArrowButton | ImGuiComboFlags_HeightLarge))
 		{
 			if (!mActiveMap[uHash])
 				sPreview = sInput = "";
@@ -1780,7 +1780,7 @@ namespace ImGui
 
 					bool bActive = FNV1A::Hash32(pVar->c_str()) == FNV1A::Hash32(sEntry.c_str());
 					ImVec2 vOriginalPos3 = GetCursorPos();
-					if (FSelectable(std::format(XS("##{}{}"), sEntry, i).c_str(), nullptr, 0, bActive))
+					if (FSelectable(std::vformat(XS("##{}{}"), std::make_format_args( sEntry, i)).c_str(), nullptr, 0, bActive))
 						*pVar = sEntry, bReturn = true;
 
 					ImVec2 vOriginalPos4 = GetCursorPos();
@@ -1891,7 +1891,7 @@ namespace ImGui
 		PushStyleColor(ImGuiCol_PopupBg, F::Render.Background0p5.Value);
 
 		ImVec4 tTempColor = ColorToVec(*pColor);
-		bool bReturn = ColorEdit4(std::format(XS("##{}"), sLabel).c_str(), &tTempColor.x, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoBorder | ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_LargeAlphaGrid | ImGuiColorEditFlags_NoRoundRestrict, vSize);
+		bool bReturn = ColorEdit4(std::vformat(XS("##{}"), std::make_format_args( sLabel)).c_str(), &tTempColor.x, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoBorder | ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_LargeAlphaGrid | ImGuiColorEditFlags_NoRoundRestrict, vSize);
 		if (bReturn)
 			*pColor = VecToColor(tTempColor);
 		if (!Disabled && IsItemHovered())
@@ -2090,7 +2090,7 @@ namespace ImGui
 			str.erase(std::remove_if(str.begin(), str.end(), ::isspace), str.end());
 		}
 		//else if (Vars::Debug::Info.Value)
-		//	str = std::format("{:#x}", key);
+		//	str = std::vformat("{:#x}", std::make_format_args( key));
 		return str;
 	}
 	inline void FKeybind(const char* sLabel, int& iOutput, int iFlags = FKeybindEnum::None, std::vector<int> vIgnore = { Vars::Menu::PrimaryKey[DEFAULT_BIND], Vars::Menu::SecondaryKey[DEFAULT_BIND] }, ImVec2 vSize = { 0, 30 }, int iSizeOffset = 0, bool* pHovered = nullptr)
@@ -2103,7 +2103,7 @@ namespace ImGui
 			F::Menu.m_bInKeybind = true;
 
 			bool bHovered = false;
-			FButton(std::format(XS("{}: ..."), sLabel).c_str(), iFlags | FButtonEnum::NoUpper, vSize, iSizeOffset, nullptr, &bHovered);
+			FButton(std::vformat(XS("{}: ..."), std::make_format_args( sLabel)).c_str(), iFlags | FButtonEnum::NoUpper, vSize, iSizeOffset, nullptr, &bHovered);
 			if (pHovered)
 				*pHovered = bHovered;
 
@@ -2146,7 +2146,7 @@ namespace ImGui
 				GetCurrentContext()->ActiveIdAllowOverlap = true;
 			}
 		}
-		else if (FButton(std::format(XS("{}: {}"), sLabel, VK2STR(iOutput)).c_str(), iFlags | FButtonEnum::NoUpper, vSize, iSizeOffset, nullptr, pHovered))
+		else if (FButton(std::vformat(XS("{}: {}"), std::make_format_args( sLabel, VK2STR(iOutput))).c_str(), iFlags | FButtonEnum::NoUpper, vSize, iSizeOffset, nullptr, pHovered))
 			SetActiveID(uId, GetCurrentWindow());
 
 		PopID();
@@ -2200,7 +2200,7 @@ namespace ImGui
 		else
 		{
 			for (auto& pair : *pVar)
-				sPreview += std::format(XS("{}, "), pair.first.c_str());
+				sPreview += std::vformat(XS("{}, "), std::make_format_args( pair.first.c_str()));
 			sPreview.pop_back(); sPreview.pop_back();
 		}
 
@@ -2228,7 +2228,7 @@ namespace ImGui
 		PushItemWidth(vSize.x);
 
 		bool bActive = false;
-		if (BeginCombo(std::format(XS("##{}"), sLabel).c_str(), "", ImGuiComboFlags_CustomPreview | ImGuiComboFlags_NoArrowButton | ImGuiComboFlags_HeightLarge))
+		if (BeginCombo(std::vformat(XS("##{}"), std::make_format_args( sLabel)).c_str(), "", ImGuiComboFlags_CustomPreview | ImGuiComboFlags_NoArrowButton | ImGuiComboFlags_HeightLarge))
 		{
 			bActive = true;
 
@@ -2254,12 +2254,12 @@ namespace ImGui
 				if (bFlagActive) // do here so as to not sink input
 				{
 					SetCursorPos({ vOriginalPos2.x + vSize.x - H::Draw.Scale(31), vOriginalPos2.y + H::Draw.Scale(1) });
-					ColorPicker(std::format(XS("MaterialColor{}"), iEntry).c_str(), &it->second->second, false);
+					ColorPicker(std::vformat(XS("MaterialColor{}"), std::make_format_args( iEntry)).c_str(), &it->second->second, false);
 					SetCursorPos(vOriginalPos2);
 				}
 				bool bHovered = bFlagActive ? IsItemHovered() : false;
 
-				if (FSelectable(std::format(XS("##{}{}"), sEntry, i).c_str(), nullptr, 0, bFlagActive, ImGuiSelectableFlags_DontClosePopups))
+				if (FSelectable(std::vformat(XS("##{}{}"), std::make_format_args( sEntry, i)).c_str(), nullptr, 0, bFlagActive, ImGuiSelectableFlags_DontClosePopups))
 				{
 					if (bFlagActive)
 						pVar->erase(it->second);
@@ -2451,7 +2451,7 @@ namespace ImGui
 	template <class T>
 	inline void DrawBindInfo(ConfigVar<T>& var, T& val, const std::string& sBind, bool bNewPopup, bool& bLastHovered)
 	{
-		TextUnformatted(std::format(XS("Bind '{}'"), sBind).c_str());
+		TextUnformatted(std::vformat(XS("Bind '{}'"), std::make_format_args( sBind)).c_str());
 
 		static int iBind = DEFAULT_BIND;
 		static Bind_t tBind = {};
@@ -2475,7 +2475,7 @@ namespace ImGui
 				return a < b;
 			});
 		for (auto _iBind : vValues)
-			vStrings.push_back(std::format(XS("{}## Bind{}"), _iBind != DEFAULT_BIND && _iBind < F::Binds.m_vBinds.size() ? F::Binds.m_vBinds[_iBind].m_sName : sBind, _iBind));
+			vStrings.push_back(std::vformat(XS("{}## Bind{}"), std::make_format_args( _iBind != DEFAULT_BIND && _iBind < F::Binds.m_vBinds.size() ? F::Binds.m_vBinds[_iBind].m_sName : sBind, _iBind)));
 		for (auto& sEntry : vStrings)
 			vEntries.push_back(sEntry.c_str());
 
@@ -2596,7 +2596,7 @@ namespace ImGui
 		iFlags |= iVarFlags; \
 		auto val = FGet(var, true); \
 		bool bHovered = false; \
-		bool bReturn = function(std::format(XS("{}## {}"), sLabel, var.Name()).c_str(), arguments, &bHovered); \
+		bool bReturn = function(std::vformat(XS("{}## {}"), std::make_format_args( sLabel, var.Name())).c_str(), arguments, &bHovered); \
 		FSet(var, val); \
 		if (pHovered) \
 			*pHovered = bHovered; \
@@ -2622,7 +2622,7 @@ namespace ImGui
 				static bool bLastHovered = false; \
 				DrawBindInfo(var, staticVal, StripDoubleHash(sBind.c_str()), bNewPopup, bLastHovered); \
 				val = staticVal; \
-				function(std::format(XS("{}## Bind"), var.m_vNames.front()).c_str(), arguments, &bHovered); \
+				function(std::vformat(XS("{}## Bind"), std::make_format_args( var.m_vNames.front())).c_str(), arguments, &bHovered); \
 				bLastHovered |= bHovered; \
 				staticVal = val; \
 				PopTransparent(2); \

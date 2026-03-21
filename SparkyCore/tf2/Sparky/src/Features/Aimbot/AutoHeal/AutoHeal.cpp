@@ -348,7 +348,7 @@ void CAutoHeal::GetDangers(CTFPlayer* pTarget, bool bVaccinator, float& flBullet
 				flDistanceDanger = std::max(flDistanceDanger, bCrits ? 1.f : 0.34f);
 
 #ifdef DEBUG_VACCINATOR
-			//SDK::Output("Hitscan", std::format("{}, {}, {}, {}, {}", flDamage, flSpread, flDamageInLatency, flDamageDanger, flDistanceDanger).c_str(), { 255, 200, 200 }, Vars::Debug::Logging.Value);
+			//SDK::Output("Hitscan", std::vformat("{}, {}, {}, {}, {}", std::make_format_args( flDamage, flSpread, flDamageInLatency, flDamageDanger, flDistanceDanger)).c_str(), { 255, 200, 200 }, Vars::Debug::Logging.Value);
 #endif
 			flBulletDanger += flDamageDanger * flDistanceDanger;
 			break;
@@ -387,7 +387,7 @@ void CAutoHeal::GetDangers(CTFPlayer* pTarget, bool bVaccinator, float& flBullet
 			float flDistanceDanger = Math::RemapVal(flDistance, flRadius, flRadius, 1.f, 0.001f);
 
 #ifdef DEBUG_VACCINATOR
-			SDK::Output(XS("Projectile"), std::format(XS("{}, {}, {}, {}"), flDamage, flDamageInLatency, flDamageDanger, flDistanceDanger).c_str(), { 255, 200, 200 }, Vars::Debug::Logging.Value);
+			SDK::Output(XS("Projectile"), std::vformat(XS("{}, {}, {}, {}"), std::make_format_args( flDamage, flDamageInLatency, flDamageDanger, flDistanceDanger)).c_str(), { 255, 200, 200 }, Vars::Debug::Logging.Value);
 #endif
 			switch (iType)
 			{
@@ -432,7 +432,7 @@ void CAutoHeal::GetDangers(CTFPlayer* pTarget, bool bVaccinator, float& flBullet
 		float flDistanceDanger = Math::RemapVal(flDistance, 1100.f, 3200.f, 1.f, 0.001f);
 
 #ifdef DEBUG_VACCINATOR
-		SDK::Output(XS("Sentry"), std::format(XS("{}, {}, {}, {}"), flDamage, flDamageInLatency, flDamageDanger, flDistanceDanger).c_str(), { 255, 200, 200 }, Vars::Debug::Logging.Value);
+		SDK::Output(XS("Sentry"), std::vformat(XS("{}, {}, {}, {}"), std::make_format_args( flDamage, flDamageInLatency, flDamageDanger, flDistanceDanger)).c_str(), { 255, 200, 200 }, Vars::Debug::Logging.Value);
 #endif
 		flBulletDanger += flDamageDanger * flDistanceDanger;
 	}
@@ -495,7 +495,7 @@ void CAutoHeal::GetDangers(CTFPlayer* pTarget, bool bVaccinator, float& flBullet
 
 #ifdef DEBUG_VACCINATOR
 		G::SphereStorage.emplace_back(vProjectileOrigin, flRadius, 36, 36, I::GlobalVars->curtime + 60.f, Color_t(255, 255, 255, 1), Color_t(0, 0, 0, 0), true);
-		SDK::Output(std::format(XS("Projectile {}"), iType).c_str(), std::format(XS("{}, {}, {}"), flDamage, flDamageDanger, flDistanceDanger).c_str(), { 255, 200, 200 }, Vars::Debug::Logging.Value);
+		SDK::Output(std::vformat(XS("Projectile {}"), std::make_format_args( iType)).c_str(), std::vformat(XS("{}, {}, {}"), std::make_format_args( flDamage, flDamageDanger, flDistanceDanger)).c_str(), { 255, 200, 200 }, Vars::Debug::Logging.Value);
 #endif
 		switch (iType)
 		{
@@ -731,7 +731,7 @@ void CAutoHeal::Event(IGameEvent* pEvent, uint32_t uHash)
 
 		m_flDamagedTime = 1.f;
 #ifdef DEBUG_VACCINATOR
-		SDK::Output(XS("Hurt"), std::format(XS("{}, {}"), m_iDamagedType, m_flDamagedDPS).c_str(), { 255, 100, 100 });
+		SDK::Output(XS("Hurt"), std::vformat(XS("{}, {}"), std::make_format_args( m_iDamagedType, m_flDamagedDPS)).c_str(), { 255, 100, 100 });
 #endif
 		return;
 	}
@@ -759,6 +759,6 @@ void CAutoHeal::Draw(CTFPlayer* pLocal)
 	y -= nTall;
 
 	for (auto& [flDanger, iResist] : vResistDangers)
-		H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOP, std::format(XS("{}: {:.3f}"), iResist == MEDIGUN_BULLET_RESIST ? XS("Bullet") : iResist == MEDIGUN_BLAST_RESIST ? XS("Blast") : XS("Fire"), flDanger).c_str());
+		H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOP, std::vformat(XS("{}: {:.3f}"), std::make_format_args( iResist == MEDIGUN_BULLET_RESIST ? XS("Bullet") : iResist == MEDIGUN_BLAST_RESIST ? XS("Blast") : XS("Fire"), flDanger)).c_str());
 }
 #endif

@@ -50,7 +50,7 @@ MAKE_HOOK(VGuiMenuBuilder_AddMenuItem, S::VGuiMenuBuilder_AddMenuItem(), void*,
 			CALL_ORIGINAL(rcx, XS("History"), XS("history"), XS("profile"));
 			CALL_ORIGINAL(rcx, I::EngineClient->GetPlayerForUserID(F::Spectate.GetTarget(true)) == s_iPlayerIndex ? XS("Unspectate") : XS("Spectate"), XS("specplayer"), XS("profile"));
 
-			CALL_ORIGINAL(rcx, std::format(XS("Tags for {}"), s_sPlayerName).c_str(), XS("listtags"), XS("tags"));
+			CALL_ORIGINAL(rcx, std::vformat(XS("Tags for {}"), std::make_format_args( s_sPlayerName)).c_str(), XS("listtags"), XS("tags"));
 			for (auto it = F::PlayerUtils.m_vTags.begin(); it != F::PlayerUtils.m_vTags.end(); it++)
 			{
 				int iID = std::distance(F::PlayerUtils.m_vTags.begin(), it);
@@ -59,7 +59,7 @@ MAKE_HOOK(VGuiMenuBuilder_AddMenuItem, S::VGuiMenuBuilder_AddMenuItem(), void*,
 					continue;
 
 				bool bHasTag = F::PlayerUtils.HasTag(s_uAccountID, iID);
-				CALL_ORIGINAL(rcx, std::format(XS("{} {}"), bHasTag ? XS("Remove") : XS("Add"), tTag.m_sName).c_str(), std::format(XS("modifytag{}"), iID).c_str(), XS("tags"));
+				CALL_ORIGINAL(rcx, std::vformat(XS("{} {}"), std::make_format_args( bHasTag ? XS("Remove") : XS("Add"), tTag.m_sName)).c_str(), std::vformat(XS("modifytag{}"), std::make_format_args( iID)).c_str(), XS("tags"));
 			}
 
 			return pReturn;
@@ -84,7 +84,7 @@ MAKE_HOOK(CTFClientScoreBoardDialog_OnCommand, S::CTFClientScoreBoardDialog_OnCo
 	switch (uHash)
 	{
 	case FNV1A::Hash32Const(XS("history")):
-		I::SteamFriends->ActivateGameOverlayToWebPage(std::format(XS("https://steamhistory.net/id/{}"), CSteamID(s_uAccountID, k_EUniversePublic, k_EAccountTypeIndividual).ConvertToUint64()).c_str());
+		I::SteamFriends->ActivateGameOverlayToWebPage(std::vformat(XS("https://steamhistory.net/id/{}"), std::make_format_args( CSteamID(s_uAccountID, k_EUniversePublic, k_EAccountTypeIndividual).ConvertToUint64())).c_str());
 		break;
 	case FNV1A::Hash32Const(XS("listtags")):
 		F::Output.TagsOnJoin(s_sPlayerName, s_uAccountID);

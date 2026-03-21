@@ -37,9 +37,9 @@ MAKE_HOOK(CL_ProcessPacketEntities, S::CL_ProcessPacketEntities(), bool,
 		mCriticalStorage[i].m_nCritSeedRequests = pWeapon->m_nCritSeedRequests();
 
 		if (Vars::Debug::Logging.Value) I::CVar->ConsolePrintf(XS("\n"));
-		SDK::Output(XS("ProcessPacketEntities"), std::format(XS("{} ({:#x}): mCriticalStorage[i].m_flCritTokenBucket = {}"), i, uintptr_t(pWeapon), pWeapon->m_flCritTokenBucket()).c_str(), { 100, 150, 255 }, Vars::Debug::Logging.Value);
-		SDK::Output(XS("ProcessPacketEntities"), std::format(XS("{} ({:#x}): mCriticalStorage[i].m_nCritChecks = {}"), i, uintptr_t(pWeapon), pWeapon->m_nCritChecks()).c_str(), { 100, 150, 255 }, Vars::Debug::Logging.Value);
-		SDK::Output(XS("ProcessPacketEntities"), std::format(XS("{} ({:#x}): mCriticalStorage[i].m_nCritSeedRequests = {}"), i, uintptr_t(pWeapon), pWeapon->m_nCritSeedRequests()).c_str(), { 100, 150, 255 }, Vars::Debug::Logging.Value);
+		SDK::Output(XS("ProcessPacketEntities"), std::vformat(XS("{} ({:#x}): mCriticalStorage[i].m_flCritTokenBucket = {}"), std::make_format_args( i, uintptr_t(pWeapon), pWeapon->m_flCritTokenBucket())).c_str(), { 100, 150, 255 }, Vars::Debug::Logging.Value);
+		SDK::Output(XS("ProcessPacketEntities"), std::vformat(XS("{} ({:#x}): mCriticalStorage[i].m_nCritChecks = {}"), std::make_format_args( i, uintptr_t(pWeapon), pWeapon->m_nCritChecks())).c_str(), { 100, 150, 255 }, Vars::Debug::Logging.Value);
+		SDK::Output(XS("ProcessPacketEntities"), std::vformat(XS("{} ({:#x}): mCriticalStorage[i].m_nCritSeedRequests = {}"), std::make_format_args( i, uintptr_t(pWeapon), pWeapon->m_nCritSeedRequests())).c_str(), { 100, 150, 255 }, Vars::Debug::Logging.Value);
 	}
 
 	bool bReturn = CALL_ORIGINAL(entmsg);
@@ -62,9 +62,9 @@ MAKE_HOOK(CL_ProcessPacketEntities, S::CL_ProcessPacketEntities(), bool,
 		pWeapon->m_nCritSeedRequests() = tStorage.m_nCritSeedRequests;
 
 		if (Vars::Debug::Logging.Value) I::CVar->ConsolePrintf(XS("\n"));
-		SDK::Output(XS("ProcessPacketEntities"), std::format(XS("{} ({:#x}): pWeapon->m_flCritTokenBucket() = {}"), iSlot, uintptr_t(pWeapon), pWeapon->m_flCritTokenBucket()).c_str(), { 100, 255, 150 }, Vars::Debug::Logging.Value);
-		SDK::Output(XS("ProcessPacketEntities"), std::format(XS("{} ({:#x}): pWeapon->m_nCritChecks() = {}"), iSlot, uintptr_t(pWeapon), pWeapon->m_nCritChecks()).c_str(), { 100, 255, 150 }, Vars::Debug::Logging.Value);
-		SDK::Output(XS("ProcessPacketEntities"), std::format(XS("{} ({:#x}): pWeapon->m_nCritSeedRequests() = {}"), iSlot, uintptr_t(pWeapon), pWeapon->m_nCritSeedRequests()).c_str(), { 100, 255, 150 }, Vars::Debug::Logging.Value);
+		SDK::Output(XS("ProcessPacketEntities"), std::vformat(XS("{} ({:#x}): pWeapon->m_flCritTokenBucket() = {}"), std::make_format_args( iSlot, uintptr_t(pWeapon), pWeapon->m_flCritTokenBucket())).c_str(), { 100, 255, 150 }, Vars::Debug::Logging.Value);
+		SDK::Output(XS("ProcessPacketEntities"), std::vformat(XS("{} ({:#x}): pWeapon->m_nCritChecks() = {}"), std::make_format_args( iSlot, uintptr_t(pWeapon), pWeapon->m_nCritChecks())).c_str(), { 100, 255, 150 }, Vars::Debug::Logging.Value);
+		SDK::Output(XS("ProcessPacketEntities"), std::vformat(XS("{} ({:#x}): pWeapon->m_nCritSeedRequests() = {}"), std::make_format_args( iSlot, uintptr_t(pWeapon), pWeapon->m_nCritSeedRequests())).c_str(), { 100, 255, 150 }, Vars::Debug::Logging.Value);
 	}
 
 	return bReturn;

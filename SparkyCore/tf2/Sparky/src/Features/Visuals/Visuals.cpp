@@ -255,7 +255,7 @@ void CVisuals::DrawPickupTimers()
 
 		Vec3 vScreen;
 		if (SDK::W2S(tPickup.m_vLocation, vScreen))
-			H::Draw.StringOutlined(H::Fonts.GetFont(FONT_ESP), vScreen.x, vScreen.y, pGroup->m_tColor, Vars::Menu::Theme::Background.Value, ALIGN_CENTER, std::format(XS("{:.1f}s"), flTime).c_str());
+			H::Draw.StringOutlined(H::Fonts.GetFont(FONT_ESP), vScreen.x, vScreen.y, pGroup->m_tColor, Vars::Menu::Theme::Background.Value, ALIGN_CENTER, std::vformat(XS("{:.1f}s"), std::make_format_args( flTime)).c_str());
 
 		it++;
 	}
@@ -310,9 +310,9 @@ void CVisuals::DrawDebugInfo(CTFPlayer* pLocal)
 
 		if (pCmd)
 		{
-			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format(XS("View: ({:.3f}, {:.3f}, {:.3f})"), pCmd->viewangles.x, pCmd->viewangles.y, pCmd->viewangles.z).c_str());
-			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format(XS("Move: ({}, {}, {})"), pCmd->forwardmove, pCmd->sidemove, pCmd->upmove).c_str());
-			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format(XS("Buttons: {:#034b} ({})"), pCmd->buttons,
+			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat(XS("View: ({:.3f}, {:.3f}, {:.3f})"), std::make_format_args( pCmd->viewangles.x, pCmd->viewangles.y, pCmd->viewangles.z)).c_str());
+			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat(XS("Move: ({}, {}, {})"), std::make_format_args( pCmd->forwardmove, pCmd->sidemove, pCmd->upmove)).c_str());
+			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat(XS("Buttons: {:#034b} ({})"), std::make_format_args( pCmd->buttons,
 				[&]()
 				{
 					std::string sReturn = "";
@@ -362,18 +362,18 @@ void CVisuals::DrawDebugInfo(CTFPlayer* pLocal)
 					}
 					return sReturn.empty() ? XS("NONE") : sReturn;
 				}()
-				).c_str());
-			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format(XS("Tickcount: {}, Command: {}"), pCmd->tick_count, pCmd->command_number).c_str());
+				)).c_str());
+			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat(XS("Tickcount: {}, Command: {}"), std::make_format_args( pCmd->tick_count, pCmd->command_number)).c_str());
 		}
 		Vec3 vOrigin = pLocal->m_vecOrigin();
-		H::Draw.StringOutlined(fFont, x, y += nTall * 2, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format(XS("Origin: ({:.3f}, {:.3f}, {:.3f})"), vOrigin.x, vOrigin.y, vOrigin.z).c_str());
+		H::Draw.StringOutlined(fFont, x, y += nTall * 2, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat(XS("Origin: ({:.3f}, {:.3f}, {:.3f})"), std::make_format_args( vOrigin.x, vOrigin.y, vOrigin.z)).c_str());
 		Vec3 vVelocity = pLocal->m_vecVelocity();
-		H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format(XS("Velocity: {:.3f} ({:.3f}, {:.3f}, {:.3f})"), vVelocity.Length(), vVelocity.x, vVelocity.y, vVelocity.z).c_str());
-		H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format(XS("Tickbase: {}"), pLocal->m_nTickBase()).c_str());
-		//H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format("Choke: {}, {}", G::Choking, I::ClientState->chokedcommands).c_str());
-		//H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format("Ticks: {}, {}", F::Ticks.m_iShiftedTicks, F::Ticks.m_iShiftedGoal).c_str());
-		//H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format("Round state: {}, {}, {}", SDK::GetRoundState(), SDK::GetWinningTeam(), I::EngineClient->IsPlayingDemo()).c_str());
-		//H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format("Entities: {} ({}, {})", I::ClientEntityList->GetMaxEntities(), I::ClientEntityList->GetHighestEntityIndex(), I::ClientEntityList->NumberOfEntities(false)).c_str());
+		H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat(XS("Velocity: {:.3f} ({:.3f}, {:.3f}, {:.3f})"), std::make_format_args( vVelocity.Length(), vVelocity.x, vVelocity.y, vVelocity.z)).c_str());
+		H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat(XS("Tickbase: {}"), std::make_format_args( pLocal->m_nTickBase())).c_str());
+		//H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat("Choke: {}, {}", std::make_format_args( G::Choking, I::ClientState->chokedcommands)).c_str());
+		//H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat("Ticks: {}, {}", std::make_format_args( F::Ticks.m_iShiftedTicks, F::Ticks.m_iShiftedGoal)).c_str());
+		//H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat("Round state: {}, {}, {}", std::make_format_args( SDK::GetRoundState(), SDK::GetWinningTeam(), I::EngineClient->IsPlayingDemo())).c_str());
+		//H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat("Entities: {} ({}, {})", std::make_format_args( I::ClientEntityList->GetMaxEntities(), I::ClientEntityList->GetHighestEntityIndex(), I::ClientEntityList->NumberOfEntities(false))).c_str());
 	
 		/*
 		if (pWeapon)
@@ -384,13 +384,13 @@ void CVisuals::DrawDebugInfo(CTFPlayer* pLocal)
 			float flAttack = pLocal->m_flNextAttack();
 
 			y += nTall;
-			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format("Weapon: {}, {}", pWeapon->GetSlot(), pWeapon->GetWeaponID()).c_str());
-			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format("Attacking: {}", G::Attacking).c_str());
-			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format("CanPrimaryAttack: {} ([{:.3f} | {:.3f}] <= {:.3f})", G::CanPrimaryAttack, flPrimaryAttack, flAttack, flTime).c_str());
-			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format("CanSecondaryAttack: {} ([{:.3f} | {:.3f}] <= {:.3f})", G::CanSecondaryAttack, flSecondaryAttack, flAttack, flTime).c_str());
-			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format("Attack: {:.3f}, {:.3f}; {:.3f}", flTime - flPrimaryAttack, flTime - flSecondaryAttack, flTime - flAttack).c_str());
-			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format("Reload: {} ({} || {} != 0)", G::Reloading, pWeapon->m_bInReload(), pWeapon->m_iReloadMode()).c_str());
-			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::format("Throw: {}, Smack: {}", G::Throwing, pWeapon->m_flSmackTime()).c_str());
+			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat("Weapon: {}, {}", std::make_format_args( pWeapon->GetSlot(), pWeapon->GetWeaponID())).c_str());
+			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat("Attacking: {}", std::make_format_args( G::Attacking)).c_str());
+			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat("CanPrimaryAttack: {} ([{:.3f} | {:.3f}] <= {:.3f})", std::make_format_args( G::CanPrimaryAttack, flPrimaryAttack, flAttack, flTime)).c_str());
+			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat("CanSecondaryAttack: {} ([{:.3f} | {:.3f}] <= {:.3f})", std::make_format_args( G::CanSecondaryAttack, flSecondaryAttack, flAttack, flTime)).c_str());
+			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat("Attack: {:.3f}, {:.3f}; {:.3f}", std::make_format_args( flTime - flPrimaryAttack, flTime - flSecondaryAttack, flTime - flAttack)).c_str());
+			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat("Reload: {} ({} || {} != 0)", std::make_format_args( G::Reloading, pWeapon->m_bInReload(), pWeapon->m_iReloadMode())).c_str());
+			H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, std::vformat("Throw: {}, Smack: {}", std::make_format_args( G::Throwing, pWeapon->m_flSmackTime())).c_str());
 		}
 		*/
 	}

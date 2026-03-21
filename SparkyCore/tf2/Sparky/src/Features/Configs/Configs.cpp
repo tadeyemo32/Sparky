@@ -392,7 +392,7 @@ static inline void LoadMain(BaseVar*& pBase, boost::property_tree::ptree& tTree)
 		}
 	}
 	else if (!(pVar->m_iFlags & NOSAVE))
-		SDK::Output(XS("Sparky"), std::format(XS("{} not found"), pVar->Name()).c_str(), ALTERNATE_COLOR, OUTPUT_CONSOLE | OUTPUT_MENU | OUTPUT_DEBUG);
+		SDK::Output(XS("Sparky"), std::vformat(XS("{} not found"), std::make_format_args( pVar->Name())).c_str(), ALTERNATE_COLOR, OUTPUT_CONSOLE | OUTPUT_MENU | OUTPUT_DEBUG);
 }
 #define Load(t, j) if (IsType(t)) LoadMain<t>(pBase, j);
 
@@ -486,7 +486,7 @@ bool CConfigs::SaveConfig(const std::string& sConfigName, bool bNotify)
 
 		m_sCurrentConfig = sConfigName; m_sCurrentVisuals = "";
 		if (bNotify)
-			SDK::Output(XS("Sparky"), std::format(XS("Config {} saved"), sConfigName).c_str(), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
+			SDK::Output(XS("Sparky"), std::vformat(XS("Config {} saved"), std::make_format_args( sConfigName)).c_str(), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
 	}
 	catch (...)
 	{
@@ -603,7 +603,7 @@ bool CConfigs::LoadConfig(const std::string& sConfigName, bool bNotify)
 
 		m_sCurrentConfig = sConfigName; m_sCurrentVisuals = "";
 		if (bNotify)
-			SDK::Output(XS("Sparky"), std::format(XS("Config {} loaded"), sConfigName).c_str(), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
+			SDK::Output(XS("Sparky"), std::vformat(XS("Config {} loaded"), std::make_format_args( sConfigName)).c_str(), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
 	}
 	catch (...)
 	{
@@ -695,7 +695,7 @@ bool CConfigs::SaveVisual(const std::string& sConfigName, bool bNotify)
 		write_json(m_sVisualsPath + sConfigName + m_sConfigExtension, tWrite);
 
 		if (bNotify)
-			SDK::Output(XS("Sparky"), std::format(XS("Visual config {} saved"), sConfigName).c_str(), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
+			SDK::Output(XS("Sparky"), std::vformat(XS("Visual config {} saved"), std::make_format_args( sConfigName)).c_str(), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
 	}
 	catch (...)
 	{
@@ -778,7 +778,7 @@ bool CConfigs::LoadVisual(const std::string& sConfigName, bool bNotify)
 
 		m_sCurrentVisuals = sConfigName;
 		if (bNotify)
-			SDK::Output(XS("Sparky"), std::format(XS("Visual config {} loaded"), sConfigName).c_str(), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
+			SDK::Output(XS("Sparky"), std::vformat(XS("Visual config {} loaded"), std::make_format_args( sConfigName)).c_str(), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
 	}
 	catch (...)
 	{
@@ -812,7 +812,7 @@ void CConfigs::DeleteConfig(const std::string& sConfigName, bool bNotify)
 			LoadConfig(XS("default"), false);
 
 		if (bNotify)
-			SDK::Output(XS("Sparky"), std::format(XS("Config {} deleted"), sConfigName).c_str(), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
+			SDK::Output(XS("Sparky"), std::vformat(XS("Config {} deleted"), std::make_format_args( sConfigName)).c_str(), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
 	}
 	catch (...)
 	{
@@ -851,7 +851,7 @@ void CConfigs::ResetConfig(const std::string& sConfigName, bool bNotify)
 		H::Fonts.Reload(Vars::Menu::Scale[DEFAULT_BIND]);
 
 		if (bNotify)
-			SDK::Output(XS("Sparky"), std::format(XS("Config {} reset"), sConfigName).c_str(), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
+			SDK::Output(XS("Sparky"), std::vformat(XS("Config {} reset"), std::make_format_args( sConfigName)).c_str(), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
 	}
 	catch (...)
 	{
@@ -866,7 +866,7 @@ void CConfigs::DeleteVisual(const std::string& sConfigName, bool bNotify)
 		std::filesystem::remove(m_sVisualsPath + sConfigName + m_sConfigExtension);
 
 		if (bNotify)
-			SDK::Output(XS("Sparky"), std::format(XS("Visual config {} deleted"), sConfigName).c_str(), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
+			SDK::Output(XS("Sparky"), std::vformat(XS("Visual config {} deleted"), std::make_format_args( sConfigName)).c_str(), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
 	}
 	catch (...)
 	{
@@ -903,7 +903,7 @@ void CConfigs::ResetVisual(const std::string& sConfigName, bool bNotify)
 		F::Binds.SetVars(nullptr, nullptr, false);
 
 		if (bNotify)
-			SDK::Output(XS("Sparky"), std::format(XS("Visual config {} reset"), sConfigName).c_str(), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
+			SDK::Output(XS("Sparky"), std::vformat(XS("Visual config {} reset"), std::make_format_args( sConfigName)).c_str(), DEFAULT_COLOR, OUTPUT_CONSOLE | OUTPUT_TOAST | OUTPUT_MENU | OUTPUT_DEBUG);
 	}
 	catch (...)
 	{

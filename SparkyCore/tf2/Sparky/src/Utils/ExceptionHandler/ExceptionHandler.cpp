@@ -62,7 +62,7 @@ static inline std::deque<Frame_t> StackTrace(PCONTEXT pContext)
 			if (GetModuleBaseName(hProcess, hBase, buffer, sizeof(buffer) / sizeof(char)))
 				tFrame.m_sModule = buffer;
 			else
-				tFrame.m_sModule = std::format(XS("{:#x}"), tFrame.m_uBase);
+				tFrame.m_sModule = std::vformat(XS("{:#x}"), std::make_format_args( tFrame.m_uBase));
 		}
 
 		{
@@ -114,22 +114,22 @@ static LONG APIENTRY ExceptionFilter(PEXCEPTION_POINTERS ExceptionInfo)
 	s_mAddresses[ExceptionInfo->ExceptionRecord->ExceptionAddress];
 
 	std::stringstream ssErrorStream;
-	ssErrorStream << std::format(XS("Error: {} (0x{:X}) ({})\n"), sError, ExceptionInfo->ExceptionRecord->ExceptionCode, ++s_iExceptions);
+	ssErrorStream << std::vformat(XS("Error: {} (0x{:X}) ({})\n"), std::make_format_args( sError, ExceptionInfo->ExceptionRecord->ExceptionCode, ++s_iExceptions));
 	ssErrorStream << XS("Built @ ") __DATE__ XS(", ") __TIME__ XS(", ") __CONFIGURATION__ XS("\n");
-	ssErrorStream << std::format(XS("Time @ {}, {}\n"), SDK::GetDate(), SDK::GetTime());
+	ssErrorStream << std::vformat(XS("Time @ {}, {}\n"), std::make_format_args( SDK::GetDate(), SDK::GetTime()));
 
 	ssErrorStream << XS("\n");
 	if (U::Memory.GetOffsetFromBase(s_lpParam))
-		ssErrorStream << std::format(XS("This: {}\n"), U::Memory.GetModuleOffset(s_lpParam));
-	ssErrorStream << std::format(XS("RIP: {:#x}\n"), ExceptionInfo->ContextRecord->Rip);
-	ssErrorStream << std::format(XS("RAX: {:#x}\n"), ExceptionInfo->ContextRecord->Rax);
-	ssErrorStream << std::format(XS("RCX: {:#x}\n"), ExceptionInfo->ContextRecord->Rcx);
-	ssErrorStream << std::format(XS("RDX: {:#x}\n"), ExceptionInfo->ContextRecord->Rdx);
-	ssErrorStream << std::format(XS("RBX: {:#x}\n"), ExceptionInfo->ContextRecord->Rbx);
-	ssErrorStream << std::format(XS("RSP: {:#x}\n"), ExceptionInfo->ContextRecord->Rsp);
-	ssErrorStream << std::format(XS("RBP: {:#x}\n"), ExceptionInfo->ContextRecord->Rbp);
-	ssErrorStream << std::format(XS("RSI: {:#x}\n"), ExceptionInfo->ContextRecord->Rsi);
-	ssErrorStream << std::format(XS("RDI: {:#x}\n"), ExceptionInfo->ContextRecord->Rdi);
+		ssErrorStream << std::vformat(XS("This: {}\n"), std::make_format_args( U::Memory.GetModuleOffset(s_lpParam)));
+	ssErrorStream << std::vformat(XS("RIP: {:#x}\n"), std::make_format_args( ExceptionInfo->ContextRecord->Rip));
+	ssErrorStream << std::vformat(XS("RAX: {:#x}\n"), std::make_format_args( ExceptionInfo->ContextRecord->Rax));
+	ssErrorStream << std::vformat(XS("RCX: {:#x}\n"), std::make_format_args( ExceptionInfo->ContextRecord->Rcx));
+	ssErrorStream << std::vformat(XS("RDX: {:#x}\n"), std::make_format_args( ExceptionInfo->ContextRecord->Rdx));
+	ssErrorStream << std::vformat(XS("RBX: {:#x}\n"), std::make_format_args( ExceptionInfo->ContextRecord->Rbx));
+	ssErrorStream << std::vformat(XS("RSP: {:#x}\n"), std::make_format_args( ExceptionInfo->ContextRecord->Rsp));
+	ssErrorStream << std::vformat(XS("RBP: {:#x}\n"), std::make_format_args( ExceptionInfo->ContextRecord->Rbp));
+	ssErrorStream << std::vformat(XS("RSI: {:#x}\n"), std::make_format_args( ExceptionInfo->ContextRecord->Rsi));
+	ssErrorStream << std::vformat(XS("RDI: {:#x}\n"), std::make_format_args( ExceptionInfo->ContextRecord->Rdi));
 
 	ssErrorStream << XS("\n");
 	if (auto vTrace = StackTrace(ExceptionInfo->ContextRecord);
@@ -139,15 +139,15 @@ static LONG APIENTRY ExceptionFilter(PEXCEPTION_POINTERS ExceptionInfo)
 		{
 			Frame_t& tFrame = vTrace[i];
 
-			ssErrorStream << std::format(XS("{}: "), i + 1);
+			ssErrorStream << std::vformat(XS("{}: "), std::make_format_args( i + 1));
 			if (tFrame.m_uBase)
-				ssErrorStream << std::format(XS("{}+{:#x}"), tFrame.m_sModule, tFrame.m_uAddress - tFrame.m_uBase);
+				ssErrorStream << std::vformat(XS("{}+{:#x}"), std::make_format_args( tFrame.m_sModule, tFrame.m_uAddress - tFrame.m_uBase));
 			else
-				ssErrorStream << std::format(XS("{:#x}"), tFrame.m_uAddress);
+				ssErrorStream << std::vformat(XS("{:#x}"), std::make_format_args( tFrame.m_uAddress));
 			if (!tFrame.m_sFile.empty())
-				ssErrorStream << std::format(XS(" ({} L{})"), tFrame.m_sFile, tFrame.m_uLine);
+				ssErrorStream << std::vformat(XS(" ({} L{})"), std::make_format_args( tFrame.m_sFile, tFrame.m_uLine));
 			if (!tFrame.m_sName.empty())
-				ssErrorStream << std::format(XS(" ({})"), tFrame.m_sName);
+				ssErrorStream << std::vformat(XS(" ({})"), std::make_format_args( tFrame.m_sName));
 			ssErrorStream << XS("\n");
 		}
 	}

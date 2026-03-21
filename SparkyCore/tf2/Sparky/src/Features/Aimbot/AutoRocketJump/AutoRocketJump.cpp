@@ -186,7 +186,7 @@ void CAutoRocketJump::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* p
 
 							if (G::CanPrimaryAttack)
 							{
-								SDK::Output(XS("Auto jump"), std::format(XS("Ticks to hit: {} ({})"), m_iDelay, n).c_str(), { 255, 0, 0 }, Vars::Debug::Logging.Value);
+								SDK::Output(XS("Auto jump"), std::vformat(XS("Ticks to hit: {} ({})"), std::make_format_args( m_iDelay, n)).c_str(), { 255, 0, 0 }, Vars::Debug::Logging.Value);
 								if (Vars::Debug::Info.Value)
 								{
 									//G::LineStorage.clear(); G::BoxStorage.clear();

@@ -25,18 +25,18 @@ static std::unordered_map<uint32_t, CommandCallback> s_mCommands = {
 		auto pCVar = I::CVar->FindVar(sCVar);
 		if (!pCVar)
 		{
-			SDK::Output(std::format(XS("Could not find {}"), sCVar).c_str());
+			SDK::Output(std::vformat(XS("Could not find {}"), std::make_format_args( sCVar)).c_str());
 			return;
 		}
 
 		std::string sValue = "";
 		for (int i = 1; i < vArgs.size(); i++)
-			sValue += std::format(XS("{} "), vArgs[i]);
+			sValue += std::vformat(XS("{} "), std::make_format_args( vArgs[i]));
 		sValue.pop_back();
 		boost::replace_all(sValue, XS("\""), "");
 
 		pCVar->SetValue(sValue.c_str());
-		SDK::Output(std::format(XS("Set {} to {}"), sCVar, sValue).c_str());
+		SDK::Output(std::vformat(XS("Set {} to {}"), std::make_format_args( sCVar, sValue)).c_str());
 	})
 	AddCommand(XS("getcvar"),
 	{
@@ -50,11 +50,11 @@ static std::unordered_map<uint32_t, CommandCallback> s_mCommands = {
 		auto pCVar = I::CVar->FindVar(sCVar);
 		if (!pCVar)
 		{
-			SDK::Output(std::format(XS("Could not find {}"), sCVar).c_str());
+			SDK::Output(std::vformat(XS("Could not find {}"), std::make_format_args( sCVar)).c_str());
 			return;
 		}
 
-		SDK::Output(std::format(XS("Value of {} is {}"), sCVar, pCVar->GetString()).c_str());
+		SDK::Output(std::vformat(XS("Value of {} is {}"), std::make_format_args( sCVar, pCVar->GetString())).c_str());
 	})
 	AddCommand(XS("queue"),
 	{

@@ -117,7 +117,7 @@ void CSpectatorList::Draw(CTFPlayer* pLocal)
 	auto pResource = H::Entities.GetResource();
 	int iIndex = pTarget->entindex();
 	const char* sName = pTarget != pLocal ? F::PlayerUtils.GetPlayerName(iIndex, pResource->GetName(iIndex)) : XS("You");
-	H::Draw.StringOutlined(fFont, x, y, Vars::Menu::Theme::Accent.Value, Vars::Menu::Theme::Background.Value, align, std::format(XS("Spectating {}:"), sName).c_str());
+	H::Draw.StringOutlined(fFont, x, y, Vars::Menu::Theme::Accent.Value, Vars::Menu::Theme::Background.Value, align, std::vformat(XS("Spectating {}:"), std::make_format_args( sName)).c_str());
 	for (auto& tSpectator : m_vSpectators)
 	{
 		y += nTall;
@@ -133,8 +133,8 @@ void CSpectatorList::Draw(CTFPlayer* pLocal)
 			tColor = tColor.Lerp({ 255, 150, 0, 255 }, 0.5f);
 
 		if (tSpectator.m_flRespawnIn != -1.f)
-			H::Draw.StringOutlined(fFont, x + iconOffset, y, tColor, Vars::Menu::Theme::Background.Value, align, std::format(XS("{} ({} - respawn {}s)"), tSpectator.m_sName, tSpectator.m_sMode, tSpectator.m_flRespawnIn).c_str());
+			H::Draw.StringOutlined(fFont, x + iconOffset, y, tColor, Vars::Menu::Theme::Background.Value, align, std::vformat(XS("{} ({} - respawn {}s)"), std::make_format_args( tSpectator.m_sName, tSpectator.m_sMode, tSpectator.m_flRespawnIn)).c_str());
 		else
-			H::Draw.StringOutlined(fFont, x + iconOffset, y, tColor, Vars::Menu::Theme::Background.Value, align, std::format(XS("{} ({})"), tSpectator.m_sName, tSpectator.m_sMode).c_str());
+			H::Draw.StringOutlined(fFont, x + iconOffset, y, tColor, Vars::Menu::Theme::Background.Value, align, std::vformat(XS("{} ({})"), std::make_format_args( tSpectator.m_sName, tSpectator.m_sMode)).c_str());
 	}
 }

@@ -54,8 +54,8 @@ void COutput::Event(IGameEvent* pEvent, uint32_t uHash, CTFPlayer* pLocal)
 		bool bVotedYes = pEvent->GetInt(XS("vote_option")) == 0;
 		bool bSameTeam = pEntity->As<CTFPlayer>()->m_iTeamNum() == pLocal->m_iTeamNum();
 		OutputInfo(Vars::Logging::VoteCast::LogTo.Value, XS("Vote Cast"),
-			std::format(XS("{}{} voted {}"), (bSameTeam ? "" : XS("[Enemy] ")), (sName), (bVotedYes ? XS("Yes") : XS("No"))).c_str(),
-			std::format(XS("{}{}{}\x1 voted {}{}"), (bSameTeam ? "" : XS("[Enemy] ")), (s_sYellow), (sName), (bVotedYes ? s_sGreen : s_sRed), (bVotedYes ? XS("Yes") : XS("No"))).c_str()
+			std::vformat(XS("{}{} voted {}"), std::make_format_args( (bSameTeam ? "" : XS("[Enemy] ")), (sName), (bVotedYes ? XS("Yes") : XS("No")))).c_str(),
+			std::vformat(XS("{}{}{}\x1 voted {}{}"), std::make_format_args( (bSameTeam ? "" : XS("[Enemy] ")), (s_sYellow), (sName), (bVotedYes ? s_sGreen : s_sRed), (bVotedYes ? XS("Yes") : XS("No")))).c_str()
 		);
 
 		return;
@@ -77,8 +77,8 @@ void COutput::Event(IGameEvent* pEvent, uint32_t uHash, CTFPlayer* pLocal)
 		auto sName = F::PlayerUtils.GetPlayerName(iIndex, pResource->GetName(iIndex));
 		bool bSameTeam = pEntity->As<CTFPlayer>()->m_iTeamNum() == pLocal->m_iTeamNum();
 		OutputInfo(Vars::Logging::ClassChange::LogTo.Value, XS("Class Change"),
-			std::format(XS("{}{} changed class to {}"), (bSameTeam ? "" : XS("[Enemy] ")), (sName), (SDK::GetClassByIndex(pEvent->GetInt(XS("class"))))).c_str(),
-			std::format(XS("{}{}{}\x1 changed class to {}{}"), (bSameTeam ? "" : XS("[Enemy] ")), (s_sYellow), (sName), (s_sYellow), (SDK::GetClassByIndex(pEvent->GetInt(XS("class"))))).c_str()
+			std::vformat(XS("{}{} changed class to {}"), std::make_format_args( (bSameTeam ? "" : XS("[Enemy] ")), (sName), (SDK::GetClassByIndex(pEvent->GetInt(XS("class")))))).c_str(),
+			std::vformat(XS("{}{}{}\x1 changed class to {}{}"), std::make_format_args( (bSameTeam ? "" : XS("[Enemy] ")), (s_sYellow), (sName), (s_sYellow), (SDK::GetClassByIndex(pEvent->GetInt(XS("class")))))).c_str()
 		);
 
 		return;
@@ -109,8 +109,8 @@ void COutput::Event(IGameEvent* pEvent, uint32_t uHash, CTFPlayer* pLocal)
 
 		auto sName = F::PlayerUtils.GetPlayerName(iIndex, pResource->GetName(iIndex));
 		OutputInfo(Vars::Logging::Damage::LogTo.Value, XS("Damage"),
-			std::format(XS("Hit {} for {} damage ({} / {}{})"), (sName), (nDamage), (nHealth), (iMaxHealth), (bCrit ? XS(", crit") : bMinicrit ? XS(", minicrit") : "")).c_str(),
-			std::format(XS("Hit {}{}\x1 for {}{} damage{} ({} / {}{})"), (s_sYellow), (sName), (s_sRed), (nDamage), (s_sYellow), (nHealth), (iMaxHealth), (bCrit ? XS(", crit") : bMinicrit ? XS(", minicrit") : "")).c_str()
+			std::vformat(XS("Hit {} for {} damage ({} / {}{})"), std::make_format_args( (sName), (nDamage), (nHealth), (iMaxHealth), (bCrit ? XS(", crit") : bMinicrit ? XS(", minicrit") : ""))).c_str(),
+			std::vformat(XS("Hit {}{}\x1 for {}{} damage{} ({} / {}{})"), std::make_format_args( (s_sYellow), (sName), (s_sRed), (nDamage), (s_sYellow), (nHealth), (iMaxHealth), (bCrit ? XS(", crit") : bMinicrit ? XS(", minicrit") : ""))).c_str()
 		);
 
 		return;
@@ -197,8 +197,8 @@ void COutput::UserMessage(bf_read& msgData)
 	auto sCallerName = F::PlayerUtils.GetPlayerName(iCaller, pResource->GetName(iCaller));
 	auto sTargetName = F::PlayerUtils.GetPlayerName(iTarget, pResource->GetName(iTarget));
 	OutputInfo(Vars::Logging::VoteStart::LogTo.Value, XS("Vote Start"),
-		std::format(XS("{}{} called a vote on {}"), (bSameTeam ? "" : XS("[Enemy] ")), (sCallerName), (sTargetName)).c_str(),
-		std::format(XS("{}{}{}\x1 called a vote on {}{}"), (bSameTeam ? "" : XS("[Enemy] ")), (s_sYellow), (sCallerName), (s_sYellow), (sTargetName)).c_str()
+		std::vformat(XS("{}{} called a vote on {}"), std::make_format_args( (bSameTeam ? "" : XS("[Enemy] ")), (sCallerName), (sTargetName))).c_str(),
+		std::vformat(XS("{}{}{}\x1 called a vote on {}{}"), std::make_format_args( (bSameTeam ? "" : XS("[Enemy] ")), (s_sYellow), (sCallerName), (s_sYellow), (sTargetName))).c_str()
 	);
 }
 
@@ -209,8 +209,8 @@ void COutput::CheatDetection(const char* sName, const char* sAction, const char*
 		return;
 
 	OutputInfo(Vars::Logging::CheatDetection::LogTo.Value, XS("Cheat Detection"),
-		std::format(XS("{} {} for {}"), (sName), (sAction), (sReason)).c_str(),
-		std::format(XS("{}{}\x1 {} for {}{}"), (s_sYellow), (sName), (sAction), (s_sYellow), (sReason)).c_str()
+		std::vformat(XS("{} {} for {}"), std::make_format_args( (sName), (sAction), (sReason))).c_str(),
+		std::vformat(XS("{}{}\x1 {} for {}{}"), std::make_format_args( (s_sYellow), (sName), (sAction), (s_sYellow), (sReason))).c_str()
 	);
 }
 
@@ -238,14 +238,14 @@ void COutput::TagsOnJoin(const char* sName, uint32_t uAccountID)
 	{
 		auto& pColorTag = vColorsTags.front();
 		sOutputText = pColorTag.second;
-		sChatText = std::format(XS("{}{}"), pColorTag.first, pColorTag.second);
+		sChatText = std::vformat(XS("{}{}"), std::make_format_args( pColorTag.first, pColorTag.second));
 		break;
 	}
 	case 2:
 	{
 		auto& pColorTag1 = vColorsTags.front(), &pColorTag2 = vColorsTags.back();
-		sOutputText = std::format(XS("{} and {}"), pColorTag1.second, pColorTag2.second);
-		sChatText = std::format(XS("{}{}\x1 and {}{}"), pColorTag1.first, pColorTag1.second, pColorTag2.first, pColorTag2.second);
+		sOutputText = std::vformat(XS("{} and {}"), std::make_format_args( pColorTag1.second, pColorTag2.second));
+		sChatText = std::vformat(XS("{}{}\x1 and {}{}"), std::make_format_args( pColorTag1.first, pColorTag1.second, pColorTag2.first, pColorTag2.second));
 		break;
 	}
 	default:
@@ -255,21 +255,21 @@ void COutput::TagsOnJoin(const char* sName, uint32_t uAccountID)
 			auto& pColorTag = *it;
 			if (it + 1 != vColorsTags.end())
 			{
-				sOutputText += std::format(XS("{}, "), pColorTag.second);
-				sChatText += std::format(XS("{}{}\x1, "), pColorTag.first, pColorTag.second);
+				sOutputText += std::vformat(XS("{}, "), std::make_format_args( pColorTag.second));
+				sChatText += std::vformat(XS("{}{}\x1, "), std::make_format_args( pColorTag.first, pColorTag.second));
 			}
 			else
 			{
-				sOutputText += std::format(XS("and {}"), pColorTag.second);
-				sChatText += std::format(XS("and {}{}"), pColorTag.first, pColorTag.second);
+				sOutputText += std::vformat(XS("and {}"), std::make_format_args( pColorTag.second));
+				sChatText += std::vformat(XS("and {}{}"), std::make_format_args( pColorTag.first, pColorTag.second));
 			}
 		}
 	}
 	}
 
 	OutputInfo(Vars::Logging::Tags::LogTo.Value, XS("Tags"),
-		std::format(XS("{} has the {} {}"), (sName), (vColorsTags.size() == 1 ? XS("tag") : XS("tags")), (sOutputText)).c_str(),
-		std::format(XS("{}{}\x1 has the {} {}"), (s_sYellow), (sName), (vColorsTags.size() == 1 ? XS("tag") : XS("tags")), (sChatText)).c_str()
+		std::vformat(XS("{} has the {} {}"), std::make_format_args( (sName), (vColorsTags.size() == 1 ? XS("tag") : XS("tags")), (sOutputText))).c_str(),
+		std::vformat(XS("{}{}\x1 has the {} {}"), std::make_format_args( (s_sYellow), (sName), (vColorsTags.size() == 1 ? XS("tag") : XS("tags")), (sChatText))).c_str()
 	);
 }
 void COutput::TagsChanged(const char* sName, const char* sAction, const char* sColor, const char* sTag)
@@ -279,8 +279,8 @@ void COutput::TagsChanged(const char* sName, const char* sAction, const char* sC
 
 	auto uHash = FNV1A::Hash32(sAction);
 	OutputInfo(Vars::Logging::Tags::LogTo.Value, XS("Tags"),
-		std::format(XS("{} tag {} {} {}"), (sAction), (sTag), (uHash == FNV1A::Hash32Const(XS("Added")) ? XS("to") : XS("from")), (sName)).c_str(),
-		std::format(XS("{} tag {}{}\x1 {} {}{}"), (sAction), (sColor), (sTag), (uHash == FNV1A::Hash32Const(XS("Added")) ? XS("to") : XS("from")), (s_sYellow), (sName)).c_str()
+		std::vformat(XS("{} tag {} {} {}"), std::make_format_args( (sAction), (sTag), (uHash == FNV1A::Hash32Const(XS("Added")) ? XS("to") : XS("from")), (sName))).c_str(),
+		std::vformat(XS("{} tag {}{}\x1 {} {}{}"), std::make_format_args( (sAction), (sColor), (sTag), (uHash == FNV1A::Hash32Const(XS("Added")) ? XS("to") : XS("from")), (s_sYellow), (sName))).c_str()
 	);
 }
 
@@ -296,8 +296,8 @@ void COutput::AliasOnJoin(const char* sName, uint32_t uAccountID)
 	auto& sAlias = F::PlayerUtils.m_mPlayerAliases[uAccountID];
 
 	OutputInfo(Vars::Logging::Tags::LogTo.Value, XS("Aliases"),
-		std::format(XS("{} has the alias \"{}\""), (sName), (sAlias)).c_str(),
-		std::format(XS("{}{}\x1 has the alias \"{}{}\x1\""), (s_sYellow), (sName), (s_sYellow), (sAlias)).c_str()
+		std::vformat(XS("{} has the alias \"{}\""), std::make_format_args( (sName), (sAlias))).c_str(),
+		std::vformat(XS("{}{}\x1 has the alias \"{}{}\x1\""), std::make_format_args( (s_sYellow), (sName), (s_sYellow), (sAlias))).c_str()
 	);
 }
 void COutput::AliasChanged(const char* sName, const char* sAction, const char* sAlias)
@@ -307,18 +307,18 @@ void COutput::AliasChanged(const char* sName, const char* sAction, const char* s
 
 	auto uHash = FNV1A::Hash32(sAction);
 	OutputInfo(Vars::Logging::Tags::LogTo.Value, XS("Aliases"),
-		std::format(XS("{} {}'s alias {} \"{}\""), (sAction), (sName), (uHash == FNV1A::Hash32Const(XS("Changed")) ? XS("to") : XS("of")), (sAlias)).c_str(),
-		std::format(XS("{} {}{}\x1's alias {} \"{}{}\x1\""), (sAction), (s_sYellow), (sName), (uHash == FNV1A::Hash32Const(XS("Changed")) ? XS("to") : XS("of")), (s_sYellow), (sAlias)).c_str()
+		std::vformat(XS("{} {}'s alias {} \"{}\""), std::make_format_args( (sAction), (sName), (uHash == FNV1A::Hash32Const(XS("Changed")) ? XS("to") : XS("of")), (sAlias))).c_str(),
+		std::vformat(XS("{} {}{}\x1's alias {} \"{}{}\x1\""), std::make_format_args( (sAction), (s_sYellow), (sName), (uHash == FNV1A::Hash32Const(XS("Changed")) ? XS("to") : XS("of")), (s_sYellow), (sAlias))).c_str()
 	);
 }
 
 void COutput::ReportResolver(int iIndex, const char* sAction, const char* sAxis, float flValue)
 {
-	ReportResolver(iIndex, sAction, sAxis, std::format(XS("{}"), flValue).c_str());
+	ReportResolver(iIndex, sAction, sAxis, std::vformat(XS("{}"), std::make_format_args( flValue)).c_str());
 }
 void COutput::ReportResolver(int iIndex, const char* sAction, const char* sAxis, bool bValue)
 {
-	ReportResolver(iIndex, sAction, sAxis, std::format(XS("{}"), bValue).c_str());
+	ReportResolver(iIndex, sAction, sAxis, std::vformat(XS("{}"), std::make_format_args( bValue)).c_str());
 }
 void COutput::ReportResolver(int iIndex, const char* sAction, const char* sAxis, const char* sValue)
 {
@@ -331,8 +331,8 @@ void COutput::ReportResolver(int iIndex, const char* sAction, const char* sAxis,
 
 	auto sName = F::PlayerUtils.GetPlayerName(iIndex, pResource->GetName(iIndex));
 	OutputInfo(Vars::Logging::Tags::LogTo.Value, XS("Resolver"),
-		std::format(XS("{} {} of {} to {}"), (sAction), (sAxis), (sName), (sValue)).c_str(),
-		std::format(XS("{} {}{}\x1 of {}{}\x1 to {}{}\x1"), (sAction), (s_sYellow), (sAxis), (s_sYellow), (sName), (s_sYellow), (sValue)).c_str()
+		std::vformat(XS("{} {} of {} to {}"), std::make_format_args( (sAction), (sAxis), (sName), (sValue))).c_str(),
+		std::vformat(XS("{} {}{}\x1 of {}{}\x1 to {}{}\x1"), std::make_format_args( (sAction), (s_sYellow), (sAxis), (s_sYellow), (sName), (s_sYellow), (sValue))).c_str()
 	);
 }
 void COutput::ReportResolver(const char* sMessage)

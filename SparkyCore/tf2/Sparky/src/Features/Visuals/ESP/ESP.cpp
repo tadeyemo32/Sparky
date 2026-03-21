@@ -33,7 +33,7 @@ static inline void StorePlayer(CTFPlayer* pPlayer, CTFPlayer* pLocal, Group_t* p
 	if (pGroup->m_iESP & ESPEnum::Distance && !bLocal)
 	{
 		Vec3 vDelta = pPlayer->m_vecOrigin() - pLocal->m_vecOrigin();
-		tCache.m_vText.emplace_back(ALIGN_BOTTOM, std::format(XS("[{:.0f}M]"), vDelta.Length2D() / 41), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+		tCache.m_vText.emplace_back(ALIGN_BOTTOM, std::vformat(XS("[{:.0f}M]"), std::make_format_args( vDelta.Length2D() / 41)), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 	}
 
 	if (pResource)
@@ -74,7 +74,7 @@ static inline void StorePlayer(CTFPlayer* pPlayer, CTFPlayer* pLocal, Group_t* p
 						if (!--iParty)
 							vTags.emplace_back(pTag->m_sName, pTag->m_tColor, pTag->m_iPriority);
 						else
-							vTags.emplace_back(std::format(XS("{}: {}"), pTag->m_sName, iParty), pTag->m_tColor.HueShift(iParty * 360.f / iPartyCount), pTag->m_iPriority);
+							vTags.emplace_back(std::vformat(XS("{}: {}"), std::make_format_args( pTag->m_sName, iParty)), pTag->m_tColor.HueShift(iParty * 360.f / iPartyCount), pTag->m_iPriority);
 					}
 				}
 				if (H::Entities.IsF2P(uAccountID))
@@ -112,7 +112,7 @@ static inline void StorePlayer(CTFPlayer* pPlayer, CTFPlayer* pLocal, Group_t* p
 		tCache.m_vBars.emplace_back(ALIGN_LEFT, tCache.m_flHealth, tColor, Vars::Colors::IndicatorMisc.Value);
 	}
 	if (pGroup->m_iESP & ESPEnum::HealthText)
-		tCache.m_vText.emplace_back(ALIGN_LEFT, std::format(XS("{}"), flHealth), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+		tCache.m_vText.emplace_back(ALIGN_LEFT, std::vformat(XS("{}"), std::make_format_args( flHealth)), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 
 	if (pGroup->m_iESP & (ESPEnum::UberBar | ESPEnum::UberText) && iClassNum == TF_CLASS_MEDIC)
 	{
@@ -123,7 +123,7 @@ static inline void StorePlayer(CTFPlayer* pPlayer, CTFPlayer* pLocal, Group_t* p
 			if (pGroup->m_iESP & ESPEnum::UberBar)
 				tCache.m_vBars.emplace_back(ALIGN_BOTTOM, flUber, Vars::Colors::IndicatorMisc.Value, Color_t(), false);
 			if (pGroup->m_iESP & ESPEnum::UberText)
-				tCache.m_vText.emplace_back(ALIGN_BOTTOMRIGHT, std::format(XS("{:.0f}%"), flUber * 100), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+				tCache.m_vText.emplace_back(ALIGN_BOTTOMRIGHT, std::vformat(XS("{:.0f}%"), std::make_format_args( flUber * 100)), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 		}
 	}
 
@@ -151,7 +151,7 @@ static inline void StorePlayer(CTFPlayer* pPlayer, CTFPlayer* pLocal, Group_t* p
 	{
 		int iPing = pResource->m_iPing(iIndex);
 		if (iPing && (iPing >= 200 || iPing <= 5))
-			tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::format(XS("{}MS"), iPing), Vars::Colors::IndicatorTextBad.Value, Vars::Menu::Theme::Background.Value);
+			tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::vformat(XS("{}MS"), std::make_format_args( iPing)), Vars::Colors::IndicatorTextBad.Value, Vars::Menu::Theme::Background.Value);
 	}
 
 	if (pGroup->m_iESP & ESPEnum::KDR && pResource && !bLocal)
@@ -161,7 +161,7 @@ static inline void StorePlayer(CTFPlayer* pPlayer, CTFPlayer* pLocal, Group_t* p
 		{
 			int iKDR = iKills / std::max(iDeaths, 1);
 			if (iKDR >= 10)
-				tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::format(XS("High KD [{} / {}]"), iKills, iDeaths), Vars::Colors::IndicatorTextMid.Value, Vars::Menu::Theme::Background.Value);
+				tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::vformat(XS("High KD [{} / {}]"), std::make_format_args( iKills, iDeaths)), Vars::Colors::IndicatorTextMid.Value, Vars::Menu::Theme::Background.Value);
 		}
 	}
 
@@ -314,7 +314,7 @@ static inline void StorePlayer(CTFPlayer* pPlayer, CTFPlayer* pLocal, Group_t* p
 			tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, XS("Feign"), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 
 		if (float flInvis = pPlayer->GetEffectiveInvisibilityLevel())
-			tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::format(XS("Invis {:.0f}%"), flInvis * 100), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+			tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::vformat(XS("Invis {:.0f}%"), std::make_format_args( flInvis * 100)), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 
 		if (pPlayer->InCond(TF_COND_DISGUISED))
 			tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, XS("Disguise"), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
@@ -332,7 +332,7 @@ static inline void StorePlayer(CTFPlayer* pPlayer, CTFPlayer* pLocal, Group_t* p
 			{
 				if (bLocal)
 				{
-					tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::format(XS("Charging {:.0f}%"), Math::RemapVal(pWeapon->As<CTFSniperRifle>()->m_flChargedDamage(), 0.f, 150.f, 0.f, 100.f)), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+					tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::vformat(XS("Charging {:.0f}%"), std::make_format_args( Math::RemapVal(pWeapon->As<CTFSniperRifle>()->m_flChargedDamage(), 0.f, 150.f, 0.f, 100.f))), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 					break;
 				}
 				else
@@ -349,7 +349,7 @@ static inline void StorePlayer(CTFPlayer* pPlayer, CTFPlayer* pLocal, Group_t* p
 					if (CSniperDot* pPlayerDot = GetSniperDot(pPlayer))
 					{
 						float flChargeTime = std::max(SDK::AttribHookValue(3.f, XS("mult_sniper_charge_per_sec"), pWeapon), 1.5f);
-						tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::format(XS("Charging {:.0f}%"), Math::RemapVal(TICKS_TO_TIME(I::ClientState->m_ClockDriftMgr.m_nServerTick) - pPlayerDot->m_flChargeStartTime() - 0.3f, 0.f, flChargeTime, 0.f, 100.f)), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+						tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::vformat(XS("Charging {:.0f}%"), std::make_format_args( Math::RemapVal(TICKS_TO_TIME(I::ClientState->m_ClockDriftMgr.m_nServerTick) - pPlayerDot->m_flChargeStartTime() - 0.3f, 0.f, flChargeTime, 0.f, 100.f))), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 						break;
 					}
 				}
@@ -359,7 +359,7 @@ static inline void StorePlayer(CTFPlayer* pPlayer, CTFPlayer* pLocal, Group_t* p
 			case TF_WEAPON_COMPOUND_BOW:
 				if (bLocal)
 				{
-					tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::format(XS("Charging {:.0f}%"), Math::RemapVal(TICKS_TO_TIME(I::ClientState->m_ClockDriftMgr.m_nServerTick) - pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime(), 0.f, 1.f, 0.f, 100.f)), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+					tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::vformat(XS("Charging {:.0f}%"), std::make_format_args( Math::RemapVal(TICKS_TO_TIME(I::ClientState->m_ClockDriftMgr.m_nServerTick) - pWeapon->As<CTFPipebombLauncher>()->m_flChargeBeginTime(), 0.f, 1.f, 0.f, 100.f))), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 					break;
 				}
 				tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, XS("Charging"), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
@@ -379,7 +379,7 @@ static inline void StorePlayer(CTFPlayer* pPlayer, CTFPlayer* pLocal, Group_t* p
 		{
 			int iAverage = TIME_TO_TICKS(F::MoveSim.GetPredictedDelta(pPlayer));
 			int iCurrent = H::Entities.GetChoke(iIndex);
-			tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::format(XS("Lag {}, {}"), iAverage, iCurrent), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+			tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::vformat(XS("Lag {}, {}"), std::make_format_args( iAverage, iCurrent)), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 		}
 	}
 }
@@ -399,7 +399,7 @@ static inline void StoreBuilding(CBaseObject* pBuilding, CTFPlayer* pLocal, Grou
 	if (pGroup->m_iESP & ESPEnum::Distance)
 	{
 		Vec3 vDelta = pBuilding->m_vecOrigin() - pLocal->m_vecOrigin();
-		tCache.m_vText.emplace_back(ALIGN_BOTTOM, std::format(XS("[{:.0f}M]"), vDelta.Length2D() / 41), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+		tCache.m_vText.emplace_back(ALIGN_BOTTOM, std::vformat(XS("[{:.0f}M]"), std::make_format_args( vDelta.Length2D() / 41)), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 	}
 
 	if (pGroup->m_iESP & ESPEnum::Name)
@@ -422,7 +422,7 @@ static inline void StoreBuilding(CBaseObject* pBuilding, CTFPlayer* pLocal, Grou
 		tCache.m_vBars.emplace_back(ALIGN_LEFT, tCache.m_flHealth, tColor, Vars::Colors::IndicatorMisc.Value);
 	}
 	if (pGroup->m_iESP & ESPEnum::HealthText)
-		tCache.m_vText.emplace_back(ALIGN_LEFT, std::format(XS("{}"), flHealth), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+		tCache.m_vText.emplace_back(ALIGN_LEFT, std::vformat(XS("{}"), std::make_format_args( flHealth)), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 
 	if (pGroup->m_iESP & (ESPEnum::AmmoBars | ESPEnum::AmmoText) && pBuilding->IsSentrygun() && !pBuilding->m_bBuilding())
 	{
@@ -436,9 +436,9 @@ static inline void StoreBuilding(CBaseObject* pBuilding, CTFPlayer* pLocal, Grou
 		}
 		if (pGroup->m_iESP & ESPEnum::AmmoText)
 		{
-			tCache.m_vText.emplace_back(ALIGN_BOTTOMRIGHT, std::format(XS("{}"), iShells), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+			tCache.m_vText.emplace_back(ALIGN_BOTTOMRIGHT, std::vformat(XS("{}"), std::make_format_args( iShells)), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 			if (iMaxRockets)
-				tCache.m_vText.back().m_sText += std::format(XS(", {}"), iRockets);
+				tCache.m_vText.back().m_sText += std::vformat(XS(", {}"), std::make_format_args( iRockets));
 		}
 	}
 
@@ -449,12 +449,12 @@ static inline void StoreBuilding(CBaseObject* pBuilding, CTFPlayer* pLocal, Grou
 	}
 
 	if (pGroup->m_iESP & ESPEnum::Level && !bIsMini)
-		tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::format(XS("Level {}"), pBuilding->m_iUpgradeLevel()), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+		tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::vformat(XS("Level {}"), std::make_format_args( pBuilding->m_iUpgradeLevel())), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 
 	if (pGroup->m_iESP & ESPEnum::Flags)
 	{
 		if (!pBuilding->IsDormant() && pBuilding->m_bBuilding())
-			tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::format(XS("{:.0f}%"), pBuilding->m_flPercentageConstructed() * 100), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+			tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::vformat(XS("{:.0f}%"), std::make_format_args( pBuilding->m_flPercentageConstructed() * 100)), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 
 		if (pBuilding->IsSentrygun() && pBuilding->As<CObjectSentrygun>()->m_bPlayerControlled())
 			tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, XS("Wrangled"), Vars::Colors::IndicatorTextBad.Value, Vars::Menu::Theme::Background.Value);
@@ -518,7 +518,7 @@ static inline void StoreProjectile(CBaseEntity* pProjectile, CTFPlayer* pLocal, 
 	if (pGroup->m_iESP & ESPEnum::Distance)
 	{
 		Vec3 vDelta = pProjectile->m_vecOrigin() - pLocal->m_vecOrigin();
-		tCache.m_vText.emplace_back(ALIGN_BOTTOM, std::format(XS("[{:.0f}M]"), vDelta.Length2D() / 41), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+		tCache.m_vText.emplace_back(ALIGN_BOTTOM, std::vformat(XS("[{:.0f}M]"), std::make_format_args( vDelta.Length2D() / 41)), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 	}
 
 	if (pGroup->m_iESP & ESPEnum::Name)
@@ -613,7 +613,7 @@ static inline void StoreObjective(CBaseEntity* pObjective, CTFPlayer* pLocal, Gr
 	if (pGroup->m_iESP & ESPEnum::Distance)
 	{
 		Vec3 vDelta = pObjective->m_vecOrigin() - pLocal->m_vecOrigin();
-		tCache.m_vText.emplace_back(ALIGN_BOTTOM, std::format(XS("[{:.0f}M]"), vDelta.Length2D() / 41), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+		tCache.m_vText.emplace_back(ALIGN_BOTTOM, std::vformat(XS("[{:.0f}M]"), std::make_format_args( vDelta.Length2D() / 41)), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 	}
 
 	switch (pObjective->GetClassID())
@@ -643,7 +643,7 @@ static inline void StoreObjective(CBaseEntity* pObjective, CTFPlayer* pLocal, Gr
 		if (pGroup->m_iESP & ESPEnum::IntelReturnTime && pIntel->m_nFlagStatus() == TF_FLAGINFO_DROPPED)
 		{
 			float flReturnTime = std::max(pIntel->m_flResetTime() - TICKS_TO_TIME(I::ClientState->m_ClockDriftMgr.m_nServerTick), 0.f);
-			tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::format(XS("Return {:.1f}s"), pIntel->m_flResetTime() - TICKS_TO_TIME(I::ClientState->m_ClockDriftMgr.m_nServerTick)).c_str(), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+			tCache.m_vText.emplace_back(ALIGN_TOPRIGHT, std::vformat(XS("Return {:.1f}s"), std::make_format_args( pIntel->m_flResetTime() - TICKS_TO_TIME(I::ClientState->m_ClockDriftMgr.m_nServerTick))).c_str(), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 		}
 
 		break;
@@ -661,7 +661,7 @@ static inline void StoreMisc(CBaseEntity* pEntity, CTFPlayer* pLocal, Group_t* p
 	if (pGroup->m_iESP & ESPEnum::Distance)
 	{
 		Vec3 vDelta = pEntity->m_vecOrigin() - pLocal->m_vecOrigin();
-		tCache.m_vText.emplace_back(ALIGN_BOTTOM, std::format(XS("[{:.0f}M]"), vDelta.Length2D() / 41), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
+		tCache.m_vText.emplace_back(ALIGN_BOTTOM, std::vformat(XS("[{:.0f}M]"), std::make_format_args( vDelta.Length2D() / 41)), Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value);
 	}
 
 	if (pGroup->m_iESP & ESPEnum::Name)

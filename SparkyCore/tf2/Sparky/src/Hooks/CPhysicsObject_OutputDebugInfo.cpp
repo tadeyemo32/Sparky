@@ -12,10 +12,10 @@ MAKE_HOOK(CPhysicsObject_OutputDebugInfo, S::CPhysicsObject_OutputDebugInfo(), v
 	auto GetVelocity = reinterpret_cast<void(__fastcall*)(void*, Vec3*, Vec3*)>(*reinterpret_cast<uintptr_t*>(rcx) + 408); // crash...
 	Vec3 speed, angSpeed;
 	GetVelocity(rcx, &speed, &angSpeed);
-	SDK::Output("Velocity", std::format("{}, {}, {} ({})", speed.x, speed.y, speed.z, speed.Length()).c_str());
-	SDK::Output("Ang Velocity", std::format("{}, {}, {} ({})", angSpeed.x, angSpeed.y, angSpeed.z, angSpeed.Length()).c_str());
+	SDK::Output("Velocity", std::vformat("{}, {}, {} ({})", std::make_format_args( speed.x, speed.y, speed.z, speed.Length())).c_str());
+	SDK::Output("Ang Velocity", std::vformat("{}, {}, {} ({})", std::make_format_args( angSpeed.x, angSpeed.y, angSpeed.z, angSpeed.Length())).c_str());
 	*/
 
-	SDK::Output(XS("Linear drag"), std::format(XS("{:.6f}, {:.6f}, {:.6f} ({})"), *reinterpret_cast<float*>(uintptr_t(rcx) + 10i64 * 4), *reinterpret_cast<float*>(uintptr_t(rcx) + 11i64 * 4), *reinterpret_cast<float*>(uintptr_t(rcx) + 12i64 * 4), *reinterpret_cast<float*>(uintptr_t(rcx) + 22i64 * 4)).c_str());
-	SDK::Output(XS("Angular drag"), std::format(XS("{:.6f}, {:.6f}, {:.6f} ({})"), *reinterpret_cast<float*>(uintptr_t(rcx) + 13i64 * 4), *reinterpret_cast<float*>(uintptr_t(rcx) + 14i64 * 4), *reinterpret_cast<float*>(uintptr_t(rcx) + 15i64 * 4), *reinterpret_cast<float*>(uintptr_t(rcx) + 23i64 * 4)).c_str());
+	SDK::Output(XS("Linear drag"), std::vformat(XS("{:.6f}, {:.6f}, {:.6f} ({})"), std::make_format_args( *reinterpret_cast<float*>(uintptr_t(rcx) + 10i64 * 4), *reinterpret_cast<float*>(uintptr_t(rcx) + 11i64 * 4), *reinterpret_cast<float*>(uintptr_t(rcx) + 12i64 * 4), *reinterpret_cast<float*>(uintptr_t(rcx) + 22i64 * 4))).c_str());
+	SDK::Output(XS("Angular drag"), std::vformat(XS("{:.6f}, {:.6f}, {:.6f} ({})"), std::make_format_args( *reinterpret_cast<float*>(uintptr_t(rcx) + 13i64 * 4), *reinterpret_cast<float*>(uintptr_t(rcx) + 14i64 * 4), *reinterpret_cast<float*>(uintptr_t(rcx) + 15i64 * 4), *reinterpret_cast<float*>(uintptr_t(rcx) + 23i64 * 4))).c_str());
 }

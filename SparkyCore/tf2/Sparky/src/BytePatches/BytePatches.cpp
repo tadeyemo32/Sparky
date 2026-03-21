@@ -30,7 +30,7 @@ bool BytePatch::Initialize()
 	m_pAddress = LPVOID(U::Memory.FindSignature(m_sModule, m_sSignature));
 	if (!m_pAddress)
 	{
-		U::Core.AppendFailText(std::format(XS("BytePatch::Initialize() failed to initialize:\n  {}\n  {}"), m_sModule, m_sSignature).c_str());
+		U::Core.AppendFailText(std::vformat(XS("BytePatch::Initialize() failed to initialize:\n  {}\n  {}"), std::make_format_args( m_sModule, m_sSignature)).c_str());
 		return false;
 	}
 

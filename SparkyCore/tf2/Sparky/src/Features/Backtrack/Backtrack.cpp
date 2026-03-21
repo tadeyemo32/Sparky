@@ -307,7 +307,7 @@ void CBacktrack::CleanRecords()
 
 		//const int iNewSize = pRecords.size();
 		//if (iOldSize != iNewSize)
-		//	SDK::Output("Clear", std::format("{} -> {}", iOldSize, iNewSize).c_str(), { 255, 0, 200 }, Vars::Debug::Logging.Value);
+		//	SDK::Output("Clear", std::vformat("{} -> {}", std::make_format_args( iOldSize, iNewSize)).c_str(), { 255, 0, 200 }, Vars::Debug::Logging.Value);
 	}
 }
 
@@ -442,8 +442,8 @@ void CBacktrack::Draw(CTFPlayer* pLocal)
 	}
 
 	if (flFake || Vars::Backtrack::Interp.Value > G::Lerp * 1000)
-		H::Draw.StringOutlined(fFont, x, y, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, std::format(XS("Ping {:.0f} (+ {:.0f}) ms"), flLatency, flFake).c_str());
+		H::Draw.StringOutlined(fFont, x, y, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, std::vformat(XS("Ping {:.0f} (+ {:.0f}) ms"), std::make_format_args( flLatency, flFake)).c_str());
 	else
-		H::Draw.StringOutlined(fFont, x, y, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, std::format(XS("Ping {:.0f} ms"), flLatency).c_str());
-	H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, std::format(XS("Scoreboard {} ms"), iLatencyScoreboard).c_str());
+		H::Draw.StringOutlined(fFont, x, y, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, std::vformat(XS("Ping {:.0f} ms"), std::make_format_args( flLatency)).c_str());
+	H::Draw.StringOutlined(fFont, x, y += nTall, Vars::Menu::Theme::Active.Value, Vars::Menu::Theme::Background.Value, align, std::vformat(XS("Scoreboard {} ms"), std::make_format_args( iLatencyScoreboard)).c_str());
 }

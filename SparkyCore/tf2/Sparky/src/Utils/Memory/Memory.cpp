@@ -99,13 +99,13 @@ std::string CMemory::GetModuleOffset(uintptr_t uAddress)
 {
 	HMODULE hModule;
 	if (!GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, LPCSTR(uAddress), &hModule))
-		return std::format(XS("{:#x}"), uAddress);
+		return std::vformat(XS("{:#x}"), std::make_format_args( uAddress));
 
 	uintptr_t uBase = uintptr_t(hModule);
 	if (char buffer[MAX_PATH]; GetModuleBaseName(GetCurrentProcess(), hModule, buffer, sizeof(buffer) / sizeof(char)))
-		return std::format(XS("{}+{:#x}"), buffer, uAddress - uBase);
+		return std::vformat(XS("{}+{:#x}"), std::make_format_args( buffer, uAddress - uBase));
 
-	return std::format(XS("{:#x}+{:#x}"), uBase, uAddress - uBase);
+	return std::vformat(XS("{:#x}+{:#x}"), std::make_format_args( uBase, uAddress - uBase));
 }
 
 uintptr_t CMemory::GetOffsetFromBase(uintptr_t uAddress)

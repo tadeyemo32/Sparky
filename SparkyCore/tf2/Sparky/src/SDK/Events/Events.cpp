@@ -23,7 +23,7 @@ bool CEventListener::Initialize()
 
 		if (!I::GameEventManager->FindListener(this, szEvent))
 		{
-			U::Core.AppendFailText(std::format(XS("Failed to add listener: {}"), szEvent).c_str());
+			U::Core.AppendFailText(std::vformat(XS("Failed to add listener: {}"), std::make_format_args( szEvent)).c_str());
 			m_bFailed = true;
 		}
 	}

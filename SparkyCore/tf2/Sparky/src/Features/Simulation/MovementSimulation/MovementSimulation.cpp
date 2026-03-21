@@ -246,7 +246,7 @@ bool CMovementSimulation::Initialize(CBaseEntity* pEntity, MoveStorage& tMoveSto
 
 		if (flCurrentChance < Vars::Aimbot::Projectile::HitChance.Value / 100)
 		{
-			SDK::Output(XS("MovementSimulation"), std::format(XS("Hitchance ({}% < {}%)"), flCurrentChance * 100, Vars::Aimbot::Projectile::HitChance.Value).c_str(), { 80, 200, 120 }, Vars::Debug::Logging.Value);
+			SDK::Output(XS("MovementSimulation"), std::vformat(XS("Hitchance ({}% < {}%)"), std::make_format_args( flCurrentChance * 100, Vars::Aimbot::Projectile::HitChance.Value)).c_str(), { 80, 200, 120 }, Vars::Debug::Logging.Value);
 
 			tMoveStorage.m_bFailed = true;
 			return false;
@@ -450,7 +450,7 @@ void CMovementSimulation::GetAverageYaw(MoveStorage& tMoveStorage, int iSamples)
 
 		float flYaw = 0.f;
 		bool bResult = GetYawDifference(tRecord1, tRecord2, !iTicks, &flYaw, flStraightFuzzyValue, iMaxChanges, iMaxChangeTime, flMaxSpeed);
-		SDK::Output(XS("GetYawDifference"), std::format(XS("{} ({}): {}, {}"), i, iTicks, flYaw, bResult).c_str(), { 50, 127, 75 }, Vars::Debug::Logging.Value);
+		SDK::Output(XS("GetYawDifference"), std::vformat(XS("{} ({}): {}, {}"), std::make_format_args( i, iTicks, flYaw, bResult)).c_str(), { 50, 127, 75 }, Vars::Debug::Logging.Value);
 		if (!bResult)
 			break;
 
@@ -494,7 +494,7 @@ void CMovementSimulation::GetAverageYaw(MoveStorage& tMoveStorage, int iSamples)
 		return;
 
 	tMoveStorage.m_flAverageYaw = flAverageYaw;
-	SDK::Output(XS("MovementSimulation"), std::format(XS("flAverageYaw calculated to {} from {} ({}) {}"), flAverageYaw, iTicks, iMinimum, pPlayer->entindex() == I::EngineClient->GetLocalPlayer() ? XS("(local)") : "").c_str(), { 100, 255, 150 }, Vars::Debug::Logging.Value);
+	SDK::Output(XS("MovementSimulation"), std::vformat(XS("flAverageYaw calculated to {} from {} ({}) {}"), std::make_format_args( flAverageYaw, iTicks, iMinimum, pPlayer->entindex() == I::EngineClient->GetLocalPlayer() ? XS("(local)") : "")).c_str(), { 100, 255, 150 }, Vars::Debug::Logging.Value);
 }
 
 bool CMovementSimulation::StrafePrediction(MoveStorage& tMoveStorage, int iSamples)

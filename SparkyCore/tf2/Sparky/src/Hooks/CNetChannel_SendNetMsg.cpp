@@ -59,7 +59,7 @@ MAKE_HOOK(CNetChannel_SendNetMsg, S::CNetChannel_SendNetMsg(), bool,
 				case FNV1A::Hash32Const(XS("cl_interpolate")):
 				case FNV1A::Hash32Const(XS("cl_cmdrate")):
 				case FNV1A::Hash32Const(XS("cl_updaterate")):
-					SDK::Output(XS("SendNetMsg"), std::format(XS("{}: {}"), localCvar->Name, localCvar->Value).c_str(), { 100, 0, 255 });
+					SDK::Output(XS("SendNetMsg"), std::vformat(XS("{}: {}"), std::make_format_args( localCvar->Name, localCvar->Value)).c_str(), { 100, 0, 255 });
 				}
 			}
 		}
@@ -156,7 +156,7 @@ MAKE_HOOK(CNetChannel_SendNetMsg, S::CNetChannel_SendNetMsg(), bool,
 			const int iCmdCount = pMsg->m_nNewCommands + pMsg->m_nBackupCommands - 3;
 			if (iCmdCount > iAllowedNewCommands)
 			{
-				SDK::Output(XS("clc_Move"), std::format(XS("{:d} sent <{:d} | {:d}>, max was {:d}."), iCmdCount + 3, pMsg->m_nNewCommands, pMsg->m_nBackupCommands, iAllowedNewCommands).c_str(), { 255, 0, 0, 255 });
+				SDK::Output(XS("clc_Move"), std::vformat(XS("{:d} sent <{:d} | {:d}>, max was {:d}."), std::make_format_args( iCmdCount + 3, pMsg->m_nNewCommands, pMsg->m_nBackupCommands, iAllowedNewCommands)).c_str(), { 255, 0, 0, 255 });
 				F::Ticks.m_iDeficit = iCmdCount - iAllowedNewCommands;
 			}
 		}
